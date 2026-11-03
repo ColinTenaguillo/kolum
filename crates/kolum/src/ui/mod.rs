@@ -510,34 +510,14 @@ impl App {
                 input.set(&b.filter);
                 self.prompt = Some(Prompt { kind: PromptKind::Filter, input });
             }
-            Action::ToggleSwimlanes => {
-                let key = b.selected().map(|i| i.key.clone());
-                b.swimlanes = b.swimlanes.next();
-                if let Some(key) = key {
-                    b.select(&key);
-                }
-                let name = b.swimlanes.name();
-                self.say(name[..1].to_uppercase() + &name[1..], Level::Info);
-                self.save_state();
-            }
-            Action::ToggleEmptyColumns => {
-                b.hide_empty = !b.hide_empty;
-                b.clamp();
-                let what = if b.hide_empty { "Hiding" } else { "Showing" };
-                self.say(format!("{what} empty columns"), Level::Info);
-                self.save_state();
-            }
+            Action::ToggleSwimlanes => self.toggle_swimlanes(),
+            Action::ToggleEmptyColumns => self.toggle_empty_columns(),
             Action::OpenDetail => {
                 if let Some(key) = b.selected().map(|i| i.key.clone()) {
                     self.open_detail(key);
                 }
             }
-            Action::CopyKey if b.visual.is_some() => {
-                let keys: Vec<String> = b.targets().iter().map(|k| k.to_string()).collect();
-                b.visual = None;
-                self.say(format!("Copied {}", keys.join(" ")), Level::Info);
-                self.effects.push(Effect::Copy(keys.join(" ")));
-            }
+            Action::CopyKey if b.visual.is_some() => self.copy_range(),
             Action::CopyKey | Action::CopyUrl | Action::OpenBrowser => {
                 if let Some(issue) = b.selected().cloned() {
                     self.issue_effect(action, &issue);
@@ -556,6 +536,35 @@ impl App {
                 self.issue_action(action, keys);
             }
         }
+    }
+
+    fn toggle_swimlanes(&mut self) {
+        let b = &mut self.board;
+        let key = b.selected().map(|i| i.key.clone());
+        b.swimlanes = b.swimlanes.next();
+        if let Some(key) = key {
+            b.select(&key);
+        }
+        let name = b.swimlanes.name();
+        self.say(name[..1].to_uppercase() + &name[1..], Level::Info);
+        self.save_state();
+    }
+
+    fn toggle_empty_columns(&mut self) {
+        let b = &mut self.board;
+        b.hide_empty = !b.hide_empty;
+        b.clamp();
+        let what = if b.hide_empty { "Hiding" } else { "Showing" };
+        self.say(format!("{what} empty columns"), Level::Info);
+        self.save_state();
+    }
+
+    /// `yy` in visual mode: every key in the range, space-separated.
+    fn copy_range(&mut self) {
+        let keys: Vec<String> = self.board.targets().iter().map(|k| k.to_string()).collect();
+        self.board.visual = None;
+        self.say(format!("Copied {}", keys.join(" ")), Level::Info);
+        self.effects.push(Effect::Copy(keys.join(" ")));
     }
 
     fn save_state(&mut self) {

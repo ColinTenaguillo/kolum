@@ -154,35 +154,16 @@ fn app() -> anyhow::Result<()> {
         let at = log.as_ref().map_or("nowhere".into(), |p| p.display().to_string());
         eprintln!("kolum: logging to {at}");
     }
-    let (mut config, mut settings) = load(&args, config::config_dir());
-    let mut args = args;
-    if config.profiles.is_empty()
-        && !args.demo
-        && args.profile.is_none()
-        && std::io::stdin().is_terminal()
-    {
-        match first_run(&args)? {
-            kolum::wizard::Answer::Demo => args.demo = true,
-            kolum::wizard::Answer::Jira(_) => {
-                (config, settings) = load(&args, config::config_dir())
-            }
-        }
-    }
+    let (args, config, settings) = configure(args)?;
     for p in &settings.problems {
         tracing::warn!("config: {p}");
     }
     let (provider, board, profile) = provider(&args, &config)?;
     tracing::info!("starting on the {} provider", provider.name());
     let writable = provider.capabilities().supports(kolum_domain::Capability::Write);
-    let settings = Settings { board, writable, ..settings };
+    let state_file = config::cache_dir().map(|d| d.join(&profile).join("state.toml"));
+    let settings = with_state(Settings { board, writable, ..settings }, state_file.as_deref());
     let cache = config::cache_dir().map(|d| kolum_app::Cache::new(d.join(&profile)));
-    // The toggles of the last run win over the config's starting values.
-    let state_file = config::cache_dir().map(|d| d.join(profile).join("state.toml"));
-    let mut settings = settings;
-    if let Some(state) = state_file.as_deref().and_then(config::UiState::load) {
-        settings.ui.hide_empty_columns = state.hide_empty_columns;
-        settings.ui.swimlanes = state.swimlanes;
-    }
     let result = run_tui(provider, cache, state_file, settings);
     if args.debug
         && let Some(log) = log
@@ -190,6 +171,31 @@ fn app() -> anyhow::Result<()> {
         eprintln!("kolum: the log is at {}", log.display());
     }
     result
+}
+
+/// The config, after the first-run questions when there is no profile yet
+/// and someone at the terminal to answer them.
+fn configure(mut args: Args) -> anyhow::Result<(Args, config::Config, Settings)> {
+    let (config, settings) = load(&args, config::config_dir());
+    let first = config.profiles.is_empty() && !args.demo && args.profile.is_none();
+    if !first || !std::io::stdin().is_terminal() {
+        return Ok((args, config, settings));
+    }
+    if first_run(&args)? == kolum::wizard::Answer::Demo {
+        args.demo = true;
+        return Ok((args, config, settings));
+    }
+    let (config, settings) = load(&args, config::config_dir());
+    Ok((args, config, settings))
+}
+
+/// The toggles of the last run win over the config's starting values.
+fn with_state(mut settings: Settings, state_file: Option<&std::path::Path>) -> Settings {
+    if let Some(state) = state_file.and_then(config::UiState::load) {
+        settings.ui.hide_empty_columns = state.hide_empty_columns;
+        settings.ui.swimlanes = state.swimlanes;
+    }
+    settings
 }
 
 /// Asks the first-run questions and writes the profile they describe.
@@ -346,6 +352,22 @@ mod tests {
             provider(&Args::default(), &config(named)).unwrap().1,
             Some(kolum_domain::BoardId::new("MAIN"))
         );
+    }
+
+    #[test]
+    fn the_last_runs_toggles_win_over_the_config() {
+        let dir = std::env::temp_dir().join(format!("kolum-with-state-{}", std::process::id()));
+        let path = dir.join("state.toml");
+        let (_, settings) = load(&Args::default(), None);
+        let untouched = with_state(settings, Some(&path));
+        assert!(!untouched.ui.hide_empty_columns, "no state yet: the config's");
+        let state =
+            config::UiState { hide_empty_columns: true, swimlanes: config::Swimlanes::Priority };
+        state.save(&path).unwrap();
+        let restored = with_state(untouched, Some(&path));
+        assert!(restored.ui.hide_empty_columns);
+        assert_eq!(restored.ui.swimlanes, config::Swimlanes::Priority);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

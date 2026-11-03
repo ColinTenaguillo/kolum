@@ -290,6 +290,18 @@ mod tests {
     }
 
     #[test]
+    fn every_panel_kind_and_an_empty_code_block_survive() {
+        let panels: String = ["NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION"]
+            .iter()
+            .map(|k| format!("> [!{k}]\n> {k}\n\n"))
+            .collect();
+        let rt = RichText::from_markdown(&format!("{panels}```\n```\n\n:tada: in text"));
+        assert_eq!(to_rich_text(&from_rich_text(&rt)), rt);
+        let emoji = RichText { blocks: vec![Block::Paragraph(vec![Inline::Emoji("🎉".into())])] };
+        assert_eq!(to_rich_text(&from_rich_text(&emoji)), emoji);
+    }
+
+    #[test]
     fn the_document_has_adf_shapes() {
         let doc = from_rich_text(&RichText::from_markdown("**hi** [@Ana](mention:u2)"));
         assert_eq!(doc["type"], "doc");

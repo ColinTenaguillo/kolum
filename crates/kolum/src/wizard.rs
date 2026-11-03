@@ -79,6 +79,10 @@ pub fn questions(input: &mut impl BufRead, out: &mut impl Write) -> std::io::Res
     if provider == "demo" {
         return Ok(Answer::Demo);
     }
+    jira_questions(input, out).map(Answer::Jira)
+}
+
+fn jira_questions(input: &mut impl BufRead, out: &mut impl Write) -> std::io::Result<JiraAnswers> {
     let base_url = ask_until(input, out, "Jira URL, like https://acme.atlassian.net", "", |a| {
         if a.starts_with("https://") || a.starts_with("http://") {
             Ok(())
@@ -94,22 +98,7 @@ pub fn questions(input: &mut impl BufRead, out: &mut impl Write) -> std::io::Res
     } else {
         None
     };
-    writeln!(out, "\nThe API token (Cloud: id.atlassian.com, Security, API tokens). kolum can")?;
-    writeln!(out, "  1) run a command that prints it, like `pass show jira` (recommended)")?;
-    writeln!(out, "  2) read $KOLUM_TOKEN")?;
-    writeln!(out, "  3) keep it in config.toml, which is then readable by you alone")?;
-    let how = ask_until(input, out, "Which", "1", |a| {
-        if matches!(a, "1" | "2" | "3") { Ok(()) } else { Err("1, 2 or 3") }
-    })?;
-    let token = match how.as_str() {
-        "1" => Token::Command(ask_until(input, out, "Command", "", |a| {
-            if a.is_empty() { Err("a command") } else { Ok(()) }
-        })?),
-        "2" => Token::Environment,
-        _ => Token::InFile(ask_until(input, out, "Token", "", |a| {
-            if a.is_empty() { Err("the token") } else { Ok(()) }
-        })?),
-    };
+    let token = token_question(input, out)?;
     let board = ask_until(
         input,
         out,
@@ -130,7 +119,26 @@ pub fn questions(input: &mut impl BufRead, out: &mut impl Write) -> std::io::Res
             Err("letters, digits, - and _")
         }
     })?;
-    Ok(Answer::Jira(JiraAnswers { name, base_url, email, token, board: board.parse().ok() }))
+    Ok(JiraAnswers { name, base_url, email, token, board: board.parse().ok() })
+}
+
+fn not_empty(what: &'static str) -> impl Fn(&str) -> Result<(), &'static str> {
+    move |a: &str| if a.is_empty() { Err(what) } else { Ok(()) }
+}
+
+fn token_question(input: &mut impl BufRead, out: &mut impl Write) -> std::io::Result<Token> {
+    writeln!(out, "\nThe API token (Cloud: id.atlassian.com, Security, API tokens). kolum can")?;
+    writeln!(out, "  1) run a command that prints it, like `pass show jira` (recommended)")?;
+    writeln!(out, "  2) read $KOLUM_TOKEN")?;
+    writeln!(out, "  3) keep it in config.toml, which is then readable by you alone")?;
+    let how = ask_until(input, out, "Which", "1", |a| {
+        if matches!(a, "1" | "2" | "3") { Ok(()) } else { Err("1, 2 or 3") }
+    })?;
+    Ok(match how.as_str() {
+        "1" => Token::Command(ask_until(input, out, "Command", "", not_empty("a command"))?),
+        "2" => Token::Environment,
+        _ => Token::InFile(ask_until(input, out, "Token", "", not_empty("the token"))?),
+    })
 }
 
 /// The profile as TOML, ready to append to config.toml.

@@ -670,6 +670,22 @@ mod tests {
     }
 
     #[test]
+    fn markdown_writes_every_panel_kind_and_escapes_what_would_format() {
+        let panels: String = ["NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION"]
+            .iter()
+            .map(|k| format!("> [!{k}]\n> {k}\n\n"))
+            .collect();
+        let src = format!(
+            "{panels}```\nplain code\n```\n\n| a\\|b | `c` |\n|---|---|\n| *x* | y |\n\n1\\*2 and \\_u\\_ and \\# not a heading"
+        );
+        let rt = RichText::from_markdown(&src);
+        let written = rt.to_markdown();
+        assert_eq!(merged(RichText::from_markdown(&written)), merged(rt), "{written}");
+        assert!(written.contains("```\nplain code\n```"), "no language");
+        assert!(written.contains(r"1\*2 and \_u\_"), "{written}");
+    }
+
+    #[test]
     fn plain_text_drops_formatting() {
         let rt = RichText::from_markdown("Hello **you** [@Ana](mention:u2)\n\n- a\n- b");
         assert_eq!(rt.plain_text(), "Hello you @Ana\na\nb");
