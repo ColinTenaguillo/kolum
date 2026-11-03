@@ -1,0 +1,45 @@
+[package]
+name = "kolum"
+description = "A kanban client for the terminal, with vim keys and a Telescope-style picker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "kolum"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+# Needed for EventStream, which ratatui's crossterm re-export does not
+# expose. MUST track ratatui's crossterm version, or KeyEvent becomes two
+# distinct types.
+crossterm = { version = "0.29", features = ["event-stream"] }
+futures = "0.3"
+kolum-app.workspace = true
+kolum-domain.workspace = true
+kolum-provider-fake.workspace = true
+# Helix's matcher: ranks better than fuzzy-matcher, and matches on its own
+# threads so typing never waits on a sort.
+nucleo = "0.5"
+ratatui = "0.30"
+serde.workspace = true
+# Collects the settings serde would skip without a word: a misspelt key
+# that silently does nothing is worse than an error on screen.
+serde_ignored = "0.1"
+time.workspace = true
+tokio.workspace = true
+# `preserve_order`: config problems are reported, and a key spelt twice is
+# resolved, in the order the file has them.
+toml = { version = "1", features = ["preserve_order"] }
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+insta = "1"
+
+[lints]
+workspace = true

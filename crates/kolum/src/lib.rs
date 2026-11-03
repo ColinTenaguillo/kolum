@@ -1,0 +1,4 @@
+//! The kolum terminal client. A library so the tests can drive the screen
+//! the way the binary does.
+
+pub mod keymap;
