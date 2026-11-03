@@ -451,5 +451,10 @@ mod tests {
     fn plain_text_drops_formatting() {
         let rt = RichText::from_markdown("Hello **you** [@Ana](mention:u2)\n\n- a\n- b");
         assert_eq!(rt.plain_text(), "Hello you @Ana\na\nb");
+        let every_block = RichText::from_markdown(
+            "## H\n\n```\ncode\n```\n\n> quoted\n\n> [!TIP]\n> tip\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n---\n\nx  \ny",
+        );
+        assert_eq!(every_block.plain_text(), "H\ncode\nquoted\ntip\na b \n1 2 \nx y");
+        assert!(RichText::default().is_empty() && !every_block.is_empty());
     }
 }

@@ -17,7 +17,7 @@ Usage: kolum [options]
   -h, --help           This help
   -V, --version        The version";
 
-#[derive(Default)]
+#[derive(Debug, Default, PartialEq)]
 struct Args {
     demo: bool,
     profile: Option<String>,
@@ -25,9 +25,15 @@ struct Args {
     debug: bool,
 }
 
-fn parse_args() -> Result<Args, String> {
+#[derive(Debug, PartialEq)]
+enum Cli {
+    Run(Args),
+    Help,
+    Version,
+}
+
+fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cli, String> {
     let mut args = Args::default();
-    let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--demo" => args.demo = true,
@@ -36,18 +42,12 @@ fn parse_args() -> Result<Args, String> {
             "-c" | "--config" => {
                 args.config = Some(it.next().ok_or("--config needs a path")?.into())
             }
-            "-h" | "--help" => {
-                println!("{USAGE}");
-                std::process::exit(0);
-            }
-            "-V" | "--version" => {
-                println!("kolum {}", env!("CARGO_PKG_VERSION"));
-                std::process::exit(0);
-            }
+            "-h" | "--help" => return Ok(Cli::Help),
+            "-V" | "--version" => return Ok(Cli::Version),
             other => return Err(format!("unknown argument `{other}`\n\n{USAGE}")),
         }
     }
-    Ok(args)
+    Ok(Cli::Run(args))
 }
 
 type Build = fn(&Profile) -> anyhow::Result<Arc<dyn Provider>>;
@@ -114,28 +114,46 @@ fn main() {
 }
 
 fn app() -> anyhow::Result<()> {
-    let args = parse_args().map_err(anyhow::Error::msg)?;
+    let args = match parse_args(std::env::args().skip(1)).map_err(anyhow::Error::msg)? {
+        Cli::Run(args) => args,
+        Cli::Help => {
+            println!("{USAGE}");
+            return Ok(());
+        }
+        Cli::Version => {
+            println!("kolum {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+    };
     let log = init_logging(args.debug);
     if args.debug {
-        eprintln!(
-            "kolum: logging to {}",
-            log.as_ref().map_or("nowhere".into(), |p| p.display().to_string())
-        );
+        let at = log.as_ref().map_or("nowhere".into(), |p| p.display().to_string());
+        eprintln!("kolum: logging to {at}");
     }
-    let config_dir = config::config_dir();
-    let config_path =
-        args.config.clone().or_else(|| config_dir.as_ref().map(|d| d.join("config.toml")));
-    let (config, mut problems) = match &config_path {
+    let (config, settings) = load(&args, config::config_dir());
+    for p in &settings.problems {
+        tracing::warn!("config: {p}");
+    }
+    let provider = provider(&args, &config)?;
+    tracing::info!("starting on the {} provider", provider.name());
+    let result = run_tui(provider, settings);
+    if args.debug
+        && let Some(log) = log
+    {
+        eprintln!("kolum: the log is at {}", log.display());
+    }
+    result
+}
+
+/// The config, and what the app is built from, with every problem found.
+fn load(args: &Args, config_dir: Option<PathBuf>) -> (config::Config, Settings) {
+    let path = args.config.clone().or_else(|| config_dir.as_ref().map(|d| d.join("config.toml")));
+    let (config, mut problems) = match &path {
         Some(path) => config::load(path),
         None => (config::Config::default(), vec![]),
     };
     let (keymap, key_problems) = Keymap::from_config(&config.keys);
     problems.extend(key_problems);
-    for p in &problems {
-        tracing::warn!("config: {p}");
-    }
-    let provider = provider(&args, &config)?;
-    tracing::info!("starting on the {} provider", provider.name());
     let settings = Settings {
         keymap,
         theme_name: config.ui.theme.clone(),
@@ -145,9 +163,12 @@ fn app() -> anyhow::Result<()> {
         picker_layout: config.picker.layout,
         problems,
     };
+    (config, settings)
+}
 
+fn run_tui(provider: Arc<dyn Provider>, settings: Settings) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
-    let result = runtime.block_on(async move {
+    runtime.block_on(async move {
         let (service, events) = kolum_app::Service::spawn(provider);
         let (wake_tx, wake) = tokio::sync::mpsc::unbounded_channel();
         // Fails only once the loop has ended, when no one needs waking.
@@ -176,11 +197,81 @@ fn app() -> anyhow::Result<()> {
         let result = kolum::run::run(&mut terminal, app, service, events, wake).await;
         ratatui::restore();
         result
-    });
-    if args.debug
-        && let Some(log) = log
-    {
-        eprintln!("kolum: the log is at {}", log.display());
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(s: &str) -> Result<Cli, String> {
+        parse_args(s.split_whitespace().map(String::from))
     }
-    result
+
+    #[test]
+    fn arguments() {
+        assert_eq!(args(""), Ok(Cli::Run(Args::default())));
+        let all = Args {
+            demo: true,
+            debug: true,
+            profile: Some("perso".into()),
+            config: Some("/tmp/k.toml".into()),
+        };
+        assert_eq!(args("--demo --debug -p perso -c /tmp/k.toml"), Ok(Cli::Run(all)));
+        assert_eq!(args("--profile a --config b").map(|c| matches!(c, Cli::Run(_))), Ok(true));
+        assert_eq!(args("--demo -h"), Ok(Cli::Help));
+        assert_eq!(args("-V"), Ok(Cli::Version));
+        assert_eq!(args("-p"), Err("--profile needs a name".into()));
+        assert_eq!(args("--config"), Err("--config needs a path".into()));
+        assert!(args("--nope").unwrap_err().starts_with("unknown argument `--nope`"));
+    }
+
+    fn config(src: &str) -> config::Config {
+        config::parse(src).0
+    }
+
+    fn opened(args: Args, src: &str) -> Result<String, String> {
+        provider(&args, &config(src)).map(|p| p.name().to_string()).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn the_profile_picks_the_provider() {
+        let demo = Args { demo: true, ..Args::default() };
+        assert_eq!(opened(demo, ""), Ok("fake".into()), "--demo needs no config");
+        let one = "[profiles.only]\nprovider = \"fake\"";
+        assert_eq!(
+            opened(Args::default(), one),
+            Ok("fake".into()),
+            "a lone profile is the default"
+        );
+        let two = "default_profile = \"b\"\n[profiles.a]\nprovider = \"x\"\n[profiles.b]\nprovider = \"fake\"";
+        assert_eq!(opened(Args::default(), two), Ok("fake".into()));
+        let pick_a = Args { profile: Some("a".into()), ..Args::default() };
+        assert!(opened(pick_a, two).unwrap_err().contains("the `x` provider is not in this build"));
+        let missing = Args { profile: Some("zz".into()), ..Args::default() };
+        assert_eq!(
+            opened(missing, two),
+            Err("no profile `zz` in the config (it has: a, b)".into())
+        );
+        assert!(opened(Args::default(), "").unwrap_err().starts_with("no profile to open"));
+    }
+
+    #[test]
+    fn load_reads_the_given_config_and_gathers_every_problem() {
+        let dir = std::env::temp_dir().join(format!("kolum-main-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("custom.toml");
+        std::fs::write(&path, "[ui]\ntheme = \"gruvbox\"\nthme = 1\n[keys.board]\nx = \"nope\"\n")
+            .unwrap();
+        let args = Args { config: Some(path), ..Args::default() };
+        let (config, settings) = load(&args, Some(dir.clone()));
+        assert_eq!(config.ui.theme, "gruvbox");
+        assert_eq!(settings.theme_name, "gruvbox");
+        assert_eq!(settings.themes_dir, Some(dir.join("themes")));
+        assert_eq!(
+            settings.problems,
+            ["unknown setting `ui.thme`", "[keys.board] \"x\": unknown action `nope`"]
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

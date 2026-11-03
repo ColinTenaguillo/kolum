@@ -273,3 +273,189 @@ async fn every_screen_survives_a_tiny_terminal() {
         }
     }
 }
+
+async fn detail_of(app: &mut App, key: &str) {
+    let fake = FakeProvider::new();
+    let key = IssueKey::new(key);
+    let detail = IssueDetail {
+        issue: fake.issue(&key).await.unwrap(),
+        comments: fake.comments(&key).await.unwrap(),
+        activity: fake.activity(&key).await.unwrap(),
+    };
+    app.on_event(Event::IssueLoaded(Box::new(detail)));
+}
+
+#[tokio::test]
+async fn the_detail_scrolls_and_switches_tabs() {
+    let mut app = loaded().await;
+    press(&mut app, "ll<CR>");
+    detail_of(&mut app, "ACME-5").await;
+    let top = screen(&mut app, 120, 20);
+    assert!(top.contains("After the SSO redirect"));
+    press(&mut app, "G");
+    let bottom = screen(&mut app, 120, 20);
+    assert!(!bottom.contains("After the SSO redirect"), "G scrolled past the description");
+    assert!(bottom.contains("single-use anyway"), "and reached the last comment");
+    press(&mut app, "gg");
+    assert_eq!(screen(&mut app, 120, 20), top);
+    press(&mut app, "3j<C-d><C-u>3k");
+    assert_eq!(screen(&mut app, 120, 20), top, "down and back up again");
+
+    press(&mut app, "<Tab>");
+    let history = screen(&mut app, 120, 60);
+    assert!(history.contains("Status: Backlog → In Progress"), "{history}");
+    assert!(!history.contains("I can reproduce"), "History has no comments");
+    press(&mut app, "<Tab>");
+    let all = screen(&mut app, 120, 60);
+    assert!(all.contains("Status: ∅ → Backlog") && all.contains("I can reproduce"));
+    press(&mut app, "<S-Tab><S-Tab>");
+    assert!(!screen(&mut app, 120, 60).contains("Status: ∅"), "back on Comments");
+}
+
+#[tokio::test]
+async fn the_detail_lists_links_and_configured_custom_fields() {
+    let mut settings = settings();
+    settings.ui.detail_fields =
+        vec!["status".into(), "customfield_10020".into(), "Story points".into()];
+    let mut app = loaded_with(settings).await;
+    press(&mut app, "ll<CR>");
+    press(&mut app, ":q<CR>");
+    assert!(app.quit, ":q quits from anywhere");
+
+    let mut settings = self::settings();
+    settings.ui.detail_fields =
+        vec!["status".into(), "customfield_10020".into(), "Story points".into()];
+    let mut app = loaded_with(settings).await;
+    press(&mut app, "/ACME-10<CR><CR>");
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("is blocked by"), "{shown}");
+    assert!(shown.contains("ACME-34 GraphQL endpoint"));
+    assert!(shown.contains("Team") && shown.contains("Platform"), "a custom field by id");
+    assert!(shown.contains("Story points") && shown.contains("None"), "a field the issue lacks");
+    assert!(!shown.contains("Reporter"), "only what the config lists");
+    press(&mut app, "yu");
+    assert_eq!(
+        app.take_effects().pop(),
+        Some(Effect::Copy("https://demo.kolum.invalid/browse/ACME-10".into()))
+    );
+}
+
+#[tokio::test]
+async fn the_help_page_scrolls_within_its_length() {
+    let mut app = loaded().await;
+    press(&mut app, "?");
+    let top = screen(&mut app, 120, 20);
+    press(&mut app, "k");
+    assert_eq!(screen(&mut app, 120, 20), top, "already at the top");
+    press(&mut app, "<C-d>");
+    assert_ne!(screen(&mut app, 120, 20), top);
+    press(&mut app, "G");
+    let bottom = screen(&mut app, 120, 20);
+    press(&mut app, "j");
+    assert_eq!(screen(&mut app, 120, 20), bottom, "already at the bottom");
+    press(&mut app, "gg");
+    assert_eq!(screen(&mut app, 120, 20), top);
+    press(&mut app, "5j<C-u>q");
+    assert!(!screen(&mut app, 120, 20).contains("Keys  (j/k"), "q closes it");
+}
+
+#[tokio::test]
+async fn the_picker_remembers_searches() {
+    let mut app = loaded().await;
+    for query in ["stripe", "webhook"] {
+        press(&mut app, &format!("<Space>f{query}"));
+        settle(&mut app);
+        press(&mut app, "<CR>q");
+    }
+    press(&mut app, "<Space>f<Up>");
+    assert!(screen(&mut app, 150, 40).contains("> webhook"), "the latest first");
+    press(&mut app, "<Up><Up>");
+    assert!(screen(&mut app, 150, 40).contains("> stripe"), "and no further than the oldest");
+    press(&mut app, "<Down>");
+    assert!(screen(&mut app, 150, 40).contains("> webhook"));
+    press(&mut app, "<Down>");
+    assert!(screen(&mut app, 150, 40).contains("> \u{20}"), "past the newest: empty again");
+}
+
+#[tokio::test]
+async fn marks_make_an_action_apply_to_several_issues() {
+    let mut app = loaded().await;
+    app.take_effects();
+    press(&mut app, "<Space>f#bug @me");
+    settle(&mut app);
+    press(&mut app, "<Tab><Tab><C-y>");
+    let Some(Effect::Copy(keys)) = app.take_effects().pop() else { panic!("expected a copy") };
+    assert_eq!(keys.split(' ').count(), 2, "{keys}");
+}
+
+#[tokio::test]
+async fn picker_actions_reach_the_highlighted_issue() {
+    let mut app = loaded().await;
+    app.take_effects();
+    press(&mut app, "<Space>fstripe");
+    settle(&mut app);
+    press(&mut app, "<C-o>");
+    assert_eq!(
+        app.take_effects(),
+        [Effect::Open("https://demo.kolum.invalid/browse/ACME-29".into())]
+    );
+    press(&mut app, "<Space>fstripe");
+    settle(&mut app);
+    press(&mut app, "<C-t>");
+    assert!(screen(&mut app, 150, 40).contains("`transition` is not available yet"));
+    press(&mut app, "<C-d><C-u><Esc>Gggkj");
+    press(&mut app, "<C-Space>");
+    assert!(screen(&mut app, 150, 40).contains("Remote search comes with the Jira provider"));
+}
+
+#[tokio::test]
+async fn the_command_palette_runs_what_it_lists() {
+    let mut app = loaded().await;
+    press(&mut app, "<Space>pshow the keys");
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    assert!(screen(&mut app, 120, 40).contains("Keys  (j/k"), "it ran `help`");
+}
+
+#[tokio::test]
+async fn the_command_line_reports_what_it_cannot_do() {
+    let mut app = loaded().await;
+    press(&mut app, ":frobnicate<CR>");
+    assert!(screen(&mut app, 100, 20).contains("Not a command: frobnicate"));
+    press(&mut app, ":jql project = X<CR>");
+    assert!(screen(&mut app, 100, 20).contains(":jql is not available yet"));
+    press(&mut app, ":theme<CR>");
+    assert!(screen(&mut app, 100, 20).contains(" Themes "), ":theme alone opens the picker");
+    press(&mut app, "<Esc><Esc>:<Esc>");
+    app.take_effects();
+    press(&mut app, ":refresh<CR>");
+    assert_eq!(
+        app.take_effects(),
+        [Effect::Send(Command::LoadBoard(Some(kolum_domain::BoardId::new("1"))))]
+    );
+}
+
+#[tokio::test]
+async fn a_refresh_keeps_the_highlight_on_the_same_issue() {
+    let mut app = loaded().await;
+    press(&mut app, "ll3j");
+    let before = selected(&app).to_string();
+    app.on_event(Event::BoardLoaded(load_board(&FakeProvider::new(), None).await.unwrap()));
+    assert_eq!(selected(&app), before);
+    app.on_event(Event::Failed {
+        what: "loading the board".into(),
+        error: kolum_domain::DomainError::Transport("timed out".into()),
+    });
+    assert!(screen(&mut app, 120, 30).contains("loading the board failed: transport: timed out"));
+}
+
+#[tokio::test]
+async fn empty_columns_can_be_hidden() {
+    let mut app = loaded().await;
+    press(&mut app, "/ACME-29<CR>");
+    assert!(screen(&mut app, 150, 30).contains("No cards"));
+    press(&mut app, "ze");
+    let shown = screen(&mut app, 150, 30);
+    assert!(!shown.contains("No cards") && shown.contains("IN REVIEW"), "{shown}");
+    assert_eq!(selected(&app), "ACME-29");
+}

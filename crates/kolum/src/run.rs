@@ -58,12 +58,9 @@ async fn sleep_until(deadline: Option<tokio::time::Instant>) {
 fn perform(effect: Effect, service: &Service) {
     match effect {
         Effect::Send(command) => service.send(command),
-        // OSC 52: the terminal sets the clipboard, which also works over
-        // ssh, where no clipboard tool on this side could reach it.
         Effect::Copy(text) => {
-            let encoded = base64::engine::general_purpose::STANDARD.encode(text);
             let mut out = std::io::stdout();
-            let _ = write!(out, "\x1b]52;c;{encoded}\x07").and_then(|_| out.flush());
+            let _ = out.write_all(osc52(&text).as_bytes()).and_then(|_| out.flush());
         }
         Effect::Open(url) => {
             let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
@@ -77,5 +74,20 @@ fn perform(effect: Effect, service: &Service) {
                 tracing::warn!("{opener} {url}: {e}");
             }
         }
+    }
+}
+
+/// OSC 52: the terminal sets the clipboard, which also works over ssh,
+/// where no clipboard tool on this side could reach it.
+fn osc52(text: &str) -> String {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text);
+    format!("\x1b]52;c;{encoded}\x07")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn osc52_carries_the_text_in_base64() {
+        assert_eq!(super::osc52("ACME-5"), "\x1b]52;c;QUNNRS01\x07");
     }
 }

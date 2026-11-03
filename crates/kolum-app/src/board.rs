@@ -1,4 +1,4 @@
-use kolum_domain::{Board, BoardId, Issue, Provider, Result};
+use kolum_domain::{Board, BoardId, DomainError, Issue, Provider, Result};
 
 /// A board and its cards, as last loaded.
 #[derive(Debug, Clone, PartialEq)]
@@ -27,10 +27,7 @@ impl BoardSnapshot {
 pub async fn load_board(provider: &dyn Provider, id: Option<BoardId>) -> Result<BoardSnapshot> {
     let id = match id {
         Some(id) => id,
-        None => match provider.boards().await?.into_iter().next() {
-            Some(first) => first.id,
-            None => return Err(kolum_domain::DomainError::NotFound("any board".into())),
-        },
+        None => first_board(provider).await?,
     };
     let board = provider.board(&id).await?;
     let mut issues = Vec::new();
@@ -38,12 +35,16 @@ pub async fn load_board(provider: &dyn Provider, id: Option<BoardId>) -> Result<
     loop {
         let page = provider.board_issues(&id, None, token).await?;
         issues.extend(page.items);
-        match page.next {
-            Some(next) => token = Some(next),
-            None => break,
+        token = page.next;
+        if token.is_none() {
+            return Ok(BoardSnapshot { board, issues });
         }
     }
-    Ok(BoardSnapshot { board, issues })
+}
+
+async fn first_board(provider: &dyn Provider) -> Result<BoardId> {
+    let first = provider.boards().await?.into_iter().next();
+    first.map(|b| b.id).ok_or_else(|| DomainError::NotFound("any board".into()))
 }
 
 #[cfg(test)]

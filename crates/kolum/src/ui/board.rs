@@ -93,15 +93,18 @@ impl BoardView {
     }
 
     /// After anything that changes what is shown: the column must be a
-    /// visible one and the cursor inside it.
+    /// visible one and the cursor inside it. When a filter empties the
+    /// current column, the highlight moves to the nearest column that
+    /// still has a card, as vim's `/` jumps to a match.
     pub fn clamp(&mut self) {
         let visible = self.visible();
-        if !visible.contains(&self.column) {
-            let nearest = visible.iter().min_by_key(|&&c| c.abs_diff(self.column));
+        let lens: Vec<usize> = self.cards().iter().map(Vec::len).collect();
+        let with_cards: Vec<usize> = visible.iter().copied().filter(|&c| lens[c] > 0).collect();
+        let candidates = if with_cards.is_empty() { &visible } else { &with_cards };
+        if !candidates.contains(&self.column) {
+            let nearest = candidates.iter().min_by_key(|&&c| c.abs_diff(self.column));
             self.column = nearest.copied().unwrap_or(0);
         }
-        let cards = self.cards();
-        let lens: Vec<usize> = cards.iter().map(Vec::len).collect();
         for (c, len) in lens.into_iter().enumerate() {
             if let Some(cur) = self.cursor.get_mut(c) {
                 *cur = (*cur).min(len.saturating_sub(1));

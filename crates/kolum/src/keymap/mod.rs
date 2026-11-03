@@ -42,29 +42,25 @@ impl Context {
         Context::Command,
     ];
 
-    /// The section name under `[keys]`.
-    pub fn name(self) -> &'static str {
+    /// The section name under `[keys]`, and the heading on the help page.
+    fn names(self) -> (&'static str, &'static str) {
         match self {
-            Context::Global => "global",
-            Context::Board => "board",
-            Context::Detail => "detail",
-            Context::Help => "help",
-            Context::Picker => "picker",
-            Context::PickerInsert => "picker_insert",
-            Context::Command => "command",
+            Context::Global => ("global", "Everywhere"),
+            Context::Board => ("board", "Board"),
+            Context::Detail => ("detail", "Issue"),
+            Context::Help => ("help", "Help"),
+            Context::Picker => ("picker", "Picker"),
+            Context::PickerInsert => ("picker_insert", "Picker, typing"),
+            Context::Command => ("command", "Command line"),
         }
     }
 
+    pub fn name(self) -> &'static str {
+        self.names().0
+    }
+
     pub fn title(self) -> &'static str {
-        match self {
-            Context::Global => "Everywhere",
-            Context::Board => "Board",
-            Context::Detail => "Issue",
-            Context::Help => "Help",
-            Context::Picker => "Picker",
-            Context::PickerInsert => "Picker, typing",
-            Context::Command => "Command line",
-        }
+        self.names().1
     }
 
     /// Whether this context is a text field, where keys type.
@@ -298,12 +294,8 @@ fn apply_section(
     let mut seen: Vec<(Vec<Key>, &str)> = vec![];
     for (spelling, value) in bindings {
         let at = format!("[keys.{}] \"{spelling}\"", context.name());
-        let Some(name) = value.as_str() else {
-            problems.push(format!("{at}: expected an action name in quotes"));
-            continue;
-        };
-        let keys = match parse_keys(spelling, leader) {
-            Ok(keys) => keys,
+        let (keys, action) = match read_binding(spelling, value, context, leader) {
+            Ok(binding) => binding,
             Err(e) => {
                 problems.push(format!("{at}: {e}"));
                 continue;
@@ -314,24 +306,31 @@ fn apply_section(
             continue;
         }
         seen.push((keys.clone(), spelling));
-        let action = match name {
-            "none" => None,
-            name => match Action::from_name(name) {
-                Some(a) => Some(a),
-                None => {
-                    problems.push(format!("{at}: unknown action `{name}`"));
-                    continue;
-                }
-            },
-        };
-        if context.is_text() && keys[0].as_text().is_some() {
-            problems.push(format!("{at}: would type a character here; give it a modifier"));
-            continue;
-        }
         table.retain(|b| b.keys != keys);
         if let Some(action) = action {
             table.push(Binding { keys, action });
         }
+    }
+}
+
+/// One `"keys" = "action"` line. `None` for the action unbinds.
+fn read_binding(
+    spelling: &str,
+    value: &toml::Value,
+    context: Context,
+    leader: Key,
+) -> Result<(Vec<Key>, Option<Action>), String> {
+    let name = value.as_str().ok_or("expected an action name in quotes")?;
+    let keys = parse_keys(spelling, leader)?;
+    if context.is_text() && keys[0].as_text().is_some() {
+        return Err("would type a character here; give it a modifier".into());
+    }
+    match name {
+        "none" => Ok((keys, None)),
+        name => match Action::from_name(name) {
+            Some(action) => Ok((keys, Some(action))),
+            None => Err(format!("unknown action `{name}`")),
+        },
     }
 }
 

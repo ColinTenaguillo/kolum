@@ -41,14 +41,7 @@ fn render_block(block: &Block, theme: &Theme, cols: usize, out: &mut Vec<Line<'s
     match block {
         Block::Paragraph(inlines) => out.extend(inline_lines(inlines, theme, Style::default())),
         Block::Heading { level, content } => {
-            let style = match level {
-                1 => Style::new()
-                    .fg(theme.accent)
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                2 => Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
-                _ => Style::new().fg(theme.fg).add_modifier(Modifier::BOLD),
-            };
-            out.extend(inline_lines(content, theme, style));
+            out.extend(inline_lines(content, theme, heading_style(*level, theme)))
         }
         Block::List { ordered, items } => {
             for (n, item) in items.iter().enumerate() {
@@ -83,13 +76,7 @@ fn render_block(block: &Block, theme: &Theme, cols: usize, out: &mut Vec<Line<'s
             out.extend(quoted.into_iter().map(|l| l.style(Style::new().fg(theme.muted))));
         }
         Block::Panel { kind, blocks } => {
-            let (color, title) = match kind {
-                PanelKind::Info => (theme.accent, "Info"),
-                PanelKind::Note => (theme.accent, "Note"),
-                PanelKind::Success => (theme.ok, "Tip"),
-                PanelKind::Warning => (theme.warn, "Warning"),
-                PanelKind::Error => (theme.error, "Caution"),
-            };
+            let (color, title) = panel(*kind, theme);
             let gutter = Span::styled("▌ ", Style::new().fg(color));
             let mut inner = vec![Line::from(Span::styled(
                 title,
@@ -103,6 +90,25 @@ fn render_block(block: &Block, theme: &Theme, cols: usize, out: &mut Vec<Line<'s
             "─".repeat(cols.min(80)),
             Style::new().fg(theme.border),
         ))),
+    }
+}
+
+fn heading_style(level: u8, theme: &Theme) -> Style {
+    match level {
+        1 => Style::new().fg(theme.accent).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        2 => Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        _ => Style::new().fg(theme.fg).add_modifier(Modifier::BOLD),
+    }
+}
+
+/// A panel's colour and the word heading it, as GitHub names its alerts.
+fn panel(kind: PanelKind, theme: &Theme) -> (ratatui::style::Color, &'static str) {
+    match kind {
+        PanelKind::Info => (theme.accent, "Important"),
+        PanelKind::Note => (theme.accent, "Note"),
+        PanelKind::Success => (theme.ok, "Tip"),
+        PanelKind::Warning => (theme.warn, "Warning"),
+        PanelKind::Error => (theme.error, "Caution"),
     }
 }
 
@@ -228,5 +234,41 @@ mod tests {
                 "by @Ana",
             ]
         );
+    }
+
+    #[test]
+    fn quotes_panels_and_deep_headings() {
+        let theme = Theme::builtin("dark").unwrap();
+        let rt = RichText::from_markdown(
+            "### Deep\n\n> said\n\n> [!TIP]\n> a\n\n> [!IMPORTANT]\n> b\n\n> [!CAUTION]\n> c\n\n> [!WARNING]\n> d\n\n---\n\n~~old~~ *it* a  \nb",
+        );
+        let shown = plain(&lines(&rt, &theme, 10));
+        assert_eq!(
+            shown,
+            [
+                "Deep",
+                "",
+                "│ said",
+                "",
+                "▌ Tip",
+                "▌ a",
+                "",
+                "▌ Important",
+                "▌ b",
+                "",
+                "▌ Caution",
+                "▌ c",
+                "",
+                "▌ Warning",
+                "▌ d",
+                "",
+                "──────────",
+                "",
+                "old it a",
+                "b",
+            ]
+        );
+        assert_eq!(heading_style(3, &theme).fg, Some(theme.fg));
+        assert_eq!(panel(PanelKind::Error, &theme).0, theme.error);
     }
 }

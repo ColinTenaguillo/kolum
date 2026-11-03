@@ -235,6 +235,16 @@ mod tests {
     }
 
     #[test]
+    fn priorities_sort_urgent_first_and_have_names() {
+        let mut shuffled =
+            [Priority::Low, Priority::Highest, Priority::Lowest, Priority::Medium, Priority::High];
+        shuffled.sort();
+        assert_eq!(shuffled, Priority::ALL);
+        let names: Vec<_> = Priority::ALL.iter().map(|p| p.name()).collect();
+        assert_eq!(names, ["Highest", "High", "Medium", "Low", "Lowest"]);
+    }
+
+    #[test]
     fn initials_take_the_first_and_last_word() {
         assert_eq!(user("Colin Tenaguillo").initials(), "CT");
         assert_eq!(user("Ana María López").initials(), "AL");

@@ -338,3 +338,25 @@ fn field_value(value: &FieldValue) -> String {
         FieldValue::RichText(r) => r.plain_text(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kolum_domain::{RichText, User};
+
+    #[test]
+    fn every_custom_field_value_reads_as_text() {
+        let ana = User { id: UserId::new("a"), display_name: "Ana".into(), avatar_url: None };
+        let cases = [
+            (FieldValue::Text("Mobile".into()), "Mobile"),
+            (FieldValue::Number(3.5), "3.5"),
+            (FieldValue::Date(time::macros::date!(2026 - 11 - 03)), "2026-11-03"),
+            (FieldValue::User(ana), "Ana"),
+            (FieldValue::Options(vec!["a".into(), "b".into()]), "a, b"),
+            (FieldValue::RichText(RichText::from_markdown("**hi** there")), "hi there"),
+        ];
+        for (value, text) in cases {
+            assert_eq!(field_value(&value), text);
+        }
+    }
+}
