@@ -160,6 +160,14 @@ pub struct App {
     pub quit: bool,
 }
 
+/// A picture ready to draw, if it is.
+fn ready(p: Option<&mut Avatar>) -> Option<&mut ratatui_image::protocol::StatefulProtocol> {
+    match p {
+        Some(Avatar::Ready(protocol)) => Some(protocol.as_mut()),
+        _ => None,
+    }
+}
+
 enum Avatar {
     Loading,
     Ready(Box<ratatui_image::protocol::StatefulProtocol>),
@@ -932,13 +940,26 @@ impl App {
         }
     }
 
-    /// Asks for the assignee's avatar, once per URL, when pictures can be
-    /// drawn here.
+    /// The pictures of the open issue: its assignee's avatar, and its
+    /// first image attachment.
+    fn pictures(&self) -> [Option<String>; 2] {
+        let Some(d) = &self.detail else { return [None, None] };
+        let avatar = d.issue.assignee.as_ref().and_then(|a| a.avatar_url.clone());
+        let shot = d.issue.attachments.iter().find(|a| a.is_image()).map(|a| a.url.clone());
+        [avatar, shot]
+    }
+
+    /// Asks for the open issue's pictures, once per URL, when pictures can
+    /// be drawn here.
     fn want_avatar(&mut self) {
-        let url = self.detail.as_ref().and_then(|d| d.issue.assignee.as_ref()?.avatar_url.clone());
-        if let Some(url) = url.filter(|u| self.images.is_some() && !self.avatars.contains_key(u)) {
-            self.avatars.insert(url.clone(), Avatar::Loading);
-            self.effects.push(Effect::Send(Command::Image(url)));
+        if self.images.is_none() {
+            return;
+        }
+        for url in self.pictures().into_iter().flatten() {
+            if !self.avatars.contains_key(&url) {
+                self.avatars.insert(url.clone(), Avatar::Loading);
+                self.effects.push(Effect::Send(Command::Image(url)));
+            }
         }
     }
 
@@ -1187,14 +1208,18 @@ impl App {
         let [main, status] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
         let me = self.me.as_ref().map(|u| &u.id);
-        let avatar_url =
-            self.detail.as_ref().and_then(|d| d.issue.assignee.as_ref()?.avatar_url.clone());
-        let avatar = match avatar_url.and_then(|u| self.avatars.get_mut(&u)) {
-            Some(Avatar::Ready(protocol)) => Some(protocol.as_mut()),
-            _ => None,
+        let [avatar_url, shot_url] = self.pictures();
+        let none = String::new();
+        let (a, s) = (avatar_url.as_ref().unwrap_or(&none), shot_url.as_ref().unwrap_or(&none));
+        // Two pictures from one map: both borrowed at once, by distinct keys.
+        let [avatar, shot] = if a == s {
+            [self.avatars.get_mut(a), None]
+        } else {
+            self.avatars.get_disjoint_mut([a, s])
         };
+        let pictures = detail::Pictures { avatar: ready(avatar), shot: ready(shot) };
         match &self.detail {
-            Some(d) => d.draw(frame, main, &theme, &self.ui.detail_fields, me, avatar),
+            Some(d) => d.draw(frame, main, &theme, &self.ui.detail_fields, me, pictures),
             None => {
                 let [head, body] =
                     Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(main);

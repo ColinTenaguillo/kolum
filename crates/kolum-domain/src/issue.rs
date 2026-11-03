@@ -157,6 +157,23 @@ pub struct Issue {
     pub fields: Vec<CustomField>,
     /// Where the issue lives in the provider's web app.
     pub url: Option<String>,
+    pub attachments: Vec<Attachment>,
+}
+
+/// A file on an issue. Its bytes come through `UserDirectory::image`, with
+/// the provider's credentials, when it is a picture worth showing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attachment {
+    pub name: String,
+    pub url: String,
+    pub mime: String,
+    pub size: u64,
+}
+
+impl Attachment {
+    pub fn is_image(&self) -> bool {
+        self.mime.starts_with("image/") && self.mime != "image/svg+xml"
+    }
 }
 
 impl Issue {

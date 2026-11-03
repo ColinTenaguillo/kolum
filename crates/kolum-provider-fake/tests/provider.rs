@@ -218,3 +218,17 @@ async fn the_demo_data_follows_its_rules() {
     let changed = p.board_issues(&board_id(), Some(five.updated), None).await.unwrap().items;
     assert!(changed.iter().any(|i| i.key.as_str() == "ACME-5"));
 }
+
+#[tokio::test]
+async fn the_sso_bug_carries_a_screenshot_and_a_log() {
+    let p = FakeProvider::new();
+    let bug = p.issue(&IssueKey::new("ACME-5")).await.unwrap();
+    let names: Vec<&str> = bug.attachments.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(names, ["session-expired.png", "callback.log"]);
+    assert!(bug.attachments[0].is_image() && !bug.attachments[1].is_image());
+    let shot = p.image(&bug.attachments[0].url).await.unwrap();
+    assert!(shot.starts_with(b"P6\n48 27\n255\n"));
+    assert_eq!(shot.len(), b"P6\n48 27\n255\n".len() + 48 * 27 * 3);
+    assert!(p.image(&bug.attachments[1].url).await.is_err(), "a log is no picture");
+    assert!(p.issue(&IssueKey::new("ACME-6")).await.unwrap().attachments.is_empty());
+}

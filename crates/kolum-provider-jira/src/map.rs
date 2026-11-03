@@ -288,6 +288,16 @@ pub fn issue(dto: &IssueDto, ctx: &Ctx) -> Result<Issue> {
         description: description(f.get("description")),
         fields,
         url: Some(format!("{}/browse/{}", ctx.base_url, dto.key)),
+        attachments: get::<Vec<AttachmentDto>>(f, "attachment")
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| Attachment {
+                name: a.filename,
+                url: a.content,
+                mime: a.mime_type,
+                size: a.size,
+            })
+            .collect(),
     })
 }
 

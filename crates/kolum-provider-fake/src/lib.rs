@@ -36,6 +36,44 @@ fn user(i: usize) -> User {
     }
 }
 
+/// The demo's files: a screenshot and a log on the SSO bug.
+fn attachments(n: u32) -> Vec<Attachment> {
+    match n {
+        5 => vec![
+            Attachment {
+                name: "session-expired.png".into(),
+                url: "fake://shot/5".into(),
+                mime: "image/png".into(),
+                size: 48213,
+            },
+            Attachment {
+                name: "callback.log".into(),
+                url: "fake://file/5".into(),
+                mime: "text/plain".into(),
+                size: 1830,
+            },
+        ],
+        _ => vec![],
+    }
+}
+
+/// A 48x27 screenshot-like picture: a title bar and a dialog.
+fn screenshot() -> Vec<u8> {
+    let (w, h) = (48, 27);
+    let mut out = format!("P6\n{w} {h}\n255\n").into_bytes();
+    for y in 0..h {
+        for x in 0..w {
+            let pixel = match (x, y) {
+                (_, 0..3) => [60, 60, 70],
+                (14..34, 9..18) => [230, 90, 90],
+                _ => [235, 235, 240],
+            };
+            out.extend(pixel);
+        }
+    }
+    out
+}
+
 /// A 16x16 avatar, as a PPM (the simplest format an image reader takes):
 /// the user's colour with a lighter cross, so each looks like someone.
 fn avatar(id: &str) -> Vec<u8> {
@@ -133,6 +171,7 @@ fn issue(row: &data::Row) -> Issue {
             ),
         }],
         url: Some(format!("https://demo.kolum.invalid/browse/{}", key(row.n))),
+        attachments: attachments(row.n),
     }
 }
 
@@ -447,6 +486,7 @@ impl UserDirectory for FakeProvider {
     async fn image(&self, url: &str) -> Result<Vec<u8>> {
         match url.strip_prefix("fake://avatar/") {
             Some(id) if data::USERS.iter().any(|u| u.0 == id) => Ok(avatar(id)),
+            _ if url == "fake://shot/5" => Ok(screenshot()),
             _ => Err(DomainError::NotFound(url.into())),
         }
     }

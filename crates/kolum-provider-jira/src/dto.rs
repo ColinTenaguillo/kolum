@@ -219,3 +219,15 @@ pub struct TransitionFieldDto {
     #[serde(default)]
     pub required: bool,
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentDto {
+    pub filename: String,
+    /// The file itself, on the Jira site: it needs the credentials.
+    pub content: String,
+    #[serde(default)]
+    pub mime_type: String,
+    #[serde(default)]
+    pub size: u64,
+}

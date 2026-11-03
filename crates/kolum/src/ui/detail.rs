@@ -13,6 +13,26 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use std::cell::Cell;
 
+type Picture = ratatui_image::protocol::StatefulProtocol;
+
+/// What the detail can draw besides text, when it was fetched and decoded.
+pub struct Pictures<'a> {
+    pub avatar: Option<&'a mut Picture>,
+    pub shot: Option<&'a mut Picture>,
+}
+
+/// The height of an attachment's preview, in rows.
+const SHOT_ROWS: u16 = 10;
+
+/// `48 KB`, `1.8 MB`: a size the way a file browser says it.
+fn size(bytes: u64) -> String {
+    match bytes {
+        b if b < 1024 => format!("{b} B"),
+        b if b < 1024 * 1024 => format!("{} KB", b / 1024),
+        b => format!("{:.1} MB", b as f64 / (1024.0 * 1024.0)),
+    }
+}
+
 /// An avatar's height in rows; twice that in columns makes it square.
 const AVATAR_ROWS: u16 = 4;
 
@@ -75,7 +95,7 @@ impl DetailView {
         theme: &Theme,
         fields: &[String],
         me: Option<&UserId>,
-        avatar: Option<&mut ratatui_image::protocol::StatefulProtocol>,
+        pictures: Pictures,
     ) {
         let issue = &self.issue;
         let [head, body] =
@@ -91,7 +111,8 @@ impl DetailView {
         let mut content = self.content(theme, left.width.saturating_sub(2));
         let field_lines = field_lines(issue, fields, theme, me);
         if side {
-            let right = self.draw_avatar(frame, right, theme, avatar);
+            let right = self.draw_avatar(frame, right, theme, pictures.avatar);
+            let right = self.draw_shot(frame, right, theme, pictures.shot);
             let block =
                 Block::new().borders(Borders::LEFT).border_style(Style::new().fg(theme.border));
             let fields = Paragraph::new(field_lines).block(block).wrap(Wrap { trim: false });
@@ -116,7 +137,7 @@ impl DetailView {
         frame: &mut Frame,
         area: Rect,
         theme: &Theme,
-        avatar: Option<&mut ratatui_image::protocol::StatefulProtocol>,
+        avatar: Option<&mut Picture>,
     ) -> Rect {
         let (Some(protocol), Some(who)) = (avatar, &self.issue.assignee) else { return area };
         if area.height < AVATAR_ROWS + 4 || area.width < 20 {
@@ -147,6 +168,41 @@ impl DetailView {
         rest
     }
 
+    /// The first image attachment, at the foot of the right-hand column,
+    /// when there is room for it; the rest of the column is what is left.
+    fn draw_shot(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        theme: &Theme,
+        shot: Option<&mut Picture>,
+    ) -> Rect {
+        let (Some(protocol), Some(file)) =
+            (shot, self.issue.attachments.iter().find(|a| a.is_image()))
+        else {
+            return area;
+        };
+        if area.height < SHOT_ROWS + 8 {
+            return area;
+        }
+        let [rest, title, picture] = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(1),
+            Constraint::Length(SHOT_ROWS),
+        ])
+        .areas(area);
+        let label =
+            Line::from(Span::styled(format!("  {}", file.name), Style::new().fg(theme.muted)));
+        frame.render_widget(Paragraph::new(label), title);
+        let picture = Rect { x: picture.x + 2, width: picture.width.saturating_sub(3), ..picture };
+        frame.render_stateful_widget(
+            ratatui_image::StatefulImage::<Picture>::new(),
+            picture,
+            protocol,
+        );
+        rest
+    }
+
     fn content(&self, theme: &Theme, cols: u16) -> Vec<Line<'static>> {
         let issue = &self.issue;
         let section = |t: &str| {
@@ -168,6 +224,19 @@ impl DetailView {
         if !issue.links.is_empty() {
             lines.extend([Line::default(), section("Linked issues")]);
             lines.extend(issue.links.iter().map(|l| ref_line(&l.issue, &l.relation, theme)));
+        }
+        if !issue.attachments.is_empty() {
+            lines.extend([Line::default(), section("Attachments")]);
+            lines.extend(issue.attachments.iter().map(|a| {
+                Line::from(vec![
+                    Span::styled("▪ ", Style::new().fg(theme.muted)),
+                    Span::raw(a.name.clone()),
+                    Span::styled(
+                        format!("  {}  {}", a.mime, size(a.size)),
+                        Style::new().fg(theme.muted),
+                    ),
+                ])
+            }));
         }
         lines.push(Line::default());
         lines.push(self.tabs(theme));
@@ -385,6 +454,13 @@ fn field_value(value: &FieldValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sizes_read_like_a_file_browser() {
+        assert_eq!(size(512), "512 B");
+        assert_eq!(size(48213), "47 KB");
+        assert_eq!(size(1_900_000), "1.8 MB");
+    }
     use kolum_domain::{RichText, User};
 
     #[test]

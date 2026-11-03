@@ -643,6 +643,22 @@
       },
       "active": true
     },
-    "customfield_10080": null
+    "customfield_10080": null,
+    "attachment": [
+      {
+        "self": "x",
+        "id": "10100",
+        "filename": "callback.png",
+        "author": {
+          "accountId": "557058:ana",
+          "displayName": "Ana Silva"
+        },
+        "created": "2026-09-02T20:30:00.000+0000",
+        "size": 48213,
+        "mimeType": "image/png",
+        "content": "https://acme.atlassian.net/rest/api/3/attachment/content/10100",
+        "thumbnail": "https://acme.atlassian.net/rest/api/3/attachment/thumbnail/10100"
+      }
+    ]
   }
 }

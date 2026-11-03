@@ -970,3 +970,30 @@ async fn without_pictures_no_avatar_is_asked_for() {
     press(&mut app, "<CR>");
     assert!(!app.take_effects().iter().any(|e| matches!(e, Effect::Send(Command::Image(_)))));
 }
+
+#[tokio::test]
+async fn attachments_are_listed_and_the_first_picture_previewed() {
+    use kolum_domain::UserDirectory;
+    let mut settings = settings();
+    settings.images = Some(ratatui_image::picker::Picker::halfblocks());
+    let mut app = loaded_with(settings).await;
+    press(&mut app, "ll");
+    app.take_effects();
+    press(&mut app, "<CR>");
+    let asked = app.take_effects();
+    assert!(asked.contains(&Effect::Send(Command::Image("fake://shot/5".into()))), "{asked:?}");
+    assert!(
+        !asked.contains(&Effect::Send(Command::Image("fake://file/5".into()))),
+        "a log is not fetched"
+    );
+    let shown = screen(&mut app, 140, 60);
+    assert!(shown.contains("▪ session-expired.png  image/png  47 KB"), "{shown}");
+    assert!(shown.contains("▪ callback.log  text/plain  1 KB"));
+
+    let bytes = FakeProvider::new().image("fake://shot/5").await;
+    app.on_event(Event::Image { url: "fake://shot/5".into(), result: bytes });
+    let previewed = screen(&mut app, 140, 60);
+    assert_ne!(shown, previewed);
+    let title_row = previewed.lines().filter(|l| l.contains("session-expired.png")).count();
+    assert_eq!(title_row, 2, "listed on the left and titled over the preview on the right");
+}

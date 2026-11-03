@@ -29,7 +29,7 @@ const SEARCH_PAGE: u64 = 50;
 /// What a card, the picker and the detail need. Custom fields are added
 /// once known; `*all` would also bring every plugin's fields on every card.
 const FIELDS: &str = "summary,issuetype,status,priority,assignee,reporter,labels,parent,subtasks,\
-                      issuelinks,created,updated,duedate,description,timeoriginalestimate";
+                      issuelinks,created,updated,duedate,description,timeoriginalestimate,attachment";
 
 pub struct JiraProvider {
     client: Client,

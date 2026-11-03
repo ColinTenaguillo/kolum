@@ -66,6 +66,16 @@ fn an_issue_maps_every_field() {
     assert_eq!(issue.updated, time::macros::datetime!(2026-09-03 09:00 UTC), "+0200 understood");
     assert_eq!(issue.due, Some(time::macros::date!(2026 - 09 - 12)));
     assert_eq!(issue.url.as_deref(), Some("https://acme.atlassian.net/browse/ACME-5"));
+    assert_eq!(
+        issue.attachments,
+        [Attachment {
+            name: "callback.png".into(),
+            url: "https://acme.atlassian.net/rest/api/3/attachment/content/10100".into(),
+            mime: "image/png".into(),
+            size: 48213,
+        }]
+    );
+    assert!(issue.attachments[0].is_image());
     let custom: Vec<(&str, &FieldValue)> =
         issue.fields.iter().map(|f| (f.name.as_str(), &f.value)).collect();
     assert_eq!(custom.len(), 3, "the known ones and the empty one are left out: {custom:?}");

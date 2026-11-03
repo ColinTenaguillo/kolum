@@ -117,6 +117,7 @@ mod tests {
             description: RichText::default(),
             fields: vec![],
             url: None,
+            attachments: vec![],
         }
     }
 

@@ -245,6 +245,8 @@ fn issue_of(
         description: RichText::from_markdown(content["body"].as_str().unwrap_or("")),
         fields: custom,
         url: content["url"].as_str().map(String::from),
+        // GitHub keeps files as links in the Markdown body, not as a list.
+        attachments: vec![],
     };
     Some(Known { item: item.map(String::from), content: content_id, kind, issue })
 }

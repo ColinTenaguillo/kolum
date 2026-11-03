@@ -137,7 +137,8 @@ start it is on screen at once, marked "cached, syncing…", while only the issue
 changed since are fetched. An issue that left the board is only dropped by a
 full reload (`r`).
 
-Avatars: the issue view shows the assignee's. In kitty, Ghostty, WezTerm,
+Avatars and attachments: the issue view shows the assignee's avatar, lists the
+issue's attachments, and previews the first picture among them. In kitty, Ghostty, WezTerm,
 iTerm2 and foot they use the terminal's image protocol; elsewhere half blocks.
 The terminal is asked by a short-lived child process first, so one that never
 answers (tmux without `allow-passthrough`, a pipe) cannot swallow kolum's keys.
@@ -245,7 +246,9 @@ Also done: GitHub Projects as a second provider.
 
 Also done: avatars, packaging (dist, Homebrew, Nix, AUR), CI.
 
-Next: Jira Data Center and GitHub against live servers, attachments. Actions bound but not built yet say so when pressed.
+Also done: attachments (listed, the first picture previewed).
+
+Next: Jira Data Center and GitHub against live servers. Actions bound but not built yet say so when pressed.
 
 ## License
 
