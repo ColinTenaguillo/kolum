@@ -1,0 +1,352 @@
+//! The board: columns of cards, navigated with hjkl.
+
+use super::glyph;
+use super::text::{truncate, width, wrap};
+use crate::config::CardField;
+use crate::theme::Theme;
+use kolum_app::BoardSnapshot;
+use kolum_domain::{Issue, IssueKey, UserId};
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Paragraph};
+use std::cell::Cell;
+
+/// Border, key line, two lines of title, meta line, border.
+const CARD_HEIGHT: u16 = 6;
+const MIN_COLUMN_WIDTH: u16 = 28;
+
+#[derive(Debug, Default)]
+pub struct BoardView {
+    pub snapshot: Option<BoardSnapshot>,
+    /// Index into the board's columns (not the visible ones).
+    pub column: usize,
+    /// The highlighted card of each column.
+    cursor: Vec<usize>,
+    /// The live `/` filter: cards whose key, title or labels contain it.
+    pub filter: String,
+    pub hide_empty: bool,
+    /// Cards per column on screen at the last draw, for half-page moves.
+    page: Cell<usize>,
+}
+
+fn matches(issue: &Issue, filter: &str) -> bool {
+    let f = filter.to_lowercase();
+    f.is_empty()
+        || issue.key.as_str().to_lowercase().contains(&f)
+        || issue.title.to_lowercase().contains(&f)
+        || issue.labels.iter().any(|l| l.to_lowercase().contains(&f))
+}
+
+impl BoardView {
+    /// A fresh snapshot keeps the highlight on the same issue when it is
+    /// still there: a refresh must not throw the user back to the top.
+    pub fn set_snapshot(&mut self, snapshot: BoardSnapshot) {
+        let keep = self.selected().map(|i| i.key.clone());
+        self.cursor = vec![0; snapshot.board.columns.len()];
+        self.snapshot = Some(snapshot);
+        match keep {
+            Some(key) => self.select(&key),
+            None => self.column = self.visible().first().copied().unwrap_or(0),
+        }
+        self.clamp();
+    }
+
+    /// The cards of every column, after the filter.
+    pub fn cards(&self) -> Vec<Vec<&Issue>> {
+        let Some(snapshot) = &self.snapshot else { return vec![] };
+        snapshot
+            .columns()
+            .into_iter()
+            .map(|col| col.into_iter().filter(|i| matches(i, &self.filter)).collect())
+            .collect()
+    }
+
+    /// The columns on screen. Hiding empty ones never hides them all.
+    pub fn visible(&self) -> Vec<usize> {
+        let cards = self.cards();
+        let all: Vec<usize> = (0..cards.len()).collect();
+        if !self.hide_empty {
+            return all;
+        }
+        let some: Vec<usize> = all.iter().copied().filter(|&c| !cards[c].is_empty()).collect();
+        if some.is_empty() { all } else { some }
+    }
+
+    pub fn selected(&self) -> Option<&Issue> {
+        let cards = self.cards();
+        let col = cards.get(self.column)?;
+        col.get(*self.cursor.get(self.column)?).copied()
+    }
+
+    pub fn select(&mut self, key: &IssueKey) {
+        let found = self
+            .cards()
+            .iter()
+            .enumerate()
+            .find_map(|(c, col)| col.iter().position(|i| &i.key == key).map(|row| (c, row)));
+        if let Some((c, row)) = found {
+            self.column = c;
+            self.cursor[c] = row;
+        }
+    }
+
+    /// After anything that changes what is shown: the column must be a
+    /// visible one and the cursor inside it.
+    pub fn clamp(&mut self) {
+        let visible = self.visible();
+        if !visible.contains(&self.column) {
+            let nearest = visible.iter().min_by_key(|&&c| c.abs_diff(self.column));
+            self.column = nearest.copied().unwrap_or(0);
+        }
+        let cards = self.cards();
+        let lens: Vec<usize> = cards.iter().map(Vec::len).collect();
+        for (c, len) in lens.into_iter().enumerate() {
+            if let Some(cur) = self.cursor.get_mut(c) {
+                *cur = (*cur).min(len.saturating_sub(1));
+            }
+        }
+    }
+
+    pub fn move_column(&mut self, delta: i64) {
+        let visible = self.visible();
+        if let Some(pos) = visible.iter().position(|&c| c == self.column) {
+            let to = (pos as i64 + delta).clamp(0, visible.len() as i64 - 1) as usize;
+            self.column = visible[to];
+        }
+    }
+
+    pub fn column_edge(&mut self, last: bool) {
+        let visible = self.visible();
+        let edge = if last { visible.last() } else { visible.first() };
+        self.column = edge.copied().unwrap_or(0);
+    }
+
+    pub fn move_card(&mut self, delta: i64) {
+        let len = self.cards().get(self.column).map_or(0, Vec::len) as i64;
+        if let Some(cur) = self.cursor.get_mut(self.column)
+            && len > 0
+        {
+            *cur = (*cur as i64 + delta).clamp(0, len - 1) as usize;
+        }
+    }
+
+    /// `index` from the top; `None` is the last card.
+    pub fn card_at(&mut self, index: Option<usize>) {
+        let len = self.cards().get(self.column).map_or(0, Vec::len);
+        if let Some(cur) = self.cursor.get_mut(self.column) {
+            *cur = index.unwrap_or(usize::MAX).min(len.saturating_sub(1));
+        }
+    }
+
+    pub fn half_page(&self) -> i64 {
+        (self.page.get() / 2).max(1) as i64
+    }
+
+    /// `n` and `N`: the next or previous card in reading order (down each
+    /// column, then on to the next), wrapping around.
+    pub fn step_match(&mut self, delta: i64) {
+        let cards = self.cards();
+        let order: Vec<(usize, usize)> = self
+            .visible()
+            .into_iter()
+            .flat_map(|c| (0..cards[c].len()).map(move |r| (c, r)))
+            .collect();
+        if order.is_empty() {
+            return;
+        }
+        let here = (self.column, self.cursor.get(self.column).copied().unwrap_or(0));
+        let pos = order.iter().position(|&p| p == here).unwrap_or(0) as i64;
+        let (c, r) = order[(pos + delta).rem_euclid(order.len() as i64) as usize];
+        self.column = c;
+        self.cursor[c] = r;
+    }
+
+    pub fn draw(&self, frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
+        let Some(snapshot) = &self.snapshot else {
+            let loading =
+                Paragraph::new("Loading the board…").style(Style::new().fg(ctx.theme.muted));
+            frame.render_widget(
+                loading.centered(),
+                Rect { y: area.y + area.height / 2, height: 1, ..area },
+            );
+            return;
+        };
+        let cards = self.cards();
+        let visible = self.visible();
+        let fit = (area.width / MIN_COLUMN_WIDTH).max(1) as usize;
+        let shown = visible.len().min(fit);
+        let pos = visible.iter().position(|&c| c == self.column).unwrap_or(0);
+        // Scroll sideways only as far as it takes to show the selection.
+        let first = (pos + 1).saturating_sub(shown);
+        let width = area.width / shown.max(1) as u16;
+        for (slot, &c) in visible.iter().skip(first).take(shown).enumerate() {
+            let x = area.x + slot as u16 * width;
+            let w = if slot + 1 == shown { area.right() - x } else { width };
+            let rect = Rect { x, y: area.y, width: w, height: area.height };
+            let column = &snapshot.board.columns[c];
+            self.draw_column(frame, rect, &column.name, column.wip_limit, &cards[c], c, ctx);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_column(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        name: &str,
+        wip: Option<u32>,
+        cards: &[&Issue],
+        c: usize,
+        ctx: &DrawCtx,
+    ) {
+        let theme = ctx.theme;
+        let focused = c == self.column;
+        let count = cards.len();
+        let over = wip.is_some_and(|w| count as u32 > w);
+        let count_text = match wip {
+            Some(w) => format!(" {count}/{w} "),
+            None => format!(" {count} "),
+        };
+        let count_style = Style::new().fg(if over { theme.error } else { theme.muted });
+        let title_style = Style::new()
+            .fg(if focused { theme.accent } else { theme.fg })
+            .add_modifier(Modifier::BOLD);
+        let block = Block::bordered()
+            .border_type(BorderType::Plain)
+            .border_style(Style::new().fg(if focused { theme.border_focus } else { theme.border }))
+            .title(Line::from(vec![
+                Span::styled(format!(" {} ", name.to_uppercase()), title_style),
+                Span::styled(count_text, count_style),
+            ]));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        // Whole cards only: a card cut in half reads as a different card.
+        let rows = (inner.height / CARD_HEIGHT) as usize;
+        self.page.set(rows.max(1));
+        let cursor = self.cursor.get(c).copied().unwrap_or(0);
+        let offset = (cursor + 1).saturating_sub(rows);
+        for (slot, issue) in cards.iter().skip(offset).take(rows).enumerate() {
+            let rect =
+                Rect { y: inner.y + slot as u16 * CARD_HEIGHT, height: CARD_HEIGHT, ..inner };
+            card(frame, rect, issue, focused && offset + slot == cursor, ctx);
+        }
+        let below = count.saturating_sub(offset + rows);
+        if below > 0 && inner.height > 0 {
+            let more =
+                Line::from(Span::styled(format!(" ↓ {below} more "), Style::new().fg(theme.muted)));
+            let bottom = Rect { y: area.bottom() - 1, height: 1, ..inner };
+            frame.render_widget(Paragraph::new(more).right_aligned(), bottom);
+        }
+        if count == 0 {
+            let empty = Paragraph::new("No cards").style(Style::new().fg(theme.muted)).centered();
+            frame.render_widget(empty, Rect { height: 1, y: inner.y + 1, ..inner });
+        }
+    }
+}
+
+/// What drawing needs from the app beyond the view itself.
+pub struct DrawCtx<'a> {
+    pub theme: &'a Theme,
+    pub fields: &'a [CardField],
+    pub me: Option<&'a UserId>,
+}
+
+fn card(frame: &mut Frame, area: Rect, issue: &Issue, selected: bool, ctx: &DrawCtx) {
+    let theme = ctx.theme;
+    let show = |f: CardField| ctx.fields.contains(&f);
+    let block = Block::bordered()
+        .border_type(if selected { BorderType::Thick } else { BorderType::Rounded })
+        .border_style(Style::new().fg(if selected { theme.border_focus } else { theme.border }))
+        .style(if selected { Style::new().bg(theme.selection) } else { Style::default() });
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let cols = inner.width as usize;
+
+    let mut head = vec![];
+    if show(CardField::Type) {
+        head.extend([glyph::kind_span(issue, theme), Span::raw(" ")]);
+    }
+    if show(CardField::Key) {
+        head.push(Span::styled(issue.key.to_string(), Style::new().fg(theme.muted)));
+    }
+    let mut lines = vec![right_aligned(head, priority(issue, ctx), cols)];
+    let title_style = Style::new().fg(theme.fg).add_modifier(Modifier::BOLD);
+    let mut title = wrap(&issue.title, cols, 2);
+    title.resize(2, String::new());
+    lines.extend(title.into_iter().map(|t| Line::from(Span::styled(t, title_style))));
+    lines.push(meta(issue, ctx, cols));
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn priority(issue: &Issue, ctx: &DrawCtx) -> Vec<Span<'static>> {
+    match issue.priority {
+        Some(p) if ctx.fields.contains(&CardField::Priority) => {
+            vec![glyph::priority_span(p, ctx.theme)]
+        }
+        _ => vec![],
+    }
+}
+
+/// Labels, epic and estimate on the left, the assignee on the right; the
+/// left side gives way when the line is too short for both.
+fn meta(issue: &Issue, ctx: &DrawCtx, cols: usize) -> Line<'static> {
+    let theme = ctx.theme;
+    let show = |f: CardField| ctx.fields.contains(&f);
+    let mut right = vec![];
+    if show(CardField::Estimate)
+        && let Some(e) = &issue.estimate
+    {
+        right.push(Span::styled(format!("{} ", glyph::estimate(e)), Style::new().fg(theme.muted)));
+    }
+    if show(CardField::Assignee) {
+        let mine = ctx.me.is_some_and(|me| issue.is_assigned_to(me));
+        match &issue.assignee {
+            Some(a) => right.push(Span::styled(
+                a.initials(),
+                Style::new()
+                    .fg(if mine { theme.accent } else { theme.fg })
+                    .add_modifier(Modifier::BOLD),
+            )),
+            None => right.push(Span::styled("--", Style::new().fg(theme.muted))),
+        }
+        if mine {
+            right.push(Span::styled("★", Style::new().fg(theme.warn)));
+        }
+    }
+    let room = cols.saturating_sub(right.iter().map(|s| width(&s.content)).sum::<usize>() + 1);
+    let mut wanted: Vec<Span<'static>> = vec![];
+    if show(CardField::Labels) {
+        wanted.extend(issue.labels.iter().map(|l| glyph::label_badge(l, theme)));
+    }
+    let labels_width: usize = wanted.iter().map(|s| width(&s.content) + 1).sum();
+    if show(CardField::Epic)
+        && let Some(epic) = &issue.parent
+    {
+        // The epic takes what the labels leave, cut short rather than lost.
+        let text = truncate(&format!("◆ {}", epic.title), room.saturating_sub(labels_width).max(6));
+        wanted.push(Span::styled(text, Style::new().fg(theme.type_epic)));
+    }
+    let mut left: Vec<Span<'static>> = vec![];
+    let mut used = 0;
+    for span in wanted {
+        let w = width(&span.content);
+        if used + w <= room {
+            used += w + 1;
+            left.extend([span, Span::raw(" ")]);
+        }
+    }
+    right_aligned(left, right, cols)
+}
+
+fn right_aligned(
+    mut left: Vec<Span<'static>>,
+    right: Vec<Span<'static>>,
+    cols: usize,
+) -> Line<'static> {
+    let used: usize = left.iter().chain(&right).map(|s| width(&s.content)).sum();
+    left.push(Span::raw(" ".repeat(cols.saturating_sub(used))));
+    left.extend(right);
+    Line::from(left)
+}

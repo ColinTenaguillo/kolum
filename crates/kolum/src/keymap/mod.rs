@@ -114,6 +114,8 @@ const DEFAULTS: &[(Context, &str, Action)] = &[
     (C::Board, "/", A::Filter),
     (C::Board, "n", A::NextMatch),
     (C::Board, "N", A::PrevMatch),
+    // Not `close`: Esc out of habit must not quit the app.
+    (C::Board, "<Esc>", A::ClearFilter),
     (C::Board, "t", A::Transition),
     (C::Board, "<leader>a", A::Assign),
     (C::Board, "<leader>A", A::AssignMe),

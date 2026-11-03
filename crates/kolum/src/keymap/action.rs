@@ -42,6 +42,7 @@ actions! {
     Filter "filter" "Filter the board as you type",
     NextMatch "next_match" "Next card matching the filter",
     PrevMatch "prev_match" "Previous card matching the filter",
+    ClearFilter "clear_filter" "Clear the filter",
     Transition "transition" "Change the status",
     Assign "assign" "Assign to someone",
     AssignMe "assign_me" "Assign to me",
