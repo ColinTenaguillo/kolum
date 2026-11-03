@@ -14,8 +14,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 use std::cell::Cell;
 
-/// Border, key line, two lines of title, meta line, border.
-const CARD_HEIGHT: u16 = 6;
+/// Border, key line, two lines of title, the epic, the labels with the
+/// estimate and assignee, border.
+const CARD_HEIGHT: u16 = 7;
 const MIN_COLUMN_WIDTH: u16 = 28;
 
 #[derive(Debug, Default)]
@@ -450,6 +451,7 @@ fn card(frame: &mut Frame, area: Rect, issue: &Issue, selected: bool, marked: bo
     let mut title = wrap(&issue.title, cols, 2);
     title.resize(2, String::new());
     lines.extend(title.into_iter().map(|t| Line::from(Span::styled(t, title_style))));
+    lines.push(epic(issue, ctx, cols));
     lines.push(meta(issue, ctx, cols));
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -465,6 +467,20 @@ fn priority(issue: &Issue, ctx: &DrawCtx) -> Vec<Span<'static>> {
 
 /// Labels, epic and estimate on the left, the assignee on the right; the
 /// left side gives way when the line is too short for both.
+/// The epic on a line of its own, under the title. Empty when there is
+/// none, so every card's lines stay where the eye expects them.
+fn epic(issue: &Issue, ctx: &DrawCtx, cols: usize) -> Line<'static> {
+    match &issue.parent {
+        Some(epic) if ctx.fields.contains(&CardField::Epic) => Line::from(Span::styled(
+            truncate(&format!("◆ {}", epic.title), cols),
+            Style::new().fg(ctx.theme.type_epic),
+        )),
+        _ => Line::default(),
+    }
+}
+
+/// The labels on the left, the estimate and the assignee on the right;
+/// labels that do not fit are left off rather than cut.
 fn meta(issue: &Issue, ctx: &DrawCtx, cols: usize) -> Line<'static> {
     let theme = ctx.theme;
     let show = |f: CardField| ctx.fields.contains(&f);
@@ -490,30 +506,19 @@ fn meta(issue: &Issue, ctx: &DrawCtx, cols: usize) -> Line<'static> {
         }
     }
     let room = cols.saturating_sub(right.iter().map(|s| width(&s.content)).sum::<usize>() + 1);
-    let mut wanted: Vec<Span<'static>> = vec![];
-    if show(CardField::Labels) {
-        wanted.extend(issue.labels.iter().map(|l| glyph::label_badge(l, theme)));
-    }
-    let labels_width: usize = wanted.iter().map(|s| width(&s.content) + 1).sum();
-    if show(CardField::Epic)
-        && let Some(epic) = &issue.parent
-    {
-        // The epic takes what the labels leave, cut short rather than lost.
-        let text = truncate(&format!("◆ {}", epic.title), room.saturating_sub(labels_width).max(6));
-        wanted.push(Span::styled(text, Style::new().fg(theme.type_epic)));
-    }
     let mut left: Vec<Span<'static>> = vec![];
     let mut used = 0;
-    for span in wanted {
-        let w = width(&span.content);
-        if used + w <= room {
-            used += w + 1;
-            left.extend([span, Span::raw(" ")]);
+    if show(CardField::Labels) {
+        for badge in issue.labels.iter().map(|l| glyph::label_badge(l, theme)) {
+            let w = width(&badge.content);
+            if used + w <= room {
+                used += w + 1;
+                left.extend([badge, Span::raw(" ")]);
+            }
         }
     }
     right_aligned(left, right, cols)
 }
-
 fn right_aligned(
     mut left: Vec<Span<'static>>,
     right: Vec<Span<'static>>,

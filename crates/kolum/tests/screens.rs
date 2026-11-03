@@ -488,9 +488,9 @@ async fn empty_columns_can_be_hidden() {
 async fn half_pages_move_by_what_is_on_screen() {
     let mut app = loaded().await;
     press(&mut app, "ll");
-    screen(&mut app, 150, 40); // 6 cards a column fit: a half page is 3
+    screen(&mut app, 150, 40); // 5 cards a column fit: a half page is 2
     press(&mut app, "<C-d>");
-    assert_eq!(selected(&app), "ACME-13");
+    assert_eq!(selected(&app), "ACME-11");
     press(&mut app, "<C-u>");
     assert_eq!(selected(&app), "ACME-5");
 }
@@ -930,7 +930,11 @@ async fn swimlanes_group_each_column_and_navigation_follows_them() {
     press(&mut app, "s");
     assert!(screen(&mut app, 150, 60).contains("── Highest"));
     press(&mut app, "s");
-    assert!(!screen(&mut app, 150, 60).contains("── "), "and off again");
+    let off = screen(&mut app, 150, 60);
+    assert!(
+        !off.contains("── ◆") && !off.contains("── No epic") && !off.contains("── Highest"),
+        "and off again"
+    );
 }
 
 #[tokio::test]
@@ -1172,5 +1176,30 @@ async fn enter_in_space_u_takes_the_highlighted_person_even_when_someone_is_show
     assert!(
         header.contains("/@BrunoCosta") && !header.contains("Ana"),
         "Bruno instead of Ana: {header}"
+    );
+}
+
+#[tokio::test]
+async fn a_card_has_its_epic_under_the_title_and_its_labels_under_the_epic() {
+    let mut app = loaded().await;
+    let shown = screen(&mut app, 150, 40);
+    let lines: Vec<&str> = shown.lines().collect();
+    let row = |text: &str| {
+        lines.iter().position(|l| l.contains(text)).unwrap_or_else(|| panic!("{text} in {shown}"))
+    };
+    // ACME-9, the first card of the Backlog.
+    let key = row("■ ACME-9");
+    assert_eq!(row("Enforce SSO per"), key + 1, "the title under the key");
+    assert_eq!(row("organisation"), key + 2, "on two lines");
+    assert_eq!(row("┃◆ Single sign-on"), key + 3, "then the epic, whole");
+    assert!(
+        lines[key + 4].contains("┃ auth ") && lines[key + 4].contains("5 --┃"),
+        "then the labels, estimate and assignee"
+    );
+    // A card with no epic keeps its lines where they are.
+    let ten = row("● ACME-10");
+    assert!(
+        lines[ten + 4].contains(" backend ") && lines[ten + 4].contains("3 DP"),
+        "labels stay on the last line"
     );
 }
