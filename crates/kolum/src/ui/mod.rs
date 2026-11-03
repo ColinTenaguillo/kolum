@@ -38,6 +38,8 @@ pub enum Effect {
     Send(Command),
     Copy(String),
     Open(String),
+    /// The board toggles changed: keep them for the next run.
+    SaveState(crate::config::UiState),
     /// Hand the terminal to `$EDITOR` with this text, and give the result
     /// to [`App::on_edited`].
     Edit {
@@ -170,6 +172,7 @@ impl App {
         };
         let mut board = BoardView::default();
         board.hide_empty = settings.ui.hide_empty_columns;
+        board.swimlanes = settings.ui.swimlanes;
         App {
             keymap: settings.keymap,
             resolver: Resolver::default(),
@@ -507,11 +510,22 @@ impl App {
                 input.set(&b.filter);
                 self.prompt = Some(Prompt { kind: PromptKind::Filter, input });
             }
+            Action::ToggleSwimlanes => {
+                let key = b.selected().map(|i| i.key.clone());
+                b.swimlanes = b.swimlanes.next();
+                if let Some(key) = key {
+                    b.select(&key);
+                }
+                let name = b.swimlanes.name();
+                self.say(name[..1].to_uppercase() + &name[1..], Level::Info);
+                self.save_state();
+            }
             Action::ToggleEmptyColumns => {
                 b.hide_empty = !b.hide_empty;
                 b.clamp();
                 let what = if b.hide_empty { "Hiding" } else { "Showing" };
                 self.say(format!("{what} empty columns"), Level::Info);
+                self.save_state();
             }
             Action::OpenDetail => {
                 if let Some(key) = b.selected().map(|i| i.key.clone()) {
@@ -542,6 +556,14 @@ impl App {
                 self.issue_action(action, keys);
             }
         }
+    }
+
+    fn save_state(&mut self) {
+        let state = crate::config::UiState {
+            hide_empty_columns: self.board.hide_empty,
+            swimlanes: self.board.swimlanes,
+        };
+        self.effects.push(Effect::SaveState(state));
     }
 
     fn detail_action(&mut self, action: Action, count: Option<u32>) {

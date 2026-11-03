@@ -42,7 +42,7 @@ pub enum CardField {
     Assignee,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Swimlanes {
     #[default]
@@ -50,6 +50,27 @@ pub enum Swimlanes {
     Epic,
     Assignee,
     Priority,
+}
+
+impl Swimlanes {
+    /// `s` goes round them in this order.
+    pub fn next(self) -> Swimlanes {
+        match self {
+            Swimlanes::None => Swimlanes::Epic,
+            Swimlanes::Epic => Swimlanes::Assignee,
+            Swimlanes::Assignee => Swimlanes::Priority,
+            Swimlanes::Priority => Swimlanes::None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Swimlanes::None => "no swimlanes",
+            Swimlanes::Epic => "swimlanes by epic",
+            Swimlanes::Assignee => "swimlanes by assignee",
+            Swimlanes::Priority => "swimlanes by priority",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -109,6 +130,29 @@ pub struct PickerConfig {
 impl Default for PickerConfig {
     fn default() -> Self {
         PickerConfig { layout: PickerLayout::Horizontal, remote_debounce_ms: 250 }
+    }
+}
+
+/// What the board toggles leave behind for the next run: `ze` and `s`.
+/// Kept apart from config.toml, which is the user's file and never
+/// rewritten.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
+pub struct UiState {
+    pub hide_empty_columns: bool,
+    pub swimlanes: Swimlanes,
+}
+
+impl UiState {
+    /// `None` when there is no state yet, or it does not read.
+    pub fn load(path: &Path) -> Option<UiState> {
+        toml::from_str(&std::fs::read_to_string(path).ok()?).ok()
+    }
+
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(path, toml::to_string(self).map_err(std::io::Error::other)?)
     }
 }
 
@@ -222,6 +266,19 @@ mod tests {
         assert_eq!(config.ui.swimlanes, Swimlanes::None);
         assert_eq!(problems.len(), 1);
         assert!(problems[0].contains("sideways"), "{}", problems[0]);
+    }
+
+    #[test]
+    fn the_ui_state_round_trips_and_a_bad_file_is_none() {
+        let dir = std::env::temp_dir().join(format!("kolum-state-{}", std::process::id()));
+        let path = dir.join("state.toml");
+        assert_eq!(UiState::load(&path), None);
+        let state = UiState { hide_empty_columns: true, swimlanes: Swimlanes::Assignee };
+        state.save(&path).unwrap();
+        assert_eq!(UiState::load(&path), Some(state));
+        std::fs::write(&path, "swimlanes = 3").unwrap();
+        assert_eq!(UiState::load(&path), None);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

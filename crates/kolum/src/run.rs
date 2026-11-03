@@ -13,6 +13,7 @@ use std::time::Instant;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 pub async fn run(
+    state_file: Option<std::path::PathBuf>,
     terminal: &mut DefaultTerminal,
     mut app: App,
     service: Service,
@@ -30,7 +31,7 @@ pub async fn run(
             }
             for effect in effects {
                 let Effect::Edit { purpose, text } = effect else {
-                    perform(effect, &service);
+                    perform(effect, &service, state_file.as_deref());
                     continue;
                 };
                 // The editor needs the terminal and stdin to itself:
@@ -79,11 +80,18 @@ async fn sleep_until(deadline: Option<tokio::time::Instant>) {
     }
 }
 
-fn perform(effect: Effect, service: &Service) {
+fn perform(effect: Effect, service: &Service, state_file: Option<&std::path::Path>) {
     match effect {
         Effect::Send(command) => service.send(command),
         // Handled by the loop, which owns the terminal.
         Effect::Edit { .. } => {}
+        Effect::SaveState(state) => {
+            if let Some(path) = state_file
+                && let Err(e) = state.save(path)
+            {
+                tracing::warn!("saving {}: {e}", path.display());
+            }
+        }
         Effect::Copy(text) => {
             let mut out = std::io::stdout();
             let _ = out.write_all(osc52(&text).as_bytes()).and_then(|_| out.flush());

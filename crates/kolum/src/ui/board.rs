@@ -2,7 +2,7 @@
 
 use super::glyph;
 use super::text::{truncate, width, wrap};
-use crate::config::CardField;
+use crate::config::{CardField, Swimlanes};
 use crate::theme::Theme;
 use kolum_app::BoardSnapshot;
 use kolum_domain::{Issue, IssueKey, UserId};
@@ -27,6 +27,7 @@ pub struct BoardView {
     /// The live `/` filter: cards whose key, title or labels contain it.
     pub filter: String,
     pub hide_empty: bool,
+    pub swimlanes: Swimlanes,
     /// Cards per column on screen at the last draw, for half-page moves.
     page: Cell<usize>,
     /// Visual mode: where the range started, in the current column.
@@ -58,10 +59,17 @@ impl BoardView {
     /// The cards of every column, after the filter.
     pub fn cards(&self) -> Vec<Vec<&Issue>> {
         let Some(snapshot) = &self.snapshot else { return vec![] };
+        let mode = self.swimlanes;
         snapshot
             .columns()
             .into_iter()
-            .map(|col| col.into_iter().filter(|i| matches(i, &self.filter)).collect())
+            .map(|col| {
+                let mut col: Vec<&Issue> =
+                    col.into_iter().filter(|i| matches(i, &self.filter)).collect();
+                // Stable: within a lane, the provider's order stands.
+                col.sort_by_cached_key(|i| lane(mode, i).map(|(key, _)| key));
+                col
+            })
             .collect()
     }
 
@@ -167,6 +175,22 @@ impl BoardView {
         self.cursor.get(self.column).copied().unwrap_or(0)
     }
 
+    /// A column's cards as drawn: a heading where a new lane starts.
+    fn items(&self, cards: &[&Issue]) -> Vec<Item> {
+        let mut items = vec![];
+        let mut current: Option<String> = None;
+        for (row, issue) in cards.iter().enumerate() {
+            if let Some((_, label)) = lane(self.swimlanes, issue)
+                && current.as_ref() != Some(&label)
+            {
+                items.push(Item::Lane(label.clone()));
+                current = Some(label);
+            }
+            items.push(Item::Card(row));
+        }
+        items
+    }
+
     pub fn half_page(&self) -> i64 {
         (self.page.get() / 2).max(1) as i64
     }
@@ -250,19 +274,38 @@ impl BoardView {
         let inner = block.inner(area);
         frame.render_widget(block, area);
         // Whole cards only: a card cut in half reads as a different card.
-        let rows = (inner.height / CARD_HEIGHT) as usize;
-        self.page.set(rows.max(1));
+        self.page.set((inner.height / CARD_HEIGHT).max(1) as usize);
         let cursor = self.cursor.get(c).copied().unwrap_or(0);
-        let offset = (cursor + 1).saturating_sub(rows);
+        let items = self.items(cards);
+        let start = first_shown(&items, cursor, inner.height);
         let range = self.range().filter(|_| focused);
-        for (slot, issue) in cards.iter().skip(offset).take(rows).enumerate() {
-            let rect =
-                Rect { y: inner.y + slot as u16 * CARD_HEIGHT, height: CARD_HEIGHT, ..inner };
-            let row = offset + slot;
-            let marked = range.is_some_and(|(a, b)| (a..=b).contains(&row));
-            card(frame, rect, issue, focused && row == cursor, marked, ctx);
+        let mut y = inner.y;
+        let mut last_card = None;
+        for item in &items[start..] {
+            let height = item.height();
+            if y + height > inner.bottom() {
+                break;
+            }
+            let rect = Rect { y, height, ..inner };
+            match item {
+                Item::Lane(label) => {
+                    let text = truncate(&format!("── {label} "), inner.width as usize);
+                    let rule = "─".repeat((inner.width as usize).saturating_sub(width(&text)));
+                    let line = Line::from(Span::styled(
+                        format!("{text}{rule}"),
+                        Style::new().fg(theme.muted),
+                    ));
+                    frame.render_widget(Paragraph::new(line), rect);
+                }
+                &Item::Card(row) => {
+                    let marked = range.is_some_and(|(a, b)| (a..=b).contains(&row));
+                    card(frame, rect, cards[row], focused && row == cursor, marked, ctx);
+                    last_card = Some(row);
+                }
+            }
+            y += height;
         }
-        let below = count.saturating_sub(offset + rows);
+        let below = count.saturating_sub(last_card.map_or(0, |r| r + 1));
         if below > 0 && inner.height > 0 {
             let more =
                 Line::from(Span::styled(format!(" ↓ {below} more "), Style::new().fg(theme.muted)));
@@ -274,6 +317,63 @@ impl BoardView {
             frame.render_widget(empty, Rect { height: 1, y: inner.y + 1, ..inner });
         }
     }
+}
+
+/// One row of a column: a card, or the heading of the swimlane after it.
+enum Item {
+    Lane(String),
+    Card(usize),
+}
+
+impl Item {
+    fn height(&self) -> u16 {
+        match self {
+            Item::Lane(_) => 1,
+            Item::Card(_) => CARD_HEIGHT,
+        }
+    }
+}
+
+/// The first row to draw so that `cursor`'s card is on screen: as far
+/// down as needed and no further, the lane heading above it included.
+fn first_shown(items: &[Item], cursor: usize, height: u16) -> usize {
+    let Some(at) = items.iter().position(|i| matches!(i, Item::Card(r) if *r == cursor)) else {
+        return 0;
+    };
+    let mut used = 0;
+    let mut start = at + 1;
+    while start > 0 && used + items[start - 1].height() <= height {
+        start -= 1;
+        used += items[start].height();
+    }
+    start.min(at)
+}
+
+/// The lane an issue belongs to, as a sort key and a heading. Issues with
+/// no value go last, in a lane of their own.
+fn lane(mode: Swimlanes, issue: &Issue) -> Option<((bool, String), String)> {
+    let (value, none): (Option<(String, String)>, &str) = match mode {
+        Swimlanes::None => return None,
+        Swimlanes::Epic => (
+            issue.parent.as_ref().map(|p| (p.title.to_lowercase(), format!("◆ {}", p.title))),
+            "No epic",
+        ),
+        Swimlanes::Assignee => (
+            issue
+                .assignee
+                .as_ref()
+                .map(|u| (u.display_name.to_lowercase(), u.display_name.clone())),
+            "Unassigned",
+        ),
+        Swimlanes::Priority => (
+            issue.priority.map(|p| (format!("{:?}", p as u8), p.name().to_string())),
+            "No priority",
+        ),
+    };
+    Some(match value {
+        Some((key, label)) => ((false, key), label),
+        None => ((true, String::new()), none.to_string()),
+    })
 }
 
 /// What drawing needs from the app beyond the view itself.

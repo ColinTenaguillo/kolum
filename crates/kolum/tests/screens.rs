@@ -251,8 +251,8 @@ async fn the_theme_changes_live_and_a_preview_is_undone_on_close() {
 #[tokio::test]
 async fn unfinished_actions_say_so_instead_of_doing_nothing() {
     let mut app = loaded().await;
-    press(&mut app, "s");
-    assert!(screen(&mut app, 120, 30).contains("`toggle_swimlanes` is not available yet"));
+    press(&mut app, ":assign<CR>");
+    assert!(screen(&mut app, 120, 30).contains(":assign is not available yet"));
 }
 
 #[tokio::test]
@@ -471,7 +471,13 @@ async fn empty_columns_can_be_hidden() {
     let mut app = loaded().await;
     press(&mut app, "/ACME-29<CR>");
     assert!(screen(&mut app, 150, 30).contains("No cards"));
+    app.take_effects();
     press(&mut app, "ze");
+    let saved = kolum::config::UiState {
+        hide_empty_columns: true,
+        swimlanes: kolum::config::Swimlanes::None,
+    };
+    assert_eq!(app.take_effects(), [Effect::SaveState(saved)], "kept for the next run");
     let shown = screen(&mut app, 150, 30);
     assert!(!shown.contains("No cards") && shown.contains("IN REVIEW"), "{shown}");
     assert_eq!(selected(&app), "ACME-29");
@@ -897,4 +903,31 @@ async fn visual_mode_acts_on_a_range_of_cards() {
     assert!(!screen(&mut app, 150, 50).contains("VISUAL"), "another column ends it");
     press(&mut app, "vv");
     assert!(!screen(&mut app, 150, 50).contains("VISUAL"), "v again ends it");
+}
+
+#[tokio::test]
+async fn swimlanes_group_each_column_and_navigation_follows_them() {
+    let mut app = loaded().await;
+    press(&mut app, "ll");
+    let before = selected(&app).to_string();
+    press(&mut app, "s");
+    let shown = screen(&mut app, 150, 60);
+    assert!(shown.contains("Swimlanes by epic"));
+    assert!(shown.contains("── ◆ Billing revamp") && shown.contains("── No epic"), "{shown}");
+    assert_eq!(selected(&app), before, "the highlight stays on its card");
+    press(&mut app, "gg");
+    assert_eq!(selected(&app), "ACME-13", "In Progress starts with the Billing revamp lane");
+    press(&mut app, "G");
+    let last = selected(&app).to_string();
+    assert!(
+        ["ACME-10", "ACME-11", "ACME-20", "ACME-21", "ACME-30"].contains(&last.as_str()),
+        "{last}: no epic, last"
+    );
+
+    press(&mut app, "s");
+    assert!(screen(&mut app, 150, 60).contains("── Colin Tenaguillo"));
+    press(&mut app, "s");
+    assert!(screen(&mut app, 150, 60).contains("── Highest"));
+    press(&mut app, "s");
+    assert!(!screen(&mut app, 150, 60).contains("── "), "and off again");
 }

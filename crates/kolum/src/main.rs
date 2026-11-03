@@ -161,8 +161,15 @@ fn app() -> anyhow::Result<()> {
     tracing::info!("starting on the {} provider", provider.name());
     let writable = provider.capabilities().supports(kolum_domain::Capability::Write);
     let settings = Settings { board, writable, ..settings };
-    let cache = config::cache_dir().map(|d| kolum_app::Cache::new(d.join(profile)));
-    let result = run_tui(provider, cache, settings);
+    let cache = config::cache_dir().map(|d| kolum_app::Cache::new(d.join(&profile)));
+    // The toggles of the last run win over the config's starting values.
+    let state_file = config::cache_dir().map(|d| d.join(profile).join("state.toml"));
+    let mut settings = settings;
+    if let Some(state) = state_file.as_deref().and_then(config::UiState::load) {
+        settings.ui.hide_empty_columns = state.hide_empty_columns;
+        settings.ui.swimlanes = state.swimlanes;
+    }
+    let result = run_tui(provider, cache, state_file, settings);
     if args.debug
         && let Some(log) = log
     {
@@ -198,6 +205,7 @@ fn load(args: &Args, config_dir: Option<PathBuf>) -> (config::Config, Settings) 
 fn run_tui(
     provider: Arc<dyn Provider>,
     cache: Option<kolum_app::Cache>,
+    state_file: Option<PathBuf>,
     settings: Settings,
 ) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
@@ -227,7 +235,7 @@ fn run_tui(
             restore(info);
             std::process::exit(1);
         }));
-        let result = kolum::run::run(&mut terminal, app, service, events, wake).await;
+        let result = kolum::run::run(state_file, &mut terminal, app, service, events, wake).await;
         ratatui::restore();
         result
     })

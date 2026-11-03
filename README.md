@@ -39,7 +39,9 @@ The defaults follow vim. Counts work on motions (`3j`, `5G`), sequences wait
 | `Space a` `Space A` | assign · assign to me |
 | `i` · `e` | comment · edit the title and description, in `$EDITOR` as Markdown |
 | `yy` `yu` `o` | copy the key, copy the URL, open in the browser |
-| `ze` | hide or show empty columns |
+| `v` | visual mode: a range of cards in a column for one action (`t` `H` `L` `Space a` `yy` `C`) |
+| `s` · `ze` | cycle swimlanes (epic, assignee, priority, none) · hide or show empty columns; both remembered |
+| `c` · `C` | create an issue in `$EDITOR` · clone the card |
 | `r` | reload the board from the provider |
 | `:` | `:theme <name>`, `:board [id]`, `:jql [query]`, `:help`, `:refresh`, `:q` |
 | `q` `Esc` | close the view; `q` on the board quits |
@@ -185,8 +187,10 @@ Also done: the cache with background sync, remote search in the picker
 Also done: transitions (`H` `L` `t`), assigning, comments and `$EDITOR` edits,
 with optimistic updates and rollback, on the fake provider and Jira.
 
-Next: swimlanes, visual mode with grouped actions, creating and cloning, the
-first-run wizard. Actions bound but not built yet say so when pressed.
+Also done: swimlanes, visual mode with grouped actions, creating and cloning.
+
+Next: the first-run wizard, Jira Data Center against a live server, a second
+provider (GitHub Projects) to prove the abstraction, images, packaging. Actions bound but not built yet say so when pressed.
 
 ## License
 
