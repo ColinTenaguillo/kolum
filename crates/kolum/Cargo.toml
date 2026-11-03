@@ -7,6 +7,12 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+
+# `publish = false` hides the package from dist too; this puts it back,
+# since the binaries from a tag are the release.
+[package.metadata.dist]
+dist = true
 
 [[bin]]
 name = "kolum"

@@ -1,0 +1,32 @@
+# cocogitto: conventional commits checked, changelog and version bumps
+# generated from them. `cog check` reads the history, `cog changelog`
+# prints what changed, `cog bump --auto` cuts a release.
+
+# Tags are `vX.Y.Z`, which is what release.yml triggers on.
+tag_prefix = "v"
+branch_whitelist = ["main"]
+ignore_merge_commits = true
+
+# Before the tag: the version goes into the workspace's Cargo.toml, and
+# `cargo check` carries it into Cargo.lock without touching a dependency.
+pre_bump_hooks = [
+  "perl -pi -e 's/^version = \".*\"/version = \"{{version}}\"/ if /^version/ && !$done++' Cargo.toml",
+  "cargo check --quiet",
+  "cargo test --quiet",
+]
+
+# After the tag: pushing it is what builds the release.
+post_bump_hooks = [
+  "git push",
+  "git push origin {{version_tag}}",
+]
+
+[changelog]
+path = "CHANGELOG.md"
+template = "remote"
+remote = "github.com"
+owner = "ColinTenaguillo"
+repository = "kolum"
+authors = [
+  { signature = "Colin Tenaguillo", username = "ColinTenaguillo" },
+]

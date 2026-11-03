@@ -1,0 +1,27 @@
+# Maintainer: Colin Tenaguillo <36203690+ColinTenaguillo@users.noreply.github.com>
+#
+# The binaries a release tag builds (release.yml). On each release: bump
+# pkgver, then `updpkgsums` fills the checksums of the new archives.
+pkgname=kolum-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Kanban client for ticket trackers in the terminal: vim keys, a fuzzy picker, Jira and GitHub Projects"
+arch=('x86_64' 'aarch64')
+url="https://github.com/ColinTenaguillo/kolum"
+license=('GPL-3.0-or-later')
+depends=('gcc-libs' 'glibc')
+provides=('kolum')
+conflicts=('kolum')
+options=('!strip' '!debug')
+_base="$url/releases/download/v$pkgver"
+source_x86_64=("$_base/kolum-x86_64-unknown-linux-gnu.tar.xz")
+source_aarch64=("$_base/kolum-aarch64-unknown-linux-gnu.tar.xz")
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+  cd "kolum-$CARCH-unknown-linux-gnu"
+  install -Dm755 kolum -t "$pkgdir/usr/bin"
+  install -Dm644 README.md -t "$pkgdir/usr/share/doc/kolum"
+  install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname"
+}
