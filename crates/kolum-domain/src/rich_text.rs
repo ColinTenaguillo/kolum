@@ -283,8 +283,9 @@ mod markdown {
                 TagEnd::Paragraph => self.flush(),
                 TagEnd::Heading(_) => {
                     let content = self.inlines.take().unwrap_or_default();
-                    let level = self.heading.take().unwrap_or(1);
-                    self.push_block(Block::Heading { level, content });
+                    if let Some(level) = self.heading.take() {
+                        self.push_block(Block::Heading { level, content });
+                    }
                 }
                 TagEnd::BlockQuote(_) | TagEnd::Item => self.close(),
                 TagEnd::List(_) => {
@@ -394,6 +395,26 @@ mod tests {
                     Inline::text("."),
                 ]),
             ]
+        );
+    }
+
+    #[test]
+    fn markdown_marks_nest_and_close_and_soft_breaks_are_spaces() {
+        let rt = RichText::from_markdown("*it* ~~gone~~ **_both_** plain\nnext");
+        let marks = |bold, italic, strike| Marks { bold, italic, code: false, strike };
+        let run = |t: &str, m| Inline::Text { text: t.into(), marks: m };
+        assert_eq!(
+            rt.blocks,
+            vec![Block::Paragraph(vec![
+                run("it", marks(false, true, false)),
+                Inline::text(" "),
+                run("gone", marks(false, false, true)),
+                Inline::text(" "),
+                run("both", marks(true, true, false)),
+                Inline::text(" plain"),
+                Inline::text(" "),
+                Inline::text("next"),
+            ])]
         );
     }
 

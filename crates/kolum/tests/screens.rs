@@ -459,3 +459,48 @@ async fn empty_columns_can_be_hidden() {
     assert!(!shown.contains("No cards") && shown.contains("IN REVIEW"), "{shown}");
     assert_eq!(selected(&app), "ACME-29");
 }
+
+#[tokio::test]
+async fn half_pages_move_by_what_is_on_screen() {
+    let mut app = loaded().await;
+    press(&mut app, "ll");
+    screen(&mut app, 150, 40); // 6 cards a column fit: a half page is 3
+    press(&mut app, "<C-d>");
+    assert_eq!(selected(&app), "ACME-13");
+    press(&mut app, "<C-u>");
+    assert_eq!(selected(&app), "ACME-5");
+}
+
+#[tokio::test]
+async fn the_board_says_it_is_loading() {
+    let mut app = App::new(settings(), Arc::new(|| {}));
+    assert!(screen(&mut app, 80, 20).contains("Loading the board…"));
+}
+
+#[tokio::test]
+async fn the_command_line_edits_like_readline() {
+    let mut app = loaded().await;
+    press(&mut app, ":theme gruvbx<Left><Left><Right>o<Right><CR>");
+    assert_eq!(app.theme(), &kolum::theme::Theme::builtin("gruvbox").unwrap());
+}
+
+#[tokio::test]
+async fn theme_files_join_the_theme_picker() {
+    let dir = std::env::temp_dir().join(format!("kolum-screens-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("zebra.toml"), "base = \"light\"\naccent = \"#123456\"\n").unwrap();
+    std::fs::write(dir.join("dark.toml"), "base = \"light\"\n").unwrap();
+    let mut settings = settings();
+    settings.themes_dir = Some(dir.clone());
+    let mut app = loaded_with(settings).await;
+    press(&mut app, "<Space>t");
+    settle(&mut app);
+    let shown = screen(&mut app, 120, 40);
+    assert_eq!(shown.matches("dark").count(), 1, "a file named like a built-in is not listed twice");
+    press(&mut app, "zebra");
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    assert_eq!(app.theme().accent, ratatui::style::Color::Rgb(0x12, 0x34, 0x56), "confirmed, not just previewed");
+    assert!(!screen(&mut app, 120, 40).contains(" Themes "));
+    std::fs::remove_dir_all(dir).unwrap();
+}

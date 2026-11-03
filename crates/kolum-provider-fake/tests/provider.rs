@@ -101,3 +101,58 @@ async fn reading_does_not_touch_and_writing_stamps_updated() {
     let changed = p.board_issues(&board_id(), since, None).await.unwrap().items;
     assert_eq!(changed.iter().map(|i| &i.key).collect::<Vec<_>>(), [&key]);
 }
+
+#[tokio::test]
+async fn transitions_lead_away_from_the_current_status_by_its_name() {
+    let p = FakeProvider::new();
+    let key = IssueKey::new("ACME-5");
+    let current = p.issue(&key).await.unwrap().status;
+    let transitions = p.transitions(&key).await.unwrap();
+    assert_eq!(transitions.len(), 5, "every status but the current one");
+    assert!(transitions.iter().all(|t| t.to.id != current.id));
+    assert!(transitions.iter().all(|t| t.name == t.to.name));
+    let unknown = p.transition(&key, &TransitionId::new("to-nowhere")).await;
+    assert_eq!(unknown, Err(DomainError::NotFound("transition to-nowhere".into())));
+    assert!(p.transition(&IssueKey::new("ACME-999"), &transitions[0].id).await.is_err());
+}
+
+#[tokio::test]
+async fn comments_come_after_their_issue() {
+    let p = FakeProvider::new();
+    for key in ["ACME-5", "ACME-13"] {
+        let key = IssueKey::new(key);
+        let created = p.issue(&key).await.unwrap().created;
+        let comments = p.comments(&key).await.unwrap();
+        assert!(!comments.is_empty());
+        assert!(comments.iter().all(|c| c.created > created));
+        assert!(comments.windows(2).all(|w| w[0].created < w[1].created), "in order");
+    }
+}
+
+#[tokio::test]
+async fn the_signed_in_user_and_user_search() {
+    let p = FakeProvider::new();
+    assert_eq!(p.me().await.unwrap().display_name, "Colin Tenaguillo");
+    let found = p.find_users("SIL").await.unwrap();
+    assert_eq!(found.iter().map(|u| u.display_name.as_str()).collect::<Vec<_>>(), ["Ana Silva"]);
+    assert!(p.capabilities().supports(Capability::Write));
+    assert!(!p.capabilities().supports(Capability::NativeQuery));
+}
+
+#[tokio::test]
+async fn a_created_issue_starts_in_the_backlog_with_its_own_key() {
+    let p = FakeProvider::new();
+    let new = NewIssue {
+        project: "ACME".into(),
+        kind: IssueType { name: "Task".into(), kind: IssueKind::Task },
+        title: "Write the release notes".into(),
+        description: RichText::from_markdown("For 0.1"),
+        parent: Some(IssueKey::new("ACME-1")),
+    };
+    let issue = p.create(new).await.unwrap();
+    assert_eq!(issue.key.as_str(), "ACME-45");
+    assert_eq!((issue.status.name.as_str(), issue.kind.kind), ("Backlog", IssueKind::Task));
+    assert_eq!(issue.parent.unwrap().key.as_str(), "ACME-1");
+    assert!(issue.assignee.is_none() && issue.labels.is_empty());
+    assert_eq!(p.issue(&IssueKey::new("ACME-45")).await.unwrap().title, "Write the release notes");
+}
