@@ -1,6 +1,8 @@
 //! Turns key presses into actions: counts (`3j`), multi-key sequences
 //! (`gg`), and the wait for more when a sequence could go on (`g` while
-//! `gg` and `gd` both exist), which ends at the `timeoutlen` deadline.
+//! `gg` and `gd` both exist). The wait ends at the `timeoutlen` deadline
+//! only when the keys so far are a binding of their own (`y` and `yy`);
+//! otherwise it lasts until the next key.
 
 use super::{Action, Binding, Key};
 use crossterm::event::KeyCode;
@@ -70,7 +72,11 @@ impl Resolver {
         self.pending.push(key);
         let (exact, longer) = layers.lookup(&self.pending);
         if longer {
-            self.deadline = Some(now + timeout);
+            // A timeout only decides between "this, now" and "something
+            // longer": with nothing bound to the keys so far, there is
+            // nothing to decide, and the which-key popup stays until the
+            // next key, as long as reading it takes.
+            self.deadline = exact.map(|_| now + timeout);
             return Outcome::Pending;
         }
         let was_sequence = self.pending.len() > 1;
@@ -226,15 +232,23 @@ mod tests {
     }
 
     #[test]
-    fn a_timeout_on_an_unbound_prefix_drops_it() {
-        let board = table(&[("gg", Action::Top)]);
+    fn a_prefix_that_is_only_a_prefix_waits_for_as_long_as_it_takes() {
+        let board = table(&[("gg", Action::Top), ("<Esc>", Action::Close)]);
         let layers = Layers { tables: vec![&board], text: false };
         let mut r = Resolver::default();
         let now = Instant::now();
         feed_all(&mut r, &layers, "g", now);
-        assert_eq!(r.on_timeout(&layers, now + T), Some(Outcome::Dropped));
+        assert_eq!(r.deadline(), None, "nothing to fire at a timeout, so none");
+        assert_eq!(r.on_timeout(&layers, now + T * 100), None);
+        assert_eq!(r.typed(), "g", "still waiting, the popup still up");
+        assert_eq!(
+            feed_all(&mut r, &layers, "<Esc>", now),
+            [Outcome::Dropped],
+            "Esc lets go, and closes nothing"
+        );
+        assert!(r.is_idle());
+        assert_eq!(feed_all(&mut r, &layers, "gg", now).pop(), Some(fire(Action::Top, None)));
     }
-
     #[test]
     fn the_specific_layer_wins_over_global() {
         let board = table(&[("q", Action::Close)]);
