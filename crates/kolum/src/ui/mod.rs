@@ -52,6 +52,11 @@ pub enum EditPurpose {
     Comment(IssueKey),
     /// The title and the description, as `# Title` then Markdown.
     Describe(IssueKey),
+    /// A new issue of this type in this project.
+    Create {
+        project: String,
+        kind: kolum_domain::IssueType,
+    },
 }
 
 /// Everything from here down is instructions, not content.
@@ -371,6 +376,15 @@ impl App {
                 self.sync_detail(&key);
                 self.say(format!("{key}: {error}; undone"), Level::Error);
             }
+            Event::Created(issue) => {
+                let key = issue.key.clone();
+                if let Some(snapshot) = &mut self.board.snapshot {
+                    snapshot.merge(vec![*issue]);
+                    self.board.clamp();
+                    self.board.select(&key);
+                }
+                self.say(format!("Created {key}"), Level::Info);
+            }
             Event::Failed { what, error } => {
                 self.say(format!("{what} failed: {error}"), Level::Error)
             }
@@ -494,6 +508,11 @@ impl App {
                     self.issue_effect(action, &issue);
                 }
             }
+            Action::Create => {
+                if self.can_write() {
+                    self.create();
+                }
+            }
             Action::MoveCardLeft => self.move_card(-n),
             Action::MoveCardRight => self.move_card(n),
             _ => {
@@ -563,7 +582,12 @@ impl App {
     fn issue_action(&mut self, action: Action, keys: Vec<IssueKey>) {
         let writes = matches!(
             action,
-            Action::Transition | Action::Assign | Action::AssignMe | Action::Comment | Action::Edit
+            Action::Transition
+                | Action::Assign
+                | Action::AssignMe
+                | Action::Comment
+                | Action::Edit
+                | Action::Clone
         );
         if keys.is_empty() || (writes && !self.can_write()) {
             return;
@@ -577,6 +601,10 @@ impl App {
             },
             Action::Comment => self.edit(EditPurpose::Comment(keys[0].clone())),
             Action::Edit => self.edit(EditPurpose::Describe(keys[0].clone())),
+            Action::Clone => {
+                self.effects.push(Effect::Send(Command::Clone(keys[0].clone())));
+                self.say(format!("Cloning {}…", keys[0]), Level::Info);
+            }
             _ => self.unavailable(action),
         }
     }
@@ -724,14 +752,40 @@ impl App {
         }
     }
 
+    /// `c`: a new issue in the board's project, of the highlighted card's
+    /// type (a Task when there is none).
+    fn create(&mut self) {
+        let selected = self.board.selected();
+        let project = self
+            .board
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.board.project.as_ref().map(|p| p.key.clone()))
+            .or_else(|| {
+                selected.map(|i| i.key.as_str().split('-').next().unwrap_or_default().to_string())
+            });
+        let Some(project) = project else {
+            return self.say("No project to create the issue in", Level::Warn);
+        };
+        let task =
+            kolum_domain::IssueType { name: "Task".into(), kind: kolum_domain::IssueKind::Task };
+        let kind = selected.map_or(task, |i| i.kind.clone());
+        let text = format!(
+            "# \n\n{MARKER} a new {} in {project}: the first `# ` line is the title, the rest the description, in Markdown. No title cancels. -->\n",
+            kind.name
+        );
+        self.effects.push(Effect::Edit { purpose: EditPurpose::Create { project, kind }, text });
+    }
+
     fn edit(&mut self, purpose: EditPurpose) {
-        let (EditPurpose::Comment(key) | EditPurpose::Describe(key)) = &purpose;
+        let (EditPurpose::Comment(key) | EditPurpose::Describe(key)) = &purpose else { return };
         let Some(issue) = self.issue(key) else { return };
         let text = match &purpose {
             EditPurpose::Comment(_) => format!(
                 "\n\n{MARKER} a comment on {}: {}. Markdown above this line; leave it empty to cancel. -->\n",
                 issue.key, issue.title
             ),
+            EditPurpose::Create { .. } => return,
             EditPurpose::Describe(_) => format!(
                 "# {}\n\n{}\n{MARKER} {}: the first `# ` line is the title, the rest the description, in Markdown. -->\n",
                 issue.title,
@@ -760,6 +814,22 @@ impl App {
                     self.effects.push(Effect::Send(Command::Write { op, key: key.clone(), write }));
                     self.say(format!("Commenting on {key}…"), Level::Info);
                 }
+            }
+            EditPurpose::Create { project, kind } => {
+                let (title, body) = split_title(&text);
+                let Some(title) = title.filter(|t| !t.is_empty()) else {
+                    return self.say("No title: nothing created", Level::Info);
+                };
+                let description = kolum_domain::RichText::from_markdown(body);
+                let new = kolum_domain::NewIssue {
+                    project,
+                    kind,
+                    title: title.to_string(),
+                    description,
+                    parent: None,
+                };
+                self.effects.push(Effect::Send(Command::Create(new)));
+                self.say("Creating…", Level::Info);
             }
             EditPurpose::Describe(key) => {
                 let Some(issue) = self.issue(&key) else { return };
@@ -1156,16 +1226,26 @@ impl App {
 /// sent. The description is compared as Markdown, so a rich text that does
 /// not survive the round trip exactly is not rewritten for nothing.
 fn description_update(issue: &kolum_domain::Issue, text: &str) -> kolum_domain::IssueUpdate {
-    let (title, body) = match text.split_once('\n') {
-        Some((first, rest)) if first.starts_with("# ") => (Some(first[2..].trim()), rest.trim()),
-        None if text.starts_with("# ") => (Some(text[2..].trim()), ""),
-        _ => (None, text.trim()),
-    };
+    let (title, body) = split_title(text);
     kolum_domain::IssueUpdate {
         title: title.filter(|t| !t.is_empty() && *t != issue.title).map(String::from),
         description: (body != issue.description.to_markdown().trim())
             .then(|| kolum_domain::RichText::from_markdown(body)),
         ..Default::default()
+    }
+}
+
+/// `# Title` on the first line, if there is one, and the rest.
+fn split_title(text: &str) -> (Option<&str>, &str) {
+    let text = text.trim_start();
+    match text.split_once('\n') {
+        Some((first, rest)) if first.trim() == "#" || first.starts_with("# ") => {
+            (Some(first.trim_start_matches('#').trim()), rest.trim())
+        }
+        None if text.starts_with("# ") || text.trim() == "#" => {
+            (Some(text.trim_start_matches('#').trim()), "")
+        }
+        _ => (None, text.trim()),
     }
 }
 

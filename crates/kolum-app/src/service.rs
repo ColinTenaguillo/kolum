@@ -26,6 +26,8 @@ pub enum Command {
     },
     /// The transitions open to an issue now.
     Transitions(IssueKey),
+    Create(kolum_domain::NewIssue),
+    Clone(IssueKey),
     /// A change, under the id the optimistic ledger gave it.
     Write {
         op: u64,
@@ -73,6 +75,8 @@ pub enum Event {
         key: IssueKey,
         error: DomainError,
     },
+    /// A new issue, made by Create or Clone.
+    Created(Box<Issue>),
     /// `what` says which request failed, in words for a status line.
     Failed {
         what: String,
@@ -181,6 +185,14 @@ async fn run(
                 Event::Written { op, issue: provider.issue(&key).await.ok().map(Box::new), key }
             }
             Err(error) => Event::WriteFailed { op, key, error },
+        },
+        Command::Create(new) => match provider.create(new).await {
+            Ok(issue) => Event::Created(Box::new(issue)),
+            Err(error) => Event::Failed { what: "creating the issue".into(), error },
+        },
+        Command::Clone(key) => match provider.clone_issue(&key).await {
+            Ok(issue) => Event::Created(Box::new(issue)),
+            Err(error) => Event::Failed { what: format!("cloning {key}"), error },
         },
         Command::Search { id, query } => {
             let result = provider.search(&query, None).await.map(|page| page.items);
@@ -364,5 +376,30 @@ mod tests {
         else {
             panic!()
         };
+    }
+
+    #[tokio::test]
+    async fn create_and_clone_answer_with_the_new_issue() {
+        let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), None);
+        events.recv().await; // Me
+        service.send(Command::Clone(IssueKey::new("ACME-5")));
+        let Some(Event::Created(clone)) = events.recv().await else { panic!() };
+        assert_eq!(clone.title, "CLONE - Login times out after SSO redirect");
+        let kind =
+            kolum_domain::IssueType { name: "Task".into(), kind: kolum_domain::IssueKind::Task };
+        let new = kolum_domain::NewIssue {
+            project: "ACME".into(),
+            kind,
+            title: "T".into(),
+            description: Default::default(),
+            parent: None,
+        };
+        service.send(Command::Create(new));
+        let Some(Event::Created(created)) = events.recv().await else { panic!() };
+        assert_eq!(created.title, "T");
+        service.send(Command::Clone(IssueKey::new("NOPE-1")));
+        assert!(
+            matches!(events.recv().await, Some(Event::Failed { what, .. }) if what == "cloning NOPE-1")
+        );
     }
 }

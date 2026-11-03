@@ -834,3 +834,37 @@ async fn a_read_only_provider_is_told_not_tried() {
         assert!(screen(&mut app, 120, 30).contains("read-only"), "{keys}");
     }
 }
+
+#[tokio::test]
+async fn c_creates_through_the_editor_and_capital_c_clones() {
+    use kolum::ui::EditPurpose;
+    let mut app = loaded().await;
+    app.take_effects();
+    press(&mut app, "c");
+    let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else {
+        panic!("expected the editor")
+    };
+    let EditPurpose::Create { project, kind } = &purpose else { panic!("{purpose:?}") };
+    assert_eq!(
+        (project.as_str(), kind.name.as_str()),
+        ("ACME", "Story"),
+        "the board's project, the card's type"
+    );
+    assert!(text.contains("a new Story in ACME"));
+
+    app.on_edited(purpose.clone(), Ok(text.clone()));
+    assert!(app.take_effects().is_empty(), "no title: cancelled");
+    app.on_edited(purpose, Ok(format!("# Write the release notes\n\nFor *0.1*\n{text}")));
+    let Some(Effect::Send(Command::Create(new))) = app.take_effects().pop() else { panic!() };
+    assert_eq!(new.title, "Write the release notes");
+    assert_eq!(new.description.plain_text(), "For 0.1");
+
+    use kolum_domain::IssueWriter;
+    let created = FakeProvider::new().create(new).await.unwrap();
+    app.on_event(Event::Created(Box::new(created)));
+    assert_eq!(selected(&app), "ACME-45", "the new card is highlighted");
+    assert!(screen(&mut app, 150, 40).contains("Created ACME-45"));
+
+    press(&mut app, "C");
+    assert_eq!(app.take_effects(), [Effect::Send(Command::Clone(IssueKey::new("ACME-45")))]);
+}
