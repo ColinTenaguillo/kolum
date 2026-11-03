@@ -27,6 +27,7 @@ pub enum Pick {
     Copy(String),
     OpenUrl(String),
     Theme(String),
+    Board(kolum_domain::BoardId),
     /// Run an action as if its key were pressed (the command palette).
     Run(Action),
     /// The action means something here, but not yet.
@@ -61,6 +62,13 @@ pub trait PickerSource: 'static {
     fn hover(&self, _item: &Self::Item) -> Option<Pick> {
         None
     }
+    /// Switches between local matching and the provider's search, and
+    /// says which is now in force; `None` when the source has no remote.
+    fn toggle_remote(&mut self) -> Option<bool> {
+        None
+    }
+    /// The provider's answer to the latest remote query.
+    fn receive(&mut self, _issues: Vec<kolum_domain::Issue>) {}
 }
 
 /// A picker of any source, as the app holds it.
@@ -80,6 +88,11 @@ pub trait AnyPicker {
     fn scroll_preview(&mut self, delta: i32);
     fn act(&mut self, action: Action) -> Option<Pick>;
     fn hovered(&self) -> Option<Pick>;
+    fn toggle_remote(&mut self) -> Option<bool>;
+    fn is_remote(&self) -> bool;
+    fn receive(&mut self, issues: Vec<kolum_domain::Issue>);
+    /// A remote search is under way.
+    fn set_loading(&mut self, loading: bool);
     /// The status words in the bottom border: `[local]`.
     fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme, layout: PickerLayout);
 }
@@ -96,8 +109,8 @@ pub struct Picker<S: PickerSource> {
     scope: String,
     pattern: String,
     preview_scroll: u16,
-    /// Shown in the bottom border: `local` or `remote`.
-    pub mode_label: &'static str,
+    remote: bool,
+    loading: bool,
 }
 
 pub type Waker = Arc<dyn Fn() + Send + Sync>;
@@ -116,7 +129,8 @@ impl<S: PickerSource> Picker<S> {
             scope: String::new(),
             pattern: String::new(),
             preview_scroll: 0,
-            mode_label: "local",
+            remote: false,
+            loading: false,
         };
         picker.inject();
         picker
@@ -149,6 +163,13 @@ impl<S: PickerSource> Picker<S> {
         self.preview_scroll = 0;
     }
 
+    /// Feeds the matcher again even though the query did not move: the
+    /// candidates themselves changed.
+    fn reinject(&mut self) {
+        self.scope = "\0".into();
+        self.refresh();
+    }
+
     fn current(&self) -> Option<&S::Item> {
         self.nucleo.snapshot().get_matched_item(self.selected).map(|i| i.data)
     }
@@ -162,6 +183,14 @@ impl<S: PickerSource> Picker<S> {
             .map(|i| i.data.clone())
             .collect();
         if marked.is_empty() { self.current().cloned().into_iter().collect() } else { marked }
+    }
+
+    fn source_label(&self) -> &'static str {
+        match (self.remote, self.loading) {
+            (false, _) => "local",
+            (true, false) => "remote",
+            (true, true) => "remote …",
+        }
     }
 
     fn row(&mut self, index: u32, theme: &Theme, cols: usize) -> Line<'static> {
@@ -272,6 +301,28 @@ impl<S: PickerSource> AnyPicker for Picker<S> {
         self.current().and_then(|i| self.source.hover(i))
     }
 
+    fn toggle_remote(&mut self) -> Option<bool> {
+        let remote = self.source.toggle_remote()?;
+        self.remote = remote;
+        self.loading = false;
+        self.reinject();
+        Some(remote)
+    }
+
+    fn is_remote(&self) -> bool {
+        self.remote
+    }
+
+    fn receive(&mut self, issues: Vec<kolum_domain::Issue>) {
+        self.source.receive(issues);
+        self.loading = false;
+        self.reinject();
+    }
+
+    fn set_loading(&mut self, loading: bool) {
+        self.loading = loading;
+    }
+
     fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme, layout: PickerLayout) {
         frame.render_widget(Clear, area);
         // Too narrow for two panes side by side: stack them, or drop the
@@ -304,7 +355,7 @@ impl<S: PickerSource> AnyPicker for Picker<S> {
                 Style::new().fg(theme.accent),
             ))
             .title_bottom(Line::from(counter).left_aligned())
-            .title_bottom(Line::from(format!("{mode}[{}] ", self.mode_label)).right_aligned())
+            .title_bottom(Line::from(format!("{mode}[{}] ", self.source_label())).right_aligned())
             .style(Style::new().bg(theme.bg).fg(theme.fg));
         let inner = list.inner(list_area);
         frame.render_widget(list, list_area);

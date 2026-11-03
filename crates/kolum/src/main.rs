@@ -73,11 +73,13 @@ fn profile_board(profile: &Profile) -> Option<kolum_domain::BoardId> {
     }
 }
 
-type Opened = (Arc<dyn Provider>, Option<kolum_domain::BoardId>);
+/// A provider ready to use, the board its profile names, and the profile's
+/// name, which names its cache directory.
+type Opened = (Arc<dyn Provider>, Option<kolum_domain::BoardId>, String);
 
 fn provider(args: &Args, config: &config::Config) -> anyhow::Result<Opened> {
     if args.demo {
-        return Ok((Arc::new(kolum_provider_fake::FakeProvider::new()), None));
+        return Ok((Arc::new(kolum_provider_fake::FakeProvider::new()), None, "demo".into()));
     }
     let name = args.profile.clone().or_else(|| config.default_profile.clone()).or_else(|| {
         (config.profiles.len() == 1).then(|| config.profiles.keys().next().cloned()).flatten()
@@ -95,7 +97,7 @@ fn provider(args: &Args, config: &config::Config) -> anyhow::Result<Opened> {
     match PROVIDERS.iter().find(|(n, _)| *n == profile.provider) {
         Some((_, build)) => {
             let opened = build(profile).map_err(|e| e.context(format!("profile `{name}`")))?;
-            Ok((opened, profile_board(profile)))
+            Ok((opened, profile_board(profile), name.clone()))
         }
         None => {
             let known: Vec<_> = PROVIDERS.iter().map(|(n, _)| *n).collect();
@@ -155,10 +157,11 @@ fn app() -> anyhow::Result<()> {
     for p in &settings.problems {
         tracing::warn!("config: {p}");
     }
-    let (provider, board) = provider(&args, &config)?;
+    let (provider, board, profile) = provider(&args, &config)?;
     tracing::info!("starting on the {} provider", provider.name());
     let settings = Settings { board, ..settings };
-    let result = run_tui(provider, settings);
+    let cache = config::cache_dir().map(|d| kolum_app::Cache::new(d.join(profile)));
+    let result = run_tui(provider, cache, settings);
     if args.debug
         && let Some(log) = log
     {
@@ -185,14 +188,19 @@ fn load(args: &Args, config_dir: Option<PathBuf>) -> (config::Config, Settings) 
         picker_layout: config.picker.layout,
         problems,
         board: None,
+        remote_debounce: std::time::Duration::from_millis(config.picker.remote_debounce_ms),
     };
     (config, settings)
 }
 
-fn run_tui(provider: Arc<dyn Provider>, settings: Settings) -> anyhow::Result<()> {
+fn run_tui(
+    provider: Arc<dyn Provider>,
+    cache: Option<kolum_app::Cache>,
+    settings: Settings,
+) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
-        let (service, events) = kolum_app::Service::spawn(provider);
+        let (service, events) = kolum_app::Service::spawn(provider, cache);
         let (wake_tx, wake) = tokio::sync::mpsc::unbounded_channel();
         // Fails only once the loop has ended, when no one needs waking.
         let app = App::new(
@@ -255,7 +263,7 @@ mod tests {
 
     fn opened(args: Args, src: &str) -> Result<String, String> {
         provider(&args, &config(src))
-            .map(|(p, _)| p.name().to_string())
+            .map(|(p, _, _)| p.name().to_string())
             .map_err(|e| format!("{e:#}"))
     }
 
@@ -285,7 +293,8 @@ mod tests {
     fn a_jira_profile_is_checked_and_opens_its_board() {
         let jira = "[profiles.work]\nprovider = \"jira\"\nbase_url = \"https://acme.atlassian.net\"\n\
                     email = \"me@acme.com\"\ntoken = \"t\"\nboard = 42";
-        let (p, board) = provider(&Args::default(), &config(jira)).unwrap();
+        let (p, board, profile) = provider(&Args::default(), &config(jira)).unwrap();
+        assert_eq!(profile, "work");
         assert_eq!(p.name(), "jira");
         assert_eq!(board, Some(kolum_domain::BoardId::new("42")));
         let broken = "[profiles.work]\nprovider = \"jira\"\nbase_url = \"https://acme.atlassian.net\"\ntoken = \"t\"";

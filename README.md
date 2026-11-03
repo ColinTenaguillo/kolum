@@ -29,12 +29,15 @@ The defaults follow vim. Counts work on motions (`3j`, `5G`), sequences wait
 | `Enter` `gd` | open the issue |
 | `/` then `n` `N` | filter the board as you type, step through matches |
 | `Space f` | find an issue: fuzzy, with `@me` `@name` `#bug` `s:review` `l:backend` `e:PROJ-10` `sp:14` |
+| `Space F` | search the provider (`Ctrl-Space` switches in the picker); `!` starts raw JQL |
+| `Space b` | switch board |
 | `Space p` | command palette: every action and its keys |
 | `Space t` | themes, previewed as you move |
 | `Space '` | reopen the last picker as you left it |
 | `yy` `yu` `o` | copy the key, copy the URL, open in the browser |
 | `ze` | hide or show empty columns |
-| `:` | `:theme <name>`, `:help`, `:refresh`, `:q` |
+| `r` | reload the board from the provider |
+| `:` | `:theme <name>`, `:board [id]`, `:jql [query]`, `:help`, `:refresh`, `:q` |
 | `q` `Esc` | close the view; `q` on the board quits |
 
 In the picker you type in insert mode; `Esc` goes to normal mode, where `j`
@@ -95,6 +98,11 @@ the tokens it changes, the same way `[theme.overrides]` does. Theme tokens:
 `bg fg muted accent border border_focus selection match_highlight`,
 `status.{todo,doing,done}`, `priority.{highest,high,medium,low,lowest}`,
 `type.{bug,story,task,epic,subtask}`, `error warn ok`, `label_palette`.
+
+The last board of each profile is kept in `~/.cache/kolum/<profile>/`: at
+start it is on screen at once, marked "cached, syncing…", while only the issues
+changed since are fetched. An issue that left the board is only dropped by a
+full reload (`r`).
 
 Logs go to `~/.cache/kolum/kolum.log`, never to the screen; `--debug` raises
 the level and prints where the file is.
@@ -161,8 +169,10 @@ Done: the domain and its ports, the fake provider, the key engine, themes, the
 validated config, the board, the issue picker, the issue detail, generated
 help, and the Jira adapter for reading.
 
-Next, in order: the cache with background sync and remote search in the
-picker (`Ctrl-Space`); then transitions (`H` `L` `t`), assigning, comments and
+Also done: the cache with background sync, remote search in the picker
+(debounced, a stale reply dropped), and the boards picker.
+
+Next, in order: transitions (`H` `L` `t`), assigning, comments and
 `$EDITOR` edits with optimistic updates; then swimlanes, visual mode,
 creating and cloning. Actions bound but not built yet say so when pressed.
 

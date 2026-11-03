@@ -1170,6 +1170,9 @@ version = "0.1.0"
 dependencies = [
  "kolum-domain",
  "kolum-provider-fake",
+ "serde",
+ "serde_json",
+ "time",
  "tokio",
  "tracing",
 ]

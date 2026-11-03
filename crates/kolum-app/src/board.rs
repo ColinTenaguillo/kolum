@@ -1,4 +1,5 @@
 use kolum_domain::{Board, BoardId, DomainError, Issue, Provider, Result};
+use time::OffsetDateTime;
 
 /// A board and its cards, as last loaded.
 #[derive(Debug, Clone, PartialEq)]
@@ -9,6 +10,18 @@ pub struct BoardSnapshot {
 }
 
 impl BoardSnapshot {
+    /// Takes in changed issues: each replaces the one with its key, or
+    /// joins the end when it is new. A sync may repeat an issue (Jira's
+    /// `updated >=` has minute grain), which this makes harmless.
+    pub fn merge(&mut self, changed: Vec<Issue>) {
+        for issue in changed {
+            match self.issues.iter_mut().find(|i| i.key == issue.key) {
+                Some(old) => *old = issue,
+                None => self.issues.push(issue),
+            }
+        }
+    }
+
     /// The cards of each column, left to right. A card whose status is in
     /// no column is not on the board, as in the web app.
     pub fn columns(&self) -> Vec<Vec<&Issue>> {
@@ -30,14 +43,40 @@ pub async fn load_board(provider: &dyn Provider, id: Option<BoardId>) -> Result<
         None => first_board(provider).await?,
     };
     let board = provider.board(&id).await?;
+    let issues = all_issues(provider, &id, None).await?;
+    Ok(BoardSnapshot { board, issues })
+}
+
+/// Brings a cached snapshot up to date: the configuration again (it is
+/// small and columns do change), and only the issues updated since.
+///
+/// An issue that left the board (deleted, or out of its filter) is not
+/// reported by an incremental sync, so it stays until a full reload.
+pub async fn sync_board(
+    provider: &dyn Provider,
+    mut cached: BoardSnapshot,
+    since: OffsetDateTime,
+) -> Result<BoardSnapshot> {
+    let id = cached.board.id.clone();
+    cached.board = provider.board(&id).await?;
+    let changed = all_issues(provider, &id, Some(since)).await?;
+    cached.merge(changed);
+    Ok(cached)
+}
+
+async fn all_issues(
+    provider: &dyn Provider,
+    id: &BoardId,
+    since: Option<OffsetDateTime>,
+) -> Result<Vec<Issue>> {
     let mut issues = Vec::new();
     let mut token = None;
     loop {
-        let page = provider.board_issues(&id, None, token).await?;
+        let page = provider.board_issues(id, since, token).await?;
         issues.extend(page.items);
         token = page.next;
         if token.is_none() {
-            return Ok(BoardSnapshot { board, issues });
+            return Ok(issues);
         }
     }
 }
@@ -73,6 +112,76 @@ mod tests {
         let done = snapshot.issues.iter().filter(|i| i.status.name == "Done").count();
         assert!(done > 0);
         assert_eq!(shown, snapshot.issues.len() - done);
+    }
+
+    #[tokio::test]
+    async fn a_sync_merges_only_what_changed_since() {
+        use kolum_domain::{IssueKey, IssueReader, IssueUpdate, IssueWriter, NewIssue};
+        let fake = FakeProvider::new();
+        let cached = load_board(&fake, None).await.unwrap();
+        let since = time::OffsetDateTime::now_utc();
+        let key = IssueKey::new("ACME-12");
+        fake.update(
+            &key,
+            IssueUpdate { title: Some("Export as CSV and XLSX".into()), ..Default::default() },
+        )
+        .await
+        .unwrap();
+        let template = fake.issue(&key).await.unwrap();
+        let created = fake
+            .create(NewIssue {
+                project: "ACME".into(),
+                kind: template.kind,
+                title: "Brand new".into(),
+                description: template.description,
+                parent: None,
+            })
+            .await
+            .unwrap();
+
+        let synced = sync_board(&fake, cached.clone(), since).await.unwrap();
+        assert_eq!(synced.issues.len(), cached.issues.len() + 1, "the new one joined");
+        let title = |s: &BoardSnapshot, k: &IssueKey| {
+            s.issues.iter().find(|i| &i.key == k).map(|i| i.title.clone())
+        };
+        assert_eq!(title(&synced, &key).as_deref(), Some("Export as CSV and XLSX"));
+        assert_eq!(title(&synced, &created.key).as_deref(), Some("Brand new"));
+        let position = |s: &BoardSnapshot| s.issues.iter().position(|i| i.key == key);
+        assert_eq!(position(&synced), position(&cached), "a changed issue keeps its place");
+    }
+
+    #[test]
+    fn merging_twice_is_merging_once() {
+        let fake_issue = |key: &str, title: &str| {
+            let mut i = sample_issue();
+            i.key = kolum_domain::IssueKey::new(key);
+            i.title = title.into();
+            i
+        };
+        let mut s = BoardSnapshot { board: sample_board(), issues: vec![fake_issue("A-1", "one")] };
+        let changed = vec![fake_issue("A-1", "uno"), fake_issue("A-2", "two")];
+        s.merge(changed.clone());
+        let once = s.clone();
+        s.merge(changed);
+        assert_eq!(s, once);
+        assert_eq!(s.issues.iter().map(|i| i.title.as_str()).collect::<Vec<_>>(), ["uno", "two"]);
+    }
+
+    fn sample_board() -> Board {
+        Board {
+            id: BoardId::new("1"),
+            name: "b".into(),
+            kind: kolum_domain::BoardKind::Kanban,
+            project: None,
+            columns: vec![],
+        }
+    }
+
+    fn sample_issue() -> Issue {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        rt.block_on(async {
+            load_board(&FakeProvider::new(), None).await.unwrap().issues.remove(0)
+        })
     }
 
     #[tokio::test]

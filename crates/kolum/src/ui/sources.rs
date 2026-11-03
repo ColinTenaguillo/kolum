@@ -10,10 +10,12 @@ use kolum_domain::{Filter, Issue, Query, UserId};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 
-/// The board's issues, matched locally.
+/// The board's issues, matched locally; or, in remote mode, whatever the
+/// provider's search last answered, in its order.
 pub struct IssueSource {
     pub issues: Vec<Issue>,
     pub me: Option<UserId>,
+    pub remote: Option<Vec<Issue>>,
 }
 
 fn filter_of(query: &str) -> Filter {
@@ -33,17 +35,41 @@ impl PickerSource for IssueSource {
     }
 
     fn candidates(&self, query: &str) -> Vec<Issue> {
+        if let Some(found) = &self.remote {
+            return found.clone();
+        }
         let filter = filter_of(query);
         let me = self.me.clone().unwrap_or_else(|| UserId::new(""));
         self.issues.iter().filter(|i| filter.matches_fields(i, &me)).cloned().collect()
     }
 
     fn scope(&self, query: &str) -> String {
-        format!("{:?}", Filter { text: None, ..filter_of(query) })
+        match self.remote {
+            Some(_) => "remote".into(),
+            None => format!("{:?}", Filter { text: None, ..filter_of(query) }),
+        }
     }
 
+    /// Remote results come ranked by the provider and already match.
     fn pattern(&self, query: &str) -> String {
-        filter_of(query).text.unwrap_or_default()
+        match self.remote {
+            Some(_) => String::new(),
+            None => filter_of(query).text.unwrap_or_default(),
+        }
+    }
+
+    fn toggle_remote(&mut self) -> Option<bool> {
+        self.remote = match self.remote {
+            Some(_) => None,
+            None => Some(vec![]),
+        };
+        Some(self.remote.is_some())
+    }
+
+    fn receive(&mut self, issues: Vec<Issue>) {
+        if self.remote.is_some() {
+            self.remote = Some(issues);
+        }
     }
 
     fn haystack(&self, issue: &Issue) -> String {
@@ -153,5 +179,31 @@ impl PickerSource for ThemeSource {
 
     fn hover(&self, name: &String) -> Option<Pick> {
         Some(Pick::Theme(name.clone()))
+    }
+}
+
+/// The provider's boards.
+pub struct BoardChoice {
+    pub boards: Vec<kolum_domain::BoardSummary>,
+}
+
+impl PickerSource for BoardChoice {
+    type Item = kolum_domain::BoardSummary;
+
+    fn title(&self) -> String {
+        "Boards".into()
+    }
+
+    fn candidates(&self, _query: &str) -> Vec<Self::Item> {
+        self.boards.clone()
+    }
+
+    fn haystack(&self, b: &Self::Item) -> String {
+        let project = b.project.as_ref().map(|p| format!("  {}", p.key)).unwrap_or_default();
+        format!("{}{project}  {:?} #{}", b.name, b.kind, b.id)
+    }
+
+    fn act(&self, boards: &[Self::Item], action: Action) -> Option<Pick> {
+        (action == Action::Confirm).then(|| Pick::Board(boards[0].id.clone()))
     }
 }

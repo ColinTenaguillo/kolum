@@ -81,6 +81,8 @@ pub struct Settings {
     pub problems: Vec<String>,
     /// The board to open; the provider's first when `None`.
     pub board: Option<kolum_domain::BoardId>,
+    /// How long typing must pause before a remote search goes out.
+    pub remote_debounce: std::time::Duration,
 }
 
 pub struct App {
@@ -108,6 +110,15 @@ pub struct App {
     message: Option<(String, Level)>,
     effects: Vec<Effect>,
     waker: Waker,
+    /// The board on screen is the cached copy; the sync is still out.
+    board_cached: bool,
+    /// The latest remote search sent; replies to any other are stale.
+    search_id: u64,
+    /// When the pending remote search goes out, once typing pauses.
+    search_due: Option<Instant>,
+    remote_debounce: std::time::Duration,
+    /// The time of the key being handled, for the debounce.
+    now: Instant,
     pub quit: bool,
 }
 
@@ -152,6 +163,11 @@ impl App {
             message: None,
             effects: vec![Effect::Send(Command::LoadBoard(settings.board))],
             waker,
+            board_cached: false,
+            search_id: 0,
+            search_due: None,
+            remote_debounce: settings.remote_debounce,
+            now: Instant::now(),
             quit: false,
         }
     }
@@ -160,8 +176,10 @@ impl App {
         std::mem::take(&mut self.effects)
     }
 
+    /// The next moment something happens without a key: a sequence
+    /// times out, or a debounced search goes out.
     pub fn deadline(&self) -> Option<Instant> {
-        self.resolver.deadline()
+        [self.resolver.deadline(), self.search_due].into_iter().flatten().min()
     }
 
     pub fn theme(&self) -> &Theme {
@@ -214,6 +232,7 @@ impl App {
             self.problems.clear();
             return;
         }
+        self.now = now;
         if self.resolver.is_idle() {
             self.message = None;
         }
@@ -225,6 +244,10 @@ impl App {
     }
 
     pub fn on_timeout(&mut self, now: Instant) {
+        self.now = now;
+        if self.search_due.is_some_and(|due| now >= due) {
+            self.search();
+        }
         let (contexts, text) = self.contexts();
         let layers =
             Layers { tables: contexts.iter().map(|&c| self.keymap.table(c)).collect(), text };
@@ -248,6 +271,9 @@ impl App {
             if picker.is_insert() {
                 picker.type_key(key);
                 self.history_pos = None;
+                if picker.is_remote() {
+                    self.search_due = Some(self.now + self.remote_debounce);
+                }
             }
         } else if let Some(prompt) = &mut self.prompt
             && prompt.input.handle(key)
@@ -261,7 +287,8 @@ impl App {
     pub fn on_event(&mut self, event: Event) {
         match event {
             Event::Me(user) => self.me = Some(user),
-            Event::BoardLoaded(snapshot) => {
+            Event::BoardLoaded { snapshot, fresh } => {
+                self.board_cached = !fresh;
                 if let Some(d) = &mut self.detail
                     && let Some(fresh) = snapshot.issues.iter().find(|i| i.key == d.issue.key)
                 {
@@ -275,6 +302,23 @@ impl App {
                 {
                     d.issue = detail.issue.clone();
                     d.loaded = Some(*detail);
+                }
+            }
+            Event::Boards(boards) => {
+                let source = sources::BoardChoice { boards };
+                self.open_picker(Box::new(Picker::new(source, self.waker.clone())));
+            }
+            Event::SearchResults { id, result } => {
+                let latest = self.search_id;
+                let Some(p) = self.picker.as_mut().filter(|p| p.is_remote() && id == latest) else {
+                    return;
+                };
+                match result {
+                    Ok(issues) => p.receive(issues),
+                    Err(error) => {
+                        p.set_loading(false);
+                        self.say(format!("search failed: {error}"), Level::Error);
+                    }
                 }
             }
             Event::Failed { what, error } => {
@@ -310,10 +354,18 @@ impl App {
             }
             Action::Refresh => {
                 let id = self.board.snapshot.as_ref().map(|s| s.board.id.clone());
-                self.effects.push(Effect::Send(Command::LoadBoard(id)));
+                self.effects.push(Effect::Send(Command::ReloadBoard(id)));
                 self.say("Refreshing…", Level::Info);
             }
             Action::PickerIssues => self.open_issue_picker(),
+            Action::PickerRemote => {
+                self.open_issue_picker();
+                self.toggle_source();
+            }
+            Action::PickerBoards => {
+                self.effects.push(Effect::Send(Command::LoadBoards));
+                self.say("Listing the boards…", Level::Info);
+            }
             Action::PickerCommands => self.open_picker(Box::new(Picker::new(
                 sources::CommandSource::new(&self.keymap),
                 self.waker.clone(),
@@ -469,7 +521,7 @@ impl App {
         let issues = self.board.snapshot.as_ref().map(|s| s.issues.clone()).unwrap_or_default();
         let me = self.me.as_ref().map(|u| u.id.clone());
         self.open_picker(Box::new(Picker::new(
-            sources::IssueSource { issues, me },
+            sources::IssueSource { issues, me, remote: None },
             self.waker.clone(),
         )));
     }
@@ -514,9 +566,7 @@ impl App {
             Action::PreviewDown => p.scroll_preview(5 * n as i32),
             Action::PreviewUp => p.scroll_preview(-5 * n as i32),
             Action::HistoryPrev | Action::HistoryNext => self.recall(action == Action::HistoryPrev),
-            Action::ToggleSource => {
-                self.say("Remote search comes with the Jira provider", Level::Warn)
-            }
+            Action::ToggleSource => self.toggle_source(),
             action => {
                 let query = p.query().to_string();
                 match p.act(action) {
@@ -533,6 +583,26 @@ impl App {
         }
     }
 
+    /// Local or remote. Going remote searches straight away, with what is
+    /// already typed.
+    fn toggle_source(&mut self) {
+        let Some(p) = &mut self.picker else { return };
+        match p.toggle_remote() {
+            Some(true) => self.search_due = Some(self.now),
+            Some(false) => self.search_due = None,
+            None => self.say("This picker has no remote search", Level::Warn),
+        }
+    }
+
+    fn search(&mut self) {
+        self.search_due = None;
+        let Some(p) = self.picker.as_mut().filter(|p| p.is_remote()) else { return };
+        self.search_id += 1;
+        p.set_loading(true);
+        let query = kolum_app::parse_query(p.query());
+        self.effects.push(Effect::Send(Command::Search { id: self.search_id, query }));
+    }
+
     /// Steps through past queries, newest first.
     fn recall(&mut self, older: bool) {
         let len = self.history.len();
@@ -546,6 +616,9 @@ impl App {
         let query = pos.map(|i| self.history[i].clone()).unwrap_or_default();
         if let Some(p) = &mut self.picker {
             p.set_query(&query);
+            if p.is_remote() {
+                self.search_due = Some(self.now + self.remote_debounce);
+            }
         }
     }
 
@@ -569,6 +642,11 @@ impl App {
                 self.theme_before_preview = None;
                 self.close_picker();
                 self.set_theme(&name);
+            }
+            Pick::Board(id) => {
+                self.close_picker();
+                self.detail = None;
+                self.effects.push(Effect::Send(Command::LoadBoard(Some(id))));
             }
             Pick::Run(action) => {
                 self.close_picker();
@@ -630,9 +708,18 @@ impl App {
             "e" | "refresh" => self.dispatch(Action::Refresh, None),
             "theme" if arg.is_empty() => self.open_theme_picker(),
             "theme" => self.set_theme(arg),
-            "jql" | "board" | "assign" => {
-                self.say(format!(":{name} is not available yet"), Level::Warn)
+            "board" if arg.is_empty() => self.dispatch(Action::PickerBoards, None),
+            "board" => {
+                let id = kolum_domain::BoardId::new(arg);
+                self.effects.push(Effect::Send(Command::LoadBoard(Some(id))));
             }
+            "jql" => {
+                self.dispatch(Action::PickerRemote, None);
+                if let Some(p) = self.picker.as_mut().filter(|_| !arg.is_empty()) {
+                    p.set_query(&format!("!{arg}"));
+                }
+            }
+            "assign" => self.say(":assign is not available yet", Level::Warn),
             _ => self.say(format!("Not a command: {name}"), Level::Error),
         }
     }
@@ -698,6 +785,9 @@ impl App {
                 Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
             ));
             spans.push(Span::styled(format!("{:?}", s.board.kind), Style::new().fg(theme.muted)));
+            if self.board_cached {
+                spans.push(Span::styled("  cached, syncing…", Style::new().fg(theme.warn)));
+            }
         }
         if !self.board.filter.is_empty() {
             spans.push(Span::styled(

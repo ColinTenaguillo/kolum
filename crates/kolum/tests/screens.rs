@@ -22,6 +22,7 @@ fn settings() -> Settings {
         picker_layout: PickerLayout::Horizontal,
         problems: vec![],
         board: None,
+        remote_debounce: std::time::Duration::from_millis(250),
     }
 }
 
@@ -30,7 +31,10 @@ async fn loaded_with(settings: Settings) -> App {
     let mut app = App::new(settings, Arc::new(|| {}));
     assert_eq!(app.take_effects(), [Effect::Send(Command::LoadBoard(None))]);
     app.on_event(Event::Me(fake.me().await.unwrap()));
-    app.on_event(Event::BoardLoaded(load_board(&fake, None).await.unwrap()));
+    app.on_event(Event::BoardLoaded {
+        snapshot: load_board(&fake, None).await.unwrap(),
+        fresh: true,
+    });
     app
 }
 
@@ -406,7 +410,7 @@ async fn picker_actions_reach_the_highlighted_issue() {
     assert!(screen(&mut app, 150, 40).contains("`transition` is not available yet"));
     press(&mut app, "<C-d><C-u><Esc>Gggkj");
     press(&mut app, "<C-Space>");
-    assert!(screen(&mut app, 150, 40).contains("Remote search comes with the Jira provider"));
+    assert!(screen(&mut app, 150, 40).contains("[remote"), "the picker went remote");
 }
 
 #[tokio::test]
@@ -424,7 +428,12 @@ async fn the_command_line_reports_what_it_cannot_do() {
     press(&mut app, ":frobnicate<CR>");
     assert!(screen(&mut app, 100, 20).contains("Not a command: frobnicate"));
     press(&mut app, ":jql project = X<CR>");
-    assert!(screen(&mut app, 100, 20).contains(":jql is not available yet"));
+    let shown = screen(&mut app, 100, 20);
+    assert!(
+        shown.contains("> !project = X") && shown.contains("[remote"),
+        ":jql opens a remote search: {shown}"
+    );
+    press(&mut app, "<Esc><Esc>");
     press(&mut app, ":theme<CR>");
     assert!(screen(&mut app, 100, 20).contains(" Themes "), ":theme alone opens the picker");
     press(&mut app, "<Esc><Esc>:<Esc>");
@@ -432,7 +441,7 @@ async fn the_command_line_reports_what_it_cannot_do() {
     press(&mut app, ":refresh<CR>");
     assert_eq!(
         app.take_effects(),
-        [Effect::Send(Command::LoadBoard(Some(kolum_domain::BoardId::new("1"))))]
+        [Effect::Send(Command::ReloadBoard(Some(kolum_domain::BoardId::new("1"))))]
     );
 }
 
@@ -441,7 +450,10 @@ async fn a_refresh_keeps_the_highlight_on_the_same_issue() {
     let mut app = loaded().await;
     press(&mut app, "ll3j");
     let before = selected(&app).to_string();
-    app.on_event(Event::BoardLoaded(load_board(&FakeProvider::new(), None).await.unwrap()));
+    app.on_event(Event::BoardLoaded {
+        snapshot: load_board(&FakeProvider::new(), None).await.unwrap(),
+        fresh: true,
+    });
     assert_eq!(selected(&app), before);
     app.on_event(Event::Failed {
         what: "loading the board".into(),
@@ -512,4 +524,100 @@ async fn theme_files_join_the_theme_picker() {
     );
     assert!(!screen(&mut app, 120, 40).contains(" Themes "));
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Runs whatever falls due by `at`: a debounced search, a key timeout.
+fn wait_until(app: &mut App, at: Instant) {
+    app.on_timeout(at);
+}
+
+fn searches(effects: Vec<Effect>) -> Vec<(u64, kolum_domain::Query)> {
+    effects
+        .into_iter()
+        .filter_map(|e| match e {
+            Effect::Send(Command::Search { id, query }) => Some((id, query)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_remote_search_waits_for_typing_to_pause_and_drops_stale_replies() {
+    use kolum_domain::{Filter, IssueSearch, Query, UserSel};
+    let mut app = loaded().await;
+    app.take_effects();
+    press(&mut app, "<Space>F");
+    let due = app.deadline().expect("going remote searches straight away");
+    wait_until(&mut app, due);
+    assert_eq!(searches(app.take_effects()), [(1, Query::Filter(Filter::default()))]);
+    assert!(screen(&mut app, 150, 40).contains("[remote …]"), "searching");
+
+    press(&mut app, "@me");
+    let due = app.deadline().unwrap();
+    wait_until(&mut app, due - std::time::Duration::from_millis(100));
+    assert!(searches(app.take_effects()).is_empty(), "still typing");
+    wait_until(&mut app, due);
+    let mine = Query::Filter(Filter { assignee: Some(UserSel::Me), ..Filter::default() });
+    assert_eq!(searches(app.take_effects()), [(2, mine.clone())]);
+
+    let fake = FakeProvider::new();
+    let everything = fake.search(&Query::Filter(Filter::default()), None).await.unwrap().items;
+    app.on_event(Event::SearchResults { id: 1, result: Ok(everything) });
+    settle(&mut app);
+    assert!(!screen(&mut app, 150, 40).contains("ACME-9 "), "the reply to search 1 came too late");
+    let found = fake.search(&mine, None).await.unwrap().items;
+    app.on_event(Event::SearchResults { id: 2, result: Ok(found) });
+    settle(&mut app);
+    let shown = screen(&mut app, 150, 40);
+    assert!(shown.contains("ACME-5 Login") && shown.contains("[remote]"), "{shown}");
+    assert!(!shown.contains("ACME-9 "), "only what the provider answered");
+
+    app.on_event(Event::SearchResults {
+        id: 2,
+        result: Err(kolum_domain::DomainError::Unauthorized("HTTP 401".into())),
+    });
+    assert!(screen(&mut app, 150, 40).contains("search failed: unauthorized: HTTP 401"));
+    press(&mut app, "<C-Space>");
+    assert!(screen(&mut app, 150, 40).contains("[local]"), "and back");
+    assert_eq!(app.deadline(), None, "nothing pending once local");
+}
+
+#[tokio::test]
+async fn the_boards_picker_opens_another_board() {
+    let mut app = loaded().await;
+    app.take_effects();
+    press(&mut app, "<Space>b");
+    assert_eq!(app.take_effects(), [Effect::Send(Command::LoadBoards)]);
+    let boards = kolum_domain::BoardSource::boards(&FakeProvider::new()).await.unwrap();
+    app.on_event(Event::Boards(boards));
+    settle(&mut app);
+    assert!(screen(&mut app, 150, 40).contains("Acme Web board  ACME  Kanban #1"));
+    press(&mut app, "<CR>");
+    assert_eq!(
+        app.take_effects(),
+        [Effect::Send(Command::LoadBoard(Some(kolum_domain::BoardId::new("1"))))]
+    );
+    press(&mut app, ":board 7<CR>");
+    assert_eq!(
+        app.take_effects(),
+        [Effect::Send(Command::LoadBoard(Some(kolum_domain::BoardId::new("7"))))]
+    );
+}
+
+#[tokio::test]
+async fn a_cached_board_says_so_until_the_sync_lands() {
+    let fake = FakeProvider::new();
+    let snapshot = load_board(&fake, None).await.unwrap();
+    let mut app = App::new(settings(), Arc::new(|| {}));
+    app.on_event(Event::BoardLoaded { snapshot: snapshot.clone(), fresh: false });
+    assert!(screen(&mut app, 150, 40).contains("cached, syncing…"));
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true });
+    assert!(!screen(&mut app, 150, 40).contains("cached"));
+}
+
+#[tokio::test]
+async fn pickers_without_a_remote_say_so() {
+    let mut app = loaded().await;
+    press(&mut app, "<Space>t<C-Space>");
+    assert!(screen(&mut app, 150, 40).contains("This picker has no remote search"));
 }

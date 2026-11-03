@@ -3,9 +3,11 @@
 //! never waits on the network itself.
 
 mod board;
+mod cache;
 mod query;
 mod service;
 
-pub use board::{BoardSnapshot, load_board};
+pub use board::{BoardSnapshot, load_board, sync_board};
+pub use cache::Cache;
 pub use query::parse_query;
 pub use service::{Command, Event, IssueDetail, Service};
