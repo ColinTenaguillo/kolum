@@ -29,6 +29,8 @@ pub struct BoardView {
     pub hide_empty: bool,
     /// Cards per column on screen at the last draw, for half-page moves.
     page: Cell<usize>,
+    /// Visual mode: where the range started, in the current column.
+    pub visual: Option<usize>,
 }
 
 fn matches(issue: &Issue, filter: &str) -> bool {
@@ -143,6 +145,28 @@ impl BoardView {
         }
     }
 
+    /// The visual range, first and last row, in the current column.
+    pub fn range(&self) -> Option<(usize, usize)> {
+        let anchor = self.visual?;
+        let cursor = self.cursor.get(self.column).copied().unwrap_or(0);
+        Some((anchor.min(cursor), anchor.max(cursor)))
+    }
+
+    /// What an action acts on: the visual range, or the highlighted card.
+    pub fn targets(&self) -> Vec<IssueKey> {
+        let cards = self.cards();
+        match (self.range(), cards.get(self.column)) {
+            (Some((a, b)), Some(col)) => {
+                col.iter().skip(a).take(b + 1 - a).map(|i| i.key.clone()).collect()
+            }
+            _ => self.selected().map(|i| i.key.clone()).into_iter().collect(),
+        }
+    }
+
+    pub fn cursor_row(&self) -> usize {
+        self.cursor.get(self.column).copied().unwrap_or(0)
+    }
+
     pub fn half_page(&self) -> i64 {
         (self.page.get() / 2).max(1) as i64
     }
@@ -230,10 +254,13 @@ impl BoardView {
         self.page.set(rows.max(1));
         let cursor = self.cursor.get(c).copied().unwrap_or(0);
         let offset = (cursor + 1).saturating_sub(rows);
+        let range = self.range().filter(|_| focused);
         for (slot, issue) in cards.iter().skip(offset).take(rows).enumerate() {
             let rect =
                 Rect { y: inner.y + slot as u16 * CARD_HEIGHT, height: CARD_HEIGHT, ..inner };
-            card(frame, rect, issue, focused && offset + slot == cursor, ctx);
+            let row = offset + slot;
+            let marked = range.is_some_and(|(a, b)| (a..=b).contains(&row));
+            card(frame, rect, issue, focused && row == cursor, marked, ctx);
         }
         let below = count.saturating_sub(offset + rows);
         if below > 0 && inner.height > 0 {
@@ -256,13 +283,21 @@ pub struct DrawCtx<'a> {
     pub me: Option<&'a UserId>,
 }
 
-fn card(frame: &mut Frame, area: Rect, issue: &Issue, selected: bool, ctx: &DrawCtx) {
+fn card(frame: &mut Frame, area: Rect, issue: &Issue, selected: bool, marked: bool, ctx: &DrawCtx) {
     let theme = ctx.theme;
     let show = |f: CardField| ctx.fields.contains(&f);
     let block = Block::bordered()
         .border_type(if selected { BorderType::Thick } else { BorderType::Rounded })
-        .border_style(Style::new().fg(if selected { theme.border_focus } else { theme.border }))
-        .style(if selected { Style::new().bg(theme.selection) } else { Style::default() });
+        .border_style(Style::new().fg(if selected || marked {
+            theme.border_focus
+        } else {
+            theme.border
+        }))
+        .style(if selected || marked {
+            Style::new().bg(theme.selection)
+        } else {
+            Style::default()
+        });
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let cols = inner.width as usize;

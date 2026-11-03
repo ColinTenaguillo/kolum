@@ -257,6 +257,9 @@ impl App {
             Focus::Picker => (vec![Context::Picker], false),
             Focus::Prompt => (vec![Context::Command], true),
             Focus::Detail => (vec![Context::Detail, Context::Global], false),
+            Focus::Board if self.board.visual.is_some() => {
+                (vec![Context::Visual, Context::Board, Context::Global], false)
+            }
             Focus::Board => (vec![Context::Board, Context::Global], false),
         }
     }
@@ -470,7 +473,19 @@ impl App {
     fn board_action(&mut self, action: Action, count: Option<u32>) {
         let n = i64::from(count.unwrap_or(1));
         let b = &mut self.board;
+        // The range belongs to its column: leaving the column ends it.
+        if matches!(action, Action::Left | Action::Right | Action::FirstColumn | Action::LastColumn)
+        {
+            b.visual = None;
+        }
         match action {
+            Action::VisualMode => {
+                b.visual = match b.visual {
+                    Some(_) => None,
+                    None => b.selected().map(|_| b.cursor_row()),
+                };
+            }
+            Action::NormalMode => b.visual = None,
             Action::Left => b.move_column(-n),
             Action::Right => b.move_column(n),
             Action::Down => b.move_card(n),
@@ -503,6 +518,12 @@ impl App {
                     self.open_detail(key);
                 }
             }
+            Action::CopyKey if b.visual.is_some() => {
+                let keys: Vec<String> = b.targets().iter().map(|k| k.to_string()).collect();
+                b.visual = None;
+                self.say(format!("Copied {}", keys.join(" ")), Level::Info);
+                self.effects.push(Effect::Copy(keys.join(" ")));
+            }
             Action::CopyKey | Action::CopyUrl | Action::OpenBrowser => {
                 if let Some(issue) = b.selected().cloned() {
                     self.issue_effect(action, &issue);
@@ -516,7 +537,8 @@ impl App {
             Action::MoveCardLeft => self.move_card(-n),
             Action::MoveCardRight => self.move_card(n),
             _ => {
-                let keys: Vec<IssueKey> = b.selected().map(|i| i.key.clone()).into_iter().collect();
+                let keys = b.targets();
+                b.visual = None;
                 self.issue_action(action, keys);
             }
         }
@@ -625,11 +647,15 @@ impl App {
     /// `H` and `L`: to the next visible column, by whichever transition
     /// leads there.
     fn move_card(&mut self, delta: i64) {
-        let Some(key) = self.board.selected().map(|i| i.key.clone()) else { return };
+        let keys = self.board.targets();
+        self.board.visual = None;
+        if keys.is_empty() {
+            return;
+        }
         let visible = self.board.visible();
         let pos = visible.iter().position(|&c| c == self.board.column).unwrap_or(0) as i64 + delta;
         match usize::try_from(pos).ok().and_then(|p| visible.get(p)) {
-            Some(&column) if self.can_write() => self.ask_transitions(vec![key], Some(column)),
+            Some(&column) if self.can_write() => self.ask_transitions(keys, Some(column)),
             Some(_) => {}
             None => self.say("No column that way", Level::Info),
         }
@@ -1161,6 +1187,7 @@ impl App {
             Focus::Picker if self.picker.as_ref().is_some_and(|p| p.is_insert()) => {
                 ("INSERT", theme.ok)
             }
+            Focus::Board if self.board.visual.is_some() => ("VISUAL", theme.match_highlight),
             _ => ("NORMAL", theme.accent),
         };
         let mut left = vec![

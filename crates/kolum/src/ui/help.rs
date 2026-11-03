@@ -7,9 +7,10 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 /// Contexts in the order a newcomer needs them.
-const ORDER: [Context; 7] = [
+const ORDER: [Context; 8] = [
     Context::Global,
     Context::Board,
+    Context::Visual,
     Context::Detail,
     Context::Picker,
     Context::PickerInsert,

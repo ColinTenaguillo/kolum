@@ -29,10 +29,13 @@ pub enum Context {
     PickerInsert,
     /// The `:` and `/` lines.
     Command,
+    /// A range of cards on the board, for one grouped action. Board
+    /// bindings apply too: these are only the ones it changes.
+    Visual,
 }
 
 impl Context {
-    pub const ALL: [Context; 7] = [
+    pub const ALL: [Context; 8] = [
         Context::Global,
         Context::Board,
         Context::Detail,
@@ -40,6 +43,7 @@ impl Context {
         Context::Picker,
         Context::PickerInsert,
         Context::Command,
+        Context::Visual,
     ];
 
     /// The section name under `[keys]`, and the heading on the help page.
@@ -52,6 +56,7 @@ impl Context {
             Context::Picker => ("picker", "Picker"),
             Context::PickerInsert => ("picker_insert", "Picker, typing"),
             Context::Command => ("command", "Command line"),
+            Context::Visual => ("visual", "Visual (a range of cards)"),
         }
     }
 
@@ -175,6 +180,8 @@ const DEFAULTS: &[(Context, &str, Action)] = &[
     (C::PickerInsert, "<Esc>", A::NormalMode),
     (C::PickerInsert, "<Up>", A::HistoryPrev),
     (C::PickerInsert, "<Down>", A::HistoryNext),
+    (C::Visual, "v", A::VisualMode),
+    (C::Visual, "<Esc>", A::NormalMode),
     (C::Command, "<CR>", A::Confirm),
     (C::Command, "<Esc>", A::Close),
     (C::Command, "<C-c>", A::Close),
@@ -413,7 +420,7 @@ mod tests {
                 "[keys.board] \"<c-d>\": the same key as \"<C-d>\", which is kept",
                 "[keys.board] \"<Foo>\": `<Foo>` is not a key",
                 "[keys.board] \"x\": unknown action `move_card_rigth`",
-                "[keys.boards]: no such context (one of global, board, detail, help, picker, picker_insert, command)",
+                "[keys.boards]: no such context (one of global, board, detail, help, picker, picker_insert, command, visual)",
                 "[keys.picker_insert] \"j\": would type a character here; give it a modifier",
                 "[keys.picker_insert] \"<C-j>\": expected an action name in quotes",
             ]

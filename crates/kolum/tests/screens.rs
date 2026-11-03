@@ -251,8 +251,8 @@ async fn the_theme_changes_live_and_a_preview_is_undone_on_close() {
 #[tokio::test]
 async fn unfinished_actions_say_so_instead_of_doing_nothing() {
     let mut app = loaded().await;
-    press(&mut app, "v");
-    assert!(screen(&mut app, 120, 30).contains("`visual_mode` is not available yet"));
+    press(&mut app, "s");
+    assert!(screen(&mut app, 120, 30).contains("`toggle_swimlanes` is not available yet"));
 }
 
 #[tokio::test]
@@ -867,4 +867,34 @@ async fn c_creates_through_the_editor_and_capital_c_clones() {
 
     press(&mut app, "C");
     assert_eq!(app.take_effects(), [Effect::Send(Command::Clone(IssueKey::new("ACME-45")))]);
+}
+
+#[tokio::test]
+async fn visual_mode_acts_on_a_range_of_cards() {
+    let mut app = loaded().await;
+    app.take_effects();
+    press(&mut app, "ll");
+    press(&mut app, "v2j");
+    let shown = screen(&mut app, 150, 50);
+    assert!(shown.contains("VISUAL"));
+    press(&mut app, "yy");
+    assert_eq!(app.take_effects(), [Effect::Copy("ACME-5 ACME-10 ACME-11".into())]);
+    assert!(!screen(&mut app, 150, 50).contains("VISUAL"), "an action ends it");
+
+    press(&mut app, "vkL");
+    assert_eq!(app.take_effects(), [Effect::Send(Command::Transitions(IssueKey::new("ACME-10")))]);
+    app.on_event(transitions_event("ACME-10").await);
+    let sent = writes(app.take_effects());
+    assert_eq!(
+        sent.iter().map(|w| w.1.as_str()).collect::<Vec<_>>(),
+        ["ACME-10", "ACME-11"],
+        "both move"
+    );
+
+    press(&mut app, "vj<Esc>");
+    assert!(!screen(&mut app, 150, 50).contains("VISUAL"));
+    press(&mut app, "vjl");
+    assert!(!screen(&mut app, 150, 50).contains("VISUAL"), "another column ends it");
+    press(&mut app, "vv");
+    assert!(!screen(&mut app, 150, 50).contains("VISUAL"), "v again ends it");
 }
