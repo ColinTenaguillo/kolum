@@ -154,6 +154,9 @@ pub struct App {
     /// for a move into that column.
     awaiting: Option<(Vec<IssueKey>, Option<usize>)>,
     writable: bool,
+    /// An issue asked to be opened that is not on the board: it opens when
+    /// it has been read.
+    opening: Option<IssueKey>,
     images: Option<ratatui_image::picker::Picker>,
     /// Avatars by URL: asked for, drawn, or not to be had.
     avatars: std::collections::HashMap<String, Avatar>,
@@ -224,6 +227,7 @@ impl App {
             ledger: kolum_app::Ledger::default(),
             awaiting: None,
             writable: settings.writable,
+            opening: None,
             images: settings.images,
             avatars: std::collections::HashMap::new(),
             quit: false,
@@ -356,6 +360,15 @@ impl App {
                     d.issue = fresh.clone();
                 }
                 self.board.set_snapshot(snapshot);
+            }
+            Event::IssueLoaded(detail)
+                if self.detail.is_none() && self.opening.as_ref() == Some(&detail.issue.key) =>
+            {
+                self.opening = None;
+                let mut view = DetailView::new(detail.issue.clone());
+                view.loaded = Some(*detail);
+                self.detail = Some(view);
+                self.want_avatar();
             }
             Event::IssueLoaded(detail) => {
                 if let Some(d) = &mut self.detail
@@ -747,6 +760,11 @@ impl App {
             Err(e) => return self.say(format!("{key}: {e}"), Level::Error),
         };
         let board = self.board.snapshot.as_ref().map(|s| &s.board);
+        // Jira's team-managed projects offer a transition to the status the
+        // issue is already in: valid there, nothing to choose here.
+        let here = self.issue(&key).map(|i| i.status.id.clone());
+        let transitions: Vec<_> =
+            transitions.into_iter().filter(|t| Some(&t.to.id) != here.as_ref()).collect();
         let transitions = match (column, board) {
             (Some(c), Some(board)) => kolum_app::transitions_into(board, c, &transitions),
             _ => transitions,
@@ -963,6 +981,8 @@ impl App {
         }
     }
 
+    /// Opens at once from the board's copy; an issue not on the board (a
+    /// remote search hit) opens when it has been read.
     fn open_detail(&mut self, key: IssueKey) {
         let issue =
             self.board.snapshot.as_ref().and_then(|s| s.issues.iter().find(|i| i.key == key));
@@ -971,11 +991,13 @@ impl App {
                 self.detail = Some(DetailView::new(issue.clone()));
                 self.want_avatar();
             }
-            None => self.say(format!("{key} is not on this board"), Level::Warn),
+            None => {
+                self.say(format!("Opening {key}…"), Level::Info);
+                self.opening = Some(key.clone());
+            }
         }
         self.effects.push(Effect::Send(Command::LoadIssue(key)));
     }
-
     fn open_picker(&mut self, picker: Box<dyn AnyPicker>) {
         self.close_picker();
         self.picker = Some(picker);

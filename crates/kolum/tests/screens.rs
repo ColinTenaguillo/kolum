@@ -997,3 +997,47 @@ async fn attachments_are_listed_and_the_first_picture_previewed() {
     let title_row = previewed.lines().filter(|l| l.contains("session-expired.png")).count();
     assert_eq!(title_row, 2, "listed on the left and titled over the preview on the right");
 }
+
+#[tokio::test]
+async fn a_search_hit_that_is_not_on_the_board_still_opens() {
+    use kolum_domain::IssueReader;
+    let mut app = loaded().await;
+    app.take_effects();
+    press(&mut app, "<Space>F");
+    let due = app.deadline().unwrap();
+    wait_until(&mut app, due);
+    app.take_effects();
+    // An epic: in the project, not a card on the board.
+    let fake = FakeProvider::new();
+    let epic = fake.issue(&IssueKey::new("ACME-1")).await.unwrap();
+    app.on_event(Event::SearchResults { id: 1, result: Ok(vec![epic.clone()]) });
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(IssueKey::new("ACME-1")))]);
+    assert!(screen(&mut app, 120, 30).contains("Opening ACME-1"));
+    let detail = IssueDetail { issue: epic, comments: vec![], activity: vec![] };
+    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-1"), "opened once loaded");
+    assert!(screen(&mut app, 120, 30).contains("Single sign-on"));
+}
+
+#[tokio::test]
+async fn the_transitions_picker_leaves_out_the_status_the_issue_is_in() {
+    let mut app = loaded().await;
+    app.take_effects();
+    press(&mut app, "t");
+    let mut event = transitions_event("ACME-9").await;
+    // Jira's team-managed projects offer a transition to where it is.
+    if let Event::Transitions { result: Ok(ts), .. } = &mut event {
+        let mut to_itself = ts[0].clone();
+        to_itself.to.id = kolum_domain::StatusId::new("backlog");
+        to_itself.name = "Backlog".into();
+        to_itself.to.name = "Backlog".into();
+        ts.push(to_itself);
+    }
+    app.on_event(event);
+    settle(&mut app);
+    let shown = screen(&mut app, 150, 40);
+    assert!(shown.contains("Move ACME-9") && shown.contains("To Do"), "{shown}");
+    assert!(!shown.contains("Backlog "), "not to where it already is: {shown}");
+}

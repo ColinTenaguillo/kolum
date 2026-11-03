@@ -206,6 +206,11 @@ refuses. A transition that asks for fields (a resolution on the way to Done)
 is not attempted: kolum names the fields and `o` opens the issue in the
 browser, which has the form for them.
 
+Tested against a live Jira Cloud site (a team-managed project): every read,
+and transitions, assigning and title edits there and back. To run those tests
+against your own site, see `crates/kolum-provider-jira/tests/live.rs`; they are
+ignored by default and write only with `KOLUM_LIVE_WRITES=1`.
+
 Data Center is designed in (`flavor`: REST v2, a Bearer token, user names)
 but untested against a live server; its wiki markup is read as plain text and
 written as Markdown for now.
