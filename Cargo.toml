@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/kolum-domain"]
+members = ["crates/kolum-domain", "crates/kolum-provider-fake"]
 
 [workspace.package]
 version = "0.1.0"
