@@ -2,6 +2,7 @@ use kolum::config::{self, Profile};
 use kolum::keymap::Keymap;
 use kolum::ui::{App, Settings};
 use kolum_domain::Provider;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -153,7 +154,20 @@ fn app() -> anyhow::Result<()> {
         let at = log.as_ref().map_or("nowhere".into(), |p| p.display().to_string());
         eprintln!("kolum: logging to {at}");
     }
-    let (config, settings) = load(&args, config::config_dir());
+    let (mut config, mut settings) = load(&args, config::config_dir());
+    let mut args = args;
+    if config.profiles.is_empty()
+        && !args.demo
+        && args.profile.is_none()
+        && std::io::stdin().is_terminal()
+    {
+        match first_run(&args)? {
+            kolum::wizard::Answer::Demo => args.demo = true,
+            kolum::wizard::Answer::Jira(_) => {
+                (config, settings) = load(&args, config::config_dir())
+            }
+        }
+    }
     for p in &settings.problems {
         tracing::warn!("config: {p}");
     }
@@ -176,6 +190,21 @@ fn app() -> anyhow::Result<()> {
         eprintln!("kolum: the log is at {}", log.display());
     }
     result
+}
+
+/// Asks the first-run questions and writes the profile they describe.
+fn first_run(args: &Args) -> anyhow::Result<kolum::wizard::Answer> {
+    let path = args
+        .config
+        .clone()
+        .or_else(|| config::config_dir().map(|d| d.join("config.toml")))
+        .ok_or_else(|| anyhow::anyhow!("no home directory to keep the config in"))?;
+    let answer = kolum::wizard::questions(&mut std::io::stdin().lock(), &mut std::io::stdout())?;
+    if let kolum::wizard::Answer::Jira(jira) = &answer {
+        kolum::wizard::write_profile(&path, jira)?;
+        println!("\nWrote the `{}` profile to {}.", jira.name, path.display());
+    }
+    Ok(answer)
 }
 
 /// The config, and what the app is built from, with every problem found.

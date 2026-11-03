@@ -17,6 +17,10 @@ cargo run --release -- --demo
 `--demo` opens a board of 40 realistic issues from an in-memory provider,
 with no account. Press `?` for every key.
 
+Run without a profile, kolum asks a few questions (Jira URL, e-mail, how to get
+the token, the board) and writes the profile to `config.toml`; a token kept in
+the file makes the file readable by you alone.
+
 ## Keys
 
 The defaults follow vim. Counts work on motions (`3j`, `5G`), sequences wait
@@ -189,7 +193,9 @@ with optimistic updates and rollback, on the fake provider and Jira.
 
 Also done: swimlanes, visual mode with grouped actions, creating and cloning.
 
-Next: the first-run wizard, Jira Data Center against a live server, a second
+Also done: the first-run wizard.
+
+Next: Jira Data Center against a live server, a second
 provider (GitHub Projects) to prove the abstraction, images, packaging. Actions bound but not built yet say so when pressed.
 
 ## License

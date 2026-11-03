@@ -6,3 +6,4 @@ pub mod keymap;
 pub mod run;
 pub mod theme;
 pub mod ui;
+pub mod wizard;
