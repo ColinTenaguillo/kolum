@@ -6,7 +6,7 @@
 
 use kolum_domain::UserId;
 use kolum_domain::rich_text::{Block, Inline, Marks, PanelKind, RichText};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 pub fn to_rich_text(doc: &Value) -> RichText {
     RichText { blocks: blocks(children(doc)) }
@@ -180,4 +180,130 @@ fn date(ms: Option<&str>) -> String {
         .and_then(|ms| time::OffsetDateTime::from_unix_timestamp(ms / 1000).ok())
         .map(|t| t.date().to_string())
         .unwrap_or_default()
+}
+
+/// The other way, for writes: RichText to an ADF document. What RichText
+/// holds, ADF holds too, so this loses nothing.
+pub fn from_rich_text(rt: &RichText) -> Value {
+    json!({ "type": "doc", "version": 1, "content": rt.blocks.iter().map(block_out).collect::<Vec<_>>() })
+}
+
+fn node(kind: &str, content: Vec<Value>) -> Value {
+    json!({ "type": kind, "content": content })
+}
+
+fn block_out(block: &Block) -> Value {
+    match block {
+        Block::Paragraph(inlines) => node("paragraph", inlines_out(inlines)),
+        Block::Heading { level, content } => {
+            json!({ "type": "heading", "attrs": { "level": level }, "content": inlines_out(content) })
+        }
+        Block::List { ordered, items } => node(
+            if *ordered { "orderedList" } else { "bulletList" },
+            items
+                .iter()
+                .map(|item| node("listItem", item.iter().map(block_out).collect()))
+                .collect(),
+        ),
+        Block::Code { language, text } => {
+            let content = if text.is_empty() {
+                vec![]
+            } else {
+                vec![json!({ "type": "text", "text": text })]
+            };
+            json!({ "type": "codeBlock", "attrs": { "language": language }, "content": content })
+        }
+        Block::Quote(blocks) => node("blockquote", blocks.iter().map(block_out).collect()),
+        Block::Panel { kind, blocks } => {
+            let name = match kind {
+                PanelKind::Info => "info",
+                PanelKind::Note => "note",
+                PanelKind::Success => "success",
+                PanelKind::Warning => "warning",
+                PanelKind::Error => "error",
+            };
+            json!({ "type": "panel", "attrs": { "panelType": name }, "content": blocks.iter().map(block_out).collect::<Vec<_>>() })
+        }
+        Block::Table { header, rows } => node(
+            "table",
+            rows.iter()
+                .enumerate()
+                .map(|(r, row)| {
+                    let cell = if *header && r == 0 { "tableHeader" } else { "tableCell" };
+                    let cells = row.iter().map(|c| node(cell, cell_paragraphs(c))).collect();
+                    node("tableRow", cells)
+                })
+                .collect(),
+        ),
+        Block::Rule => json!({ "type": "rule" }),
+    }
+}
+
+/// A cell's line breaks were paragraphs in ADF; they are again.
+fn cell_paragraphs(inlines: &[Inline]) -> Vec<Value> {
+    inlines.split(|i| *i == Inline::Break).map(|p| node("paragraph", inlines_out(p))).collect()
+}
+
+fn inlines_out(inlines: &[Inline]) -> Vec<Value> {
+    inlines
+        .iter()
+        .filter_map(|inline| {
+            Some(match inline {
+                // ADF refuses an empty text node.
+                Inline::Text { text, .. } | Inline::Link { text, .. } if text.is_empty() => return None,
+                Inline::Text { text, marks } => {
+                    let mut out = vec![];
+                    for (on, kind) in [(marks.bold, "strong"), (marks.italic, "em"), (marks.code, "code"), (marks.strike, "strike")] {
+                        if on {
+                            out.push(json!({ "type": kind }));
+                        }
+                    }
+                    if out.is_empty() {
+                        json!({ "type": "text", "text": text })
+                    } else {
+                        json!({ "type": "text", "text": text, "marks": out })
+                    }
+                }
+                Inline::Link { text, url } => {
+                    json!({ "type": "text", "text": text, "marks": [{ "type": "link", "attrs": { "href": url } }] })
+                }
+                Inline::Mention { id, name } => {
+                    json!({ "type": "mention", "attrs": { "id": id.as_ref().map(|i| i.as_str()), "text": format!("@{name}") } })
+                }
+                Inline::Emoji(e) => json!({ "type": "emoji", "attrs": { "shortName": e, "text": e } }),
+                Inline::Break => json!({ "type": "hardBreak" }),
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rich_text_survives_a_trip_through_adf() {
+        let rt = RichText::from_markdown(
+            "## Steps\n\nAfter **SSO**, *see* `a.rs`, ~~old~~ [docs](https://d.x)  \nnext\n\n1. one\n   - inner\n2. two\n\n             ```rust\nfn x() {}\n```\n\n> quoted\n\n> [!CAUTION]\n> careful\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n             ping [@Ana](mention:u2)\n\n---",
+        );
+        assert_eq!(to_rich_text(&from_rich_text(&rt)), rt);
+    }
+
+    #[test]
+    fn the_document_has_adf_shapes() {
+        let doc = from_rich_text(&RichText::from_markdown("**hi** [@Ana](mention:u2)"));
+        assert_eq!(doc["type"], "doc");
+        assert_eq!(doc["version"], 1);
+        let para = &doc["content"][0];
+        assert_eq!(
+            para["content"][0],
+            json!({ "type": "text", "text": "hi", "marks": [{ "type": "strong" }] })
+        );
+        assert_eq!(
+            para["content"][2],
+            json!({ "type": "mention", "attrs": { "id": "u2", "text": "@Ana" } })
+        );
+        let empty = from_rich_text(&RichText::default());
+        assert_eq!(empty["content"], json!([]));
+    }
 }

@@ -2,8 +2,10 @@
 //! `Retry-After` honoured on 429 before giving up.
 
 use kolum_domain::{DomainError, Result};
+pub use reqwest::Method;
 use reqwest::header::{ACCEPT, AUTHORIZATION, RETRY_AFTER};
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 use std::time::Duration;
 use tokio::sync::Semaphore;
 
@@ -42,31 +44,54 @@ impl Client {
         path: &str,
         query: &[(&str, String)],
     ) -> Result<T> {
+        let value = self.request(Method::GET, path, query, None).await?;
+        serde_json::from_value(value).map_err(|e| DomainError::Transport(format!("{path}: {e}")))
+    }
+
+    /// A write. Jira answers most of them with 204 and no body, which
+    /// comes back as `Null`.
+    pub async fn send(&self, method: Method, path: &str, body: &Value) -> Result<Value> {
+        self.request(method, path, &[], Some(body)).await
+    }
+
+    async fn request(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<&Value>,
+    ) -> Result<Value> {
         let mut attempt = 0;
         loop {
             let permit =
                 self.limit.acquire().await.map_err(|e| DomainError::Transport(e.to_string()))?;
-            let response = self
+            let mut request = self
                 .http
-                .get(format!("{}{path}", self.base))
+                .request(method.clone(), format!("{}{path}", self.base))
                 .header(AUTHORIZATION, &self.auth)
                 .header(ACCEPT, "application/json")
-                .query(query)
-                .send()
-                .await
-                .map_err(|e| DomainError::Transport(format!("{path}: {e}")))?;
-            let status = response.status().as_u16();
-            if (200..300).contains(&status) {
-                return response
-                    .json()
-                    .await
-                    .map_err(|e| DomainError::Transport(format!("{path}: {e}")));
+                .query(query);
+            if let Some(body) = body {
+                request = request.json(body);
             }
+            let response =
+                request.send().await.map_err(|e| DomainError::Transport(format!("{path}: {e}")))?;
+            let status = response.status().as_u16();
             let retry =
                 response.headers().get(RETRY_AFTER).and_then(|v| v.to_str().ok()?.parse().ok());
-            let body = response.text().await.unwrap_or_default();
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|e| DomainError::Transport(format!("{path}: {e}")))?;
             drop(permit);
-            match status_error(status, &body, retry) {
+            if (200..300).contains(&status) {
+                if bytes.is_empty() {
+                    return Ok(Value::Null);
+                }
+                return serde_json::from_slice(&bytes)
+                    .map_err(|e| DomainError::Transport(format!("{path}: {e}")));
+            }
+            match status_error(status, &String::from_utf8_lossy(&bytes), retry) {
                 DomainError::RateLimited { retry_after_secs: Some(secs) }
                     if attempt < RETRIES && secs <= MAX_WAIT_SECS =>
                 {

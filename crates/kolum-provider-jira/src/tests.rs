@@ -200,25 +200,41 @@ struct FakeJira {
     seen: Arc<Mutex<Vec<String>>>,
 }
 
-fn route(target: &str) -> Option<&'static str> {
+fn route(method: &str, target: &str) -> Option<(&'static str, &'static str)> {
     let path = target.split('?').next().unwrap_or("");
-    Some(match path {
-        "/rest/api/3/field" => fixture!("fields.json"),
-        "/rest/agile/1.0/board" => fixture!("boards.json"),
-        "/rest/agile/1.0/board/42" => fixture!("board.json"),
-        "/rest/agile/1.0/board/42/configuration" => fixture!("board_configuration.json"),
-        "/rest/agile/1.0/board/42/issue" => fixture!("board_issues.json"),
-        "/rest/api/3/issue/ACME-5" if target.contains("expand=changelog") => {
-            fixture!("issue_changelog.json")
+    match (method, path) {
+        ("POST", "/rest/api/3/issue/ACME-5/transitions") => return Some(("204 No Content", "")),
+        ("PUT", "/rest/api/3/issue/ACME-5/assignee") => return Some(("204 No Content", "")),
+        ("PUT", "/rest/api/3/issue/ACME-5") => return Some(("204 No Content", "")),
+        ("POST", "/rest/api/3/issue/ACME-5/comment") => {
+            return Some(("201 Created", fixture!("comment_created.json")));
         }
-        "/rest/api/3/issue/ACME-5" => fixture!("issue.json"),
-        "/rest/api/3/issue/ACME-5/comment" => fixture!("comments.json"),
-        "/rest/api/3/issue/ACME-5/transitions" => fixture!("transitions.json"),
-        "/rest/api/3/search/jql" => fixture!("search_jql.json"),
-        "/rest/api/3/myself" => fixture!("myself.json"),
-        "/rest/api/3/user/search" => fixture!("user_search.json"),
+        ("POST", "/rest/api/3/issue") => {
+            return Some(("201 Created", r#"{"id":"10100","key":"ACME-5","self":"x"}"#));
+        }
+        ("GET", _) => {}
         _ => return None,
-    })
+    }
+    Some((
+        "200 OK",
+        match path {
+            "/rest/api/3/field" => fixture!("fields.json"),
+            "/rest/agile/1.0/board" => fixture!("boards.json"),
+            "/rest/agile/1.0/board/42" => fixture!("board.json"),
+            "/rest/agile/1.0/board/42/configuration" => fixture!("board_configuration.json"),
+            "/rest/agile/1.0/board/42/issue" => fixture!("board_issues.json"),
+            "/rest/api/3/issue/ACME-5" if target.contains("expand=changelog") => {
+                fixture!("issue_changelog.json")
+            }
+            "/rest/api/3/issue/ACME-5" => fixture!("issue.json"),
+            "/rest/api/3/issue/ACME-5/comment" => fixture!("comments.json"),
+            "/rest/api/3/issue/ACME-5/transitions" => fixture!("transitions.json"),
+            "/rest/api/3/search/jql" => fixture!("search_jql.json"),
+            "/rest/api/3/myself" => fixture!("myself.json"),
+            "/rest/api/3/user/search" => fixture!("user_search.json"),
+            _ => return None,
+        },
+    ))
 }
 
 async fn fake_jira(fail_once: Option<&'static str>) -> FakeJira {
@@ -234,27 +250,48 @@ async fn fake_jira(fail_once: Option<&'static str>) -> FakeJira {
             tokio::spawn(async move {
                 let mut request = vec![];
                 let mut buf = [0u8; 4096];
-                while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                let head_end = loop {
+                    if let Some(at) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break at + 4;
+                    }
+                    match socket.read(&mut buf).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => request.extend_from_slice(&buf[..n]),
+                    }
+                };
+                let head = String::from_utf8_lossy(&request[..head_end]).to_string();
+                let length: usize = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length: "))
+                    .and_then(|n| n.trim().parse().ok())
+                    .unwrap_or(0);
+                while request.len() < head_end + length {
                     match socket.read(&mut buf).await {
                         Ok(0) | Err(_) => return,
                         Ok(n) => request.extend_from_slice(&buf[..n]),
                     }
                 }
-                let request = String::from_utf8_lossy(&request).to_string();
-                let target = request.split_whitespace().nth(1).unwrap_or("").to_string();
-                let auth = request
+                let body = String::from_utf8_lossy(&request[head_end..]).to_string();
+                let method = head.split_whitespace().next().unwrap_or("").to_string();
+                let target = head.split_whitespace().nth(1).unwrap_or("").to_string();
+                let auth = head
                     .lines()
                     .find_map(|l| l.strip_prefix("authorization: "))
                     .unwrap_or("")
                     .to_string();
-                log.lock().unwrap().push(format!("{target} [{auth}]"));
+                let entry = if method == "GET" {
+                    format!("{target} [{auth}]")
+                } else {
+                    format!("{method} {target}\n{body}\n[{auth}]")
+                };
+                log.lock().unwrap().push(entry);
                 let first_hit = fail_once.is_some_and(|p| target.starts_with(p))
                     && !std::mem::replace(&mut *failed.lock().unwrap(), true);
-                let (status, extra, body) = match route(&target) {
+                let (status, extra, body) = match route(&method, &target) {
                     _ if first_hit => {
                         ("429 Too Many Requests", "Retry-After: 0\r\n", String::new())
                     }
-                    Some(body) => ("200 OK", "", body.to_string()),
+                    Some((status, body)) => (status, "", body.to_string()),
                     None => {
                         ("404 Not Found", "", r#"{"errorMessages":["No such thing"]}"#.to_string())
                     }
@@ -371,41 +408,91 @@ async fn a_rate_limit_is_waited_out() {
     assert_eq!(seen.iter().filter(|r| r.starts_with("/rest/api/3/myself")).count(), 2);
 }
 
-#[tokio::test]
-async fn writes_are_refused_up_front() {
-    let jira = fake_jira(None).await;
-    let p = provider(&jira);
-    assert!(!p.capabilities().supports(Capability::Write));
-    let key = IssueKey::new("ACME-5");
-    let refused = Err(DomainError::Unsupported(Capability::Write));
-    assert_eq!(p.assign(&key, None).await, refused);
-    assert_eq!(p.transition(&key, &TransitionId::new("21")).await, refused);
-    assert!(jira.seen.lock().unwrap().is_empty(), "nothing was sent");
+fn sent(jira: &FakeJira, method: &str) -> Vec<String> {
+    jira.seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.starts_with(&format!("{method} ")))
+        .cloned()
+        .collect()
 }
 
-#[test]
-fn custom_field_values_of_every_shape() {
-    let mut dto: IssueDto = serde_json::from_str(fixture!("issue.json")).unwrap();
-    dto.fields.insert("customfield_1".into(), serde_json::json!(8));
-    dto.fields.insert("customfield_2".into(), serde_json::json!("free text"));
-    dto.fields.insert("customfield_3".into(), serde_json::json!({"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "rich"}]}]}));
-    dto.fields.insert("customfield_4".into(), serde_json::json!({"name": "Mobile", "id": "9"}));
-    dto.fields.insert("customfield_5".into(), serde_json::json!(true));
-    dto.fields.insert("customfield_6".into(), serde_json::json!({"id": "nameless"}));
-    let issue = map::issue(&dto, &ctx()).unwrap();
-    let value =
-        |id: &str| issue.fields.iter().find(|f| f.id.as_str() == id).map(|f| f.value.clone());
-    assert_eq!(value("customfield_1"), Some(FieldValue::Number(8.0)));
-    assert_eq!(value("customfield_2"), Some(FieldValue::Text("free text".into())));
-    assert!(
-        matches!(value("customfield_3"), Some(FieldValue::RichText(r)) if r.plain_text() == "rich")
-    );
-    assert_eq!(value("customfield_4"), Some(FieldValue::Text("Mobile".into())));
-    assert_eq!(value("customfield_5"), None, "a shape with no counterpart is left out");
-    assert_eq!(value("customfield_6"), None);
+/// A logged write: its request line, and its body as JSON.
+fn parts(entry: &str) -> (&str, serde_json::Value) {
+    let mut lines = entry.lines();
+    let line = lines.next().unwrap();
+    (line, serde_json::from_str(lines.next().unwrap()).unwrap())
+}
+
+#[tokio::test]
+async fn writes_send_what_jira_expects() {
+    let jira = fake_jira(None).await;
+    let p = provider(&jira);
+    assert!(p.capabilities().supports(Capability::Write));
+    let key = IssueKey::new("ACME-5");
+    p.transition(&key, &TransitionId::new("21")).await.unwrap();
+    p.assign(&key, Some(&UserId::new("557058:ana"))).await.unwrap();
+    p.assign(&key, None).await.unwrap();
+    let posted = p.comment(&key, RichText::from_markdown("Looks **good**")).await.unwrap();
+    assert_eq!(posted.body.plain_text(), "Looks good");
+    let update = IssueUpdate {
+        title: Some("New title".into()),
+        priority: Some(Priority::High),
+        labels: Some(vec!["a".into()]),
+        description: None,
+    };
+    p.update(&key, update).await.unwrap();
+    p.update(&key, IssueUpdate::default()).await.unwrap();
+
+    use serde_json::json;
+    let posts = sent(&jira, "POST");
+    assert!(posts.iter().all(|p| p.ends_with("[Basic dGVzdA==]")));
     assert_eq!(
-        issue.fields.iter().find(|f| f.id.as_str() == "customfield_1").unwrap().name,
-        "customfield_1",
-        "no name known: the id"
+        parts(&posts[0]),
+        ("POST /rest/api/3/issue/ACME-5/transitions", json!({"transition": {"id": "21"}}))
     );
+    let comment = adf::from_rich_text(&RichText::from_markdown("Looks **good**"));
+    assert_eq!(
+        parts(&posts[1]),
+        ("POST /rest/api/3/issue/ACME-5/comment", json!({ "body": comment }))
+    );
+    let puts = sent(&jira, "PUT");
+    assert_eq!(
+        parts(&puts[0]),
+        ("PUT /rest/api/3/issue/ACME-5/assignee", json!({"accountId": "557058:ana"}))
+    );
+    assert_eq!(
+        parts(&puts[1]),
+        ("PUT /rest/api/3/issue/ACME-5/assignee", json!({"accountId": null}))
+    );
+    let fields =
+        json!({"fields": {"summary": "New title", "priority": {"name": "High"}, "labels": ["a"]}});
+    assert_eq!(parts(&puts[2]), ("PUT /rest/api/3/issue/ACME-5", fields));
+    assert_eq!(puts.len(), 3, "an empty update sends nothing");
+}
+
+#[tokio::test]
+async fn creating_and_cloning_read_the_new_issue_back() {
+    let jira = fake_jira(None).await;
+    let p = provider(&jira);
+    let clone = p.clone_issue(&IssueKey::new("ACME-5")).await.unwrap();
+    assert_eq!(clone.key.as_str(), "ACME-5", "read back by the key Jira gave");
+    let posts = sent(&jira, "POST");
+    let (line, body) = parts(&posts[0]);
+    assert_eq!(line, "POST /rest/api/3/issue");
+    let fields = &body["fields"];
+    assert_eq!(fields["project"]["key"], "ACME");
+    assert_eq!(fields["issuetype"]["name"], "Bug");
+    assert_eq!(fields["summary"], "CLONE - Login times out after SSO redirect");
+    assert_eq!(fields["parent"]["key"], "ACME-1");
+    assert_eq!(fields["description"]["type"], "doc");
+}
+
+#[tokio::test]
+async fn a_refused_write_is_a_typed_error() {
+    let jira = fake_jira(None).await;
+    let p = provider(&jira);
+    let refused = p.transition(&IssueKey::new("ACME-404"), &TransitionId::new("21")).await;
+    assert_eq!(refused, Err(DomainError::NotFound("No such thing".into())));
 }

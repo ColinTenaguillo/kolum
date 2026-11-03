@@ -1,8 +1,9 @@
 //! The Jira adapter: Cloud's REST v3 and Agile 1.0 APIs, with the paths and
 //! authentication switching to v2 and a Bearer token on Data Center.
 //!
-//! Read-only for now: writes answer `Unsupported(Write)`, and
-//! `Capabilities` says so up front, so the UI does not offer them.
+//! Reads and writes: transitions, assigning, comments, edits, creating
+//! and cloning. Data Center's rich text is wiki markup, read as plain text
+//! and written as Markdown until it has a reader and a writer of its own.
 
 mod adf;
 mod client;
@@ -14,10 +15,11 @@ mod settings;
 pub use settings::{JiraFlavor, JiraSettings};
 
 use async_trait::async_trait;
-use client::Client;
+use client::{Client, Method};
 use dto::*;
 use kolum_domain::*;
 use map::Ctx;
+use serde_json::json;
 use time::OffsetDateTime;
 use tokio::sync::OnceCell;
 
@@ -55,6 +57,15 @@ impl JiraProvider {
     /// The board the profile names, if it names one.
     pub fn board_id(&self) -> Option<BoardId> {
         self.settings.board.map(|b| BoardId::new(b.to_string()))
+    }
+
+    /// Rich text as this Jira takes it: ADF on Cloud. Data Center wants
+    /// wiki markup, which kolum does not write yet; Markdown reads close.
+    fn rich(&self, rt: &RichText) -> serde_json::Value {
+        match self.settings.flavor {
+            JiraFlavor::Cloud => adf::from_rich_text(rt),
+            JiraFlavor::DataCenter => json!(rt.to_markdown()),
+        }
     }
 
     fn api(&self) -> &'static str {
@@ -238,28 +249,94 @@ impl IssueWriter for JiraProvider {
         Ok(page.transitions.iter().map(map::transition).collect())
     }
 
-    async fn transition(&self, _: &IssueKey, _: &TransitionId) -> Result<()> {
-        Err(DomainError::Unsupported(Capability::Write))
+    async fn transition(&self, key: &IssueKey, transition: &TransitionId) -> Result<()> {
+        let body = json!({ "transition": { "id": transition.as_str() } });
+        self.client
+            .send(Method::POST, &format!("{}/issue/{key}/transitions", self.api()), &body)
+            .await
+            .map(drop)
     }
 
-    async fn assign(&self, _: &IssueKey, _: Option<&UserId>) -> Result<()> {
-        Err(DomainError::Unsupported(Capability::Write))
+    /// Cloud names a user by account id, Data Center by user name; `null`
+    /// unassigns either way.
+    async fn assign(&self, key: &IssueKey, user: Option<&UserId>) -> Result<()> {
+        let field = match self.settings.flavor {
+            JiraFlavor::Cloud => "accountId",
+            JiraFlavor::DataCenter => "name",
+        };
+        let body = json!({ field: user.map(|u| u.as_str()) });
+        self.client
+            .send(Method::PUT, &format!("{}/issue/{key}/assignee", self.api()), &body)
+            .await
+            .map(drop)
     }
 
-    async fn comment(&self, _: &IssueKey, _: RichText) -> Result<Comment> {
-        Err(DomainError::Unsupported(Capability::Write))
+    async fn comment(&self, key: &IssueKey, body: RichText) -> Result<Comment> {
+        let body = json!({ "body": self.rich(&body) });
+        let dto = self
+            .client
+            .send(Method::POST, &format!("{}/issue/{key}/comment", self.api()), &body)
+            .await?;
+        let dto: CommentDto =
+            serde_json::from_value(dto).map_err(|e| DomainError::Transport(e.to_string()))?;
+        map::comment(&dto)
+            .ok_or_else(|| DomainError::Transport("Jira sent back an unreadable comment".into()))
     }
 
-    async fn update(&self, _: &IssueKey, _: IssueUpdate) -> Result<()> {
-        Err(DomainError::Unsupported(Capability::Write))
+    async fn update(&self, key: &IssueKey, update: IssueUpdate) -> Result<()> {
+        let mut fields = serde_json::Map::new();
+        if let Some(title) = update.title {
+            fields.insert("summary".into(), json!(title));
+        }
+        if let Some(description) = &update.description {
+            fields.insert("description".into(), self.rich(description));
+        }
+        if let Some(labels) = update.labels {
+            fields.insert("labels".into(), json!(labels));
+        }
+        if let Some(priority) = update.priority {
+            fields.insert("priority".into(), json!({ "name": priority.name() }));
+        }
+        if fields.is_empty() {
+            return Ok(());
+        }
+        let body = json!({ "fields": fields });
+        self.client.send(Method::PUT, &format!("{}/issue/{key}", self.api()), &body).await.map(drop)
     }
 
-    async fn create(&self, _: NewIssue) -> Result<Issue> {
-        Err(DomainError::Unsupported(Capability::Write))
+    async fn create(&self, new: NewIssue) -> Result<Issue> {
+        let mut fields = json!({
+            "project": { "key": new.project },
+            "issuetype": { "name": new.kind.name },
+            "summary": new.title,
+        });
+        if !new.description.is_empty() {
+            fields["description"] = self.rich(&new.description);
+        }
+        if let Some(parent) = new.parent {
+            fields["parent"] = json!({ "key": parent.as_str() });
+        }
+        let created = self
+            .client
+            .send(Method::POST, &format!("{}/issue", self.api()), &json!({ "fields": fields }))
+            .await?;
+        let key = created["key"]
+            .as_str()
+            .ok_or_else(|| DomainError::Transport("Jira created an issue with no key".into()))?;
+        self.issue(&IssueKey::new(key)).await
     }
 
-    async fn clone_issue(&self, _: &IssueKey) -> Result<Issue> {
-        Err(DomainError::Unsupported(Capability::Write))
+    async fn clone_issue(&self, key: &IssueKey) -> Result<Issue> {
+        let source = self.issue(key).await?;
+        let project = key.as_str().split('-').next().unwrap_or_default().to_string();
+        let new = NewIssue {
+            project,
+            kind: source.kind,
+            title: format!("CLONE - {}", source.title),
+            description: source.description,
+            parent: source.parent.map(|p| p.key),
+        };
+        self.create(new).await
     }
 }
 
@@ -299,6 +376,7 @@ impl Provider for JiraProvider {
             CustomFields,
             Comments,
             Activity,
+            Write,
         ])
     }
 }

@@ -684,11 +684,18 @@ async fn a_move_into_a_column_of_two_statuses_asks_which() {
     app.on_event(transitions_event("ACME-16").await);
     settle(&mut app);
     let shown = screen(&mut app, 150, 40);
-    assert!(shown.contains("Move ACME-16") && shown.contains("In Progress") && shown.contains("Blocked"), "{shown}");
+    assert!(
+        shown.contains("Move ACME-16")
+            && shown.contains("In Progress")
+            && shown.contains("Blocked"),
+        "{shown}"
+    );
     press(&mut app, "<C-n><CR>");
     let sent = writes(app.take_effects());
-    assert_eq!(sent[0].2, kolum_app::Write::Transition(kolum_domain::TransitionId::new("to-blocked")));
-    
+    assert_eq!(
+        sent[0].2,
+        kolum_app::Write::Transition(kolum_domain::TransitionId::new("to-blocked"))
+    );
 }
 
 #[tokio::test]
@@ -707,14 +714,19 @@ async fn transitions_that_cannot_be_done_here_say_why() {
     settle(&mut app);
     press(&mut app, "<CR>");
     assert!(writes(app.take_effects()).is_empty());
-    assert!(screen(&mut app, 150, 30).contains("asks for resolution: press o to do it in the browser"));
+    assert!(
+        screen(&mut app, 150, 30).contains("asks for resolution: press o to do it in the browser")
+    );
 
     press(&mut app, "L");
     app.on_event(Event::Transitions { key: IssueKey::new("ACME-9"), result: Ok(vec![]) });
     assert!(screen(&mut app, 150, 30).contains("No transition takes ACME-9 to To Do from here"));
     press(&mut app, "t");
     app.on_event(Event::Transitions { key: IssueKey::new("ACME-1"), result: Ok(vec![]) });
-    assert!(!screen(&mut app, 150, 30).contains("No transition"), "a reply for another issue is ignored");
+    assert!(
+        !screen(&mut app, 150, 30).contains("No transition"),
+        "a reply for another issue is ignored"
+    );
 }
 
 #[tokio::test]
@@ -727,7 +739,7 @@ async fn assigning_from_the_picker_and_to_myself() {
     let me = shown.find("Colin Tenaguillo (CT)").unwrap();
     assert!(me < shown.find("Ana Silva (AS)").unwrap(), "me first");
     assert!(shown.contains("Unassigned"));
-        press(&mut app, "ana");
+    press(&mut app, "ana");
     settle(&mut app);
     press(&mut app, "<CR>");
     let sent = writes(app.take_effects());
@@ -744,7 +756,9 @@ async fn a_comment_goes_through_the_editor() {
     let mut app = loaded().await;
     app.take_effects();
     press(&mut app, "i");
-    let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else { panic!("expected the editor") };
+    let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else {
+        panic!("expected the editor")
+    };
     assert_eq!(purpose, EditPurpose::Comment(IssueKey::new("ACME-9")));
     assert!(text.contains("<!-- kolum:") && text.contains("ACME-9"));
 
@@ -752,7 +766,10 @@ async fn a_comment_goes_through_the_editor() {
     assert!(writes(app.take_effects()).is_empty(), "left empty: cancelled");
     app.on_edited(purpose.clone(), Ok(format!("Looks **good**\n{text}")));
     let sent = writes(app.take_effects());
-    assert_eq!(sent[0].2, kolum_app::Write::Comment(kolum_domain::RichText::from_markdown("Looks **good**")));
+    assert_eq!(
+        sent[0].2,
+        kolum_app::Write::Comment(kolum_domain::RichText::from_markdown("Looks **good**"))
+    );
     app.on_edited(purpose, Err("vim exited with 1".into()));
     assert!(screen(&mut app, 120, 30).contains("$EDITOR: vim exited with 1"));
 }
@@ -777,12 +794,18 @@ async fn editing_sends_only_what_changed() {
     let kolum_app::Write::Update(update) = &sent[0].2 else { panic!() };
     assert_eq!(update.title.as_deref(), Some("Require SSO per organisation"));
     assert_eq!(update.description, None, "the description did not move");
-    assert!(screen(&mut app, 120, 30).contains("Require SSO per organisation"), "the detail shows it at once");
+    assert!(
+        screen(&mut app, 120, 30).contains("Require SSO per organisation"),
+        "the detail shows it at once"
+    );
 
     app.on_edited(purpose, Ok("# Require SSO per organisation\n\nNew *body*".into()));
     let sent = writes(app.take_effects());
     let kolum_app::Write::Update(update) = &sent[0].2 else { panic!() };
-    assert_eq!((update.title.as_ref(), update.description.as_ref().map(|d| d.plain_text())), (None, Some("New body".into())));
+    assert_eq!(
+        (update.title.as_ref(), update.description.as_ref().map(|d| d.plain_text())),
+        (None, Some("New body".into()))
+    );
 }
 
 #[tokio::test]
@@ -790,7 +813,7 @@ async fn a_saved_write_shows_the_providers_version_and_refreshes_the_detail() {
     let mut app = loaded().await;
     press(&mut app, "<CR>");
     app.take_effects();
-        let issues = load_board(&FakeProvider::new(), None).await.unwrap().issues;
+    let issues = load_board(&FakeProvider::new(), None).await.unwrap().issues;
     let mut issue = issues.into_iter().find(|i| i.key.as_str() == "ACME-9").unwrap();
     issue.title = "As the provider has it".into();
     let key = issue.key.clone();

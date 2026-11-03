@@ -4,8 +4,9 @@ A kanban client for ticket trackers, in the terminal. Vim keys, everything
 rebindable, a Telescope-style fuzzy picker, and issues laid out like the web
 app. Jira first; the core knows no provider, so others plug in beside it.
 
-> Early days: the board, the picker, the issue detail and the key engine work
-> on built-in demo data and, read-only, on Jira Cloud (see [Status](#status)).
+> Early days: the board, the picker, the issue detail, moves, assigning,
+> comments and edits work on built-in demo data and on Jira Cloud (see
+> [Status](#status)).
 
 ## Try it
 
@@ -34,6 +35,9 @@ The defaults follow vim. Counts work on motions (`3j`, `5G`), sequences wait
 | `Space p` | command palette: every action and its keys |
 | `Space t` | themes, previewed as you move |
 | `Space '` | reopen the last picker as you left it |
+| `H` `L` · `t` | move the card a column left or right · pick a transition |
+| `Space a` `Space A` | assign · assign to me |
+| `i` · `e` | comment · edit the title and description, in `$EDITOR` as Markdown |
 | `yy` `yu` `o` | copy the key, copy the URL, open in the browser |
 | `ze` | hide or show empty columns |
 | `r` | reload the board from the provider |
@@ -158,10 +162,16 @@ estimate, sprint and epic-link fields are found from `/field` by schema and
 name, and can be forced in the profile. Requests are capped at four in flight,
 and a 429 is retried after its `Retry-After`.
 
-Data Center is designed in (`flavor`: REST v2, a Bearer token, wiki markup)
-but untested against a live server; its wiki markup is shown as plain text for
-now. Writes are not built yet: the adapter answers `Unsupported` and says so
-in its capabilities.
+Writes go through the same API: transitions, assigning by account id,
+comments and descriptions as ADF, the title, labels and priority. A change is
+on screen before Jira answers and is undone, with Jira's own message, if it
+refuses. A transition that asks for fields (a resolution on the way to Done)
+is not attempted: kolum names the fields and `o` opens the issue in the
+browser, which has the form for them.
+
+Data Center is designed in (`flavor`: REST v2, a Bearer token, user names)
+but untested against a live server; its wiki markup is read as plain text and
+written as Markdown for now.
 
 ## Status
 
@@ -172,9 +182,11 @@ help, and the Jira adapter for reading.
 Also done: the cache with background sync, remote search in the picker
 (debounced, a stale reply dropped), and the boards picker.
 
-Next, in order: transitions (`H` `L` `t`), assigning, comments and
-`$EDITOR` edits with optimistic updates; then swimlanes, visual mode,
-creating and cloning. Actions bound but not built yet say so when pressed.
+Also done: transitions (`H` `L` `t`), assigning, comments and `$EDITOR` edits,
+with optimistic updates and rollback, on the fake provider and Jira.
+
+Next: swimlanes, visual mode with grouped actions, creating and cloning, the
+first-run wizard. Actions bound but not built yet say so when pressed.
 
 ## License
 

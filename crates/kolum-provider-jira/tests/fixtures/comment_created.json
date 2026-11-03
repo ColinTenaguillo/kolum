@@ -1,0 +1,36 @@
+{
+  "self": "x",
+  "id": "10003",
+  "author": {
+    "accountId": "557058:ana",
+    "displayName": "Ana Silva",
+    "avatarUrls": {
+      "48x48": "https://avatar.invalid/ana-48.png"
+    }
+  },
+  "body": {
+    "type": "doc",
+    "version": 1,
+    "content": [
+      {
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "Looks "
+          },
+          {
+            "type": "text",
+            "text": "good",
+            "marks": [
+              {
+                "type": "strong"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "created": "2026-11-03T21:00:00.000+0000"
+}
