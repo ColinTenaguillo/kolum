@@ -41,7 +41,8 @@ pub fn lines(keymap: &Keymap, theme: &Theme) -> Vec<Line<'static>> {
         for (keys, action) in rows {
             out.push(Line::from(vec![
                 Span::styled(format!("  {keys:<18}"), Style::new().fg(theme.match_highlight)),
-                Span::raw(format!("{:<44}", action.description())),
+                // Always a space before the name, however long the description.
+                Span::raw(format!("{:<43} ", action.description())),
                 Span::styled(action.name(), muted),
             ]));
         }

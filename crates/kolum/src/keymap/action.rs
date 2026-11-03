@@ -39,7 +39,7 @@ actions! {
     MoveCardLeft "move_card_left" "Move the card to the column on the left",
     MoveCardRight "move_card_right" "Move the card to the column on the right",
     OpenDetail "open_detail" "Open the issue",
-    Filter "filter" "Filter the board as you type (@me, @name, #bug, l:…)",
+    Filter "filter" "Filter as you type: words, @me, #bug, l:…",
     NextMatch "next_match" "Next card matching the filter",
     PrevMatch "prev_match" "Previous card matching the filter",
     ClearFilter "clear_filter" "Clear the filter",

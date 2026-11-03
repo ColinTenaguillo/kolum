@@ -1,5 +1,6 @@
 ---
 source: crates/kolum/tests/screens.rs
+assertion_line: 193
 expression: "screen(&mut app, 120, 50)"
 ---
 " Acme Web board Kanban                                                                                                  "
@@ -34,7 +35,7 @@ expression: "screen(&mut app, 120, 50)"
 "││launch    │  H                 Move the card to the column on the left     move_card_left                │          ││"
 "││ growth  ◆│  L                 Move the card to the column on the right    move_card_right               │      2 BC││"
 "│╰──────────│  <CR> gd           Open the issue                              open_detail                   │──────────╯│"
-"│╭──────────│  /                 Filter the board as you type                filter                        │           │"
+"│╭──────────│  /                 Filter as you type: words, @me, #bug, l:…   filter                        │           │"
 "││■ ACME-28 │  n                 Next card matching the filter               next_match                    │           │"
 "││Sample wor│  N                 Previous card matching the filter           prev_match                    │           │"
 "││technician│  <Esc>             Clear the filter                            clear_filter                  │           │"
