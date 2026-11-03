@@ -8,7 +8,8 @@ edition = "2024"
 # The floor is the toolchain the project is built on: edition 2024 and
 # let chains need 1.88, and ratatui 0.30 asks no more.
 rust-version = "1.88"
-# Undecided until the author picks one, before the first public push.
+license = "GPL-3.0-or-later"
+repository = "https://github.com/ColinTenaguillo/kolum"
 publish = false
 
 [workspace.dependencies]

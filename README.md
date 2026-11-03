@@ -168,4 +168,4 @@ creating and cloning. Actions bound but not built yet say so when pressed.
 
 ## License
 
-Not chosen yet.
+GPL-3.0-or-later. See [LICENSE](LICENSE).

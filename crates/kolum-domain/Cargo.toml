@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
+repository.workspace = true
 
 # Nothing here may do I/O: no HTTP client, no terminal, no runtime. A
 # provider is an adapter that depends on this crate, never the reverse.
