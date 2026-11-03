@@ -52,31 +52,11 @@ pub fn parse(
             KNOWN.join(", ")
         ));
     }
-    let text = |key: &str| table.get(key).and_then(toml::Value::as_str).map(str::to_string);
     let base_url =
-        text("base_url").ok_or("`base_url` is required")?.trim_end_matches('/').to_string();
-    let flavor = match text("flavor").as_deref() {
-        Some("cloud") => JiraFlavor::Cloud,
-        Some("datacenter" | "server") => JiraFlavor::DataCenter,
-        Some(other) => return Err(format!("flavor `{other}`: expected cloud or datacenter")),
-        None if base_url.contains(".atlassian.net") => JiraFlavor::Cloud,
-        None => JiraFlavor::DataCenter,
-    };
-    let token = match (text("token"), text("token_cmd")) {
-        (Some(token), _) => token,
-        (None, Some(cmd)) => {
-            run(&cmd).map_err(|e| format!("token_cmd `{cmd}`: {e}"))?.trim().to_string()
-        }
-        (None, None) => env_token.ok_or("no token: set `token_cmd`, `token`, or $KOLUM_TOKEN")?,
-    };
-    let auth = match flavor {
-        JiraFlavor::Cloud => {
-            let email = text("email").ok_or("`email` is required on Jira Cloud")?;
-            let pair = base64::engine::general_purpose::STANDARD.encode(format!("{email}:{token}"));
-            format!("Basic {pair}")
-        }
-        JiraFlavor::DataCenter => format!("Bearer {token}"),
-    };
+        text(table, "base_url").ok_or("`base_url` is required")?.trim_end_matches('/').to_string();
+    let flavor = flavor(text(table, "flavor").as_deref(), &base_url)?;
+    let token = token(table, env_token, run)?;
+    let auth = auth(flavor, text(table, "email"), &token)?;
     let board = match table.get("board") {
         None => None,
         Some(v) => Some(
@@ -86,14 +66,54 @@ pub fn parse(
         ),
     };
     let forced = table.get("fields").and_then(toml::Value::as_table);
-    let field =
-        |k: &str| forced.and_then(|f| f.get(k)).and_then(toml::Value::as_str).map(String::from);
+    let field = |k: &str| forced.and_then(|f| text(f, k));
     let fields = FieldIds {
         estimate: field("estimate"),
         sprint: field("sprint"),
         epic_link: field("epic_link"),
     };
     Ok(JiraSettings { base_url, flavor, auth, board, fields })
+}
+
+fn text(table: &toml::Table, key: &str) -> Option<String> {
+    table.get(key).and_then(toml::Value::as_str).map(str::to_string)
+}
+
+fn flavor(named: Option<&str>, base_url: &str) -> Result<JiraFlavor, String> {
+    match named {
+        Some("cloud") => Ok(JiraFlavor::Cloud),
+        Some("datacenter" | "server") => Ok(JiraFlavor::DataCenter),
+        Some(other) => Err(format!("flavor `{other}`: expected cloud or datacenter")),
+        None if base_url.contains(".atlassian.net") => Ok(JiraFlavor::Cloud),
+        None => Ok(JiraFlavor::DataCenter),
+    }
+}
+
+fn token(
+    table: &toml::Table,
+    env_token: Option<String>,
+    run: impl Fn(&str) -> Result<String, String>,
+) -> Result<String, String> {
+    match (text(table, "token"), text(table, "token_cmd")) {
+        (Some(token), _) => Ok(token),
+        (None, Some(cmd)) => {
+            Ok(run(&cmd).map_err(|e| format!("token_cmd `{cmd}`: {e}"))?.trim().to_string())
+        }
+        (None, None) => {
+            env_token.ok_or_else(|| "no token: set `token_cmd`, `token`, or $KOLUM_TOKEN".into())
+        }
+    }
+}
+
+fn auth(flavor: JiraFlavor, email: Option<String>, token: &str) -> Result<String, String> {
+    match flavor {
+        JiraFlavor::Cloud => {
+            let email = email.ok_or("`email` is required on Jira Cloud")?;
+            let pair = base64::engine::general_purpose::STANDARD.encode(format!("{email}:{token}"));
+            Ok(format!("Basic {pair}"))
+        }
+        JiraFlavor::DataCenter => Ok(format!("Bearer {token}")),
+    }
 }
 
 /// Runs `token_cmd` through the shell, as a password manager expects.

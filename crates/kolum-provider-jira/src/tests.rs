@@ -382,3 +382,30 @@ async fn writes_are_refused_up_front() {
     assert_eq!(p.transition(&key, &TransitionId::new("21")).await, refused);
     assert!(jira.seen.lock().unwrap().is_empty(), "nothing was sent");
 }
+
+#[test]
+fn custom_field_values_of_every_shape() {
+    let mut dto: IssueDto = serde_json::from_str(fixture!("issue.json")).unwrap();
+    dto.fields.insert("customfield_1".into(), serde_json::json!(8));
+    dto.fields.insert("customfield_2".into(), serde_json::json!("free text"));
+    dto.fields.insert("customfield_3".into(), serde_json::json!({"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "rich"}]}]}));
+    dto.fields.insert("customfield_4".into(), serde_json::json!({"name": "Mobile", "id": "9"}));
+    dto.fields.insert("customfield_5".into(), serde_json::json!(true));
+    dto.fields.insert("customfield_6".into(), serde_json::json!({"id": "nameless"}));
+    let issue = map::issue(&dto, &ctx()).unwrap();
+    let value =
+        |id: &str| issue.fields.iter().find(|f| f.id.as_str() == id).map(|f| f.value.clone());
+    assert_eq!(value("customfield_1"), Some(FieldValue::Number(8.0)));
+    assert_eq!(value("customfield_2"), Some(FieldValue::Text("free text".into())));
+    assert!(
+        matches!(value("customfield_3"), Some(FieldValue::RichText(r)) if r.plain_text() == "rich")
+    );
+    assert_eq!(value("customfield_4"), Some(FieldValue::Text("Mobile".into())));
+    assert_eq!(value("customfield_5"), None, "a shape with no counterpart is left out");
+    assert_eq!(value("customfield_6"), None);
+    assert_eq!(
+        issue.fields.iter().find(|f| f.id.as_str() == "customfield_1").unwrap().name,
+        "customfield_1",
+        "no name known: the id"
+    );
+}
