@@ -1,5 +1,6 @@
 use crate::board::{BoardSnapshot, load_board, sync_board};
 use crate::cache::Cache;
+use crate::write::Write;
 use kolum_domain::{
     ActivityEntry, BoardId, BoardSummary, Capabilities, Comment, DomainError, Issue, IssueKey,
     Provider, Query, User,
@@ -22,6 +23,14 @@ pub enum Command {
     Search {
         id: u64,
         query: Query,
+    },
+    /// The transitions open to an issue now.
+    Transitions(IssueKey),
+    /// A change, under the id the optimistic ledger gave it.
+    Write {
+        op: u64,
+        key: IssueKey,
+        write: Write,
     },
 }
 
@@ -47,6 +56,22 @@ pub enum Event {
     SearchResults {
         id: u64,
         result: Result<Vec<Issue>, DomainError>,
+    },
+    Transitions {
+        key: IssueKey,
+        result: Result<Vec<kolum_domain::Transition>, DomainError>,
+    },
+    /// The write went through; `issue` is the provider's view of it after,
+    /// when it could be read back.
+    Written {
+        op: u64,
+        key: IssueKey,
+        issue: Option<Box<Issue>>,
+    },
+    WriteFailed {
+        op: u64,
+        key: IssueKey,
+        error: DomainError,
     },
     /// `what` says which request failed, in words for a status line.
     Failed {
@@ -144,6 +169,19 @@ async fn run(
             Ok(boards) => Event::Boards(boards),
             Err(error) => Event::Failed { what: "listing the boards".into(), error },
         },
+        Command::Transitions(key) => {
+            let result = provider.transitions(&key).await;
+            Event::Transitions { key, result }
+        }
+        Command::Write { op, key, write } => match send_write(provider.as_ref(), &key, write).await
+        {
+            // Read back what the provider made of it: the board then shows
+            // its truth, not our guess.
+            Ok(()) => {
+                Event::Written { op, issue: provider.issue(&key).await.ok().map(Box::new), key }
+            }
+            Err(error) => Event::WriteFailed { op, key, error },
+        },
         Command::Search { id, query } => {
             let result = provider.search(&query, None).await.map(|page| page.items);
             Event::SearchResults { id, result }
@@ -184,6 +222,19 @@ async fn fetch_board(
             Event::BoardLoaded { snapshot, fresh: true }
         }
         Err(error) => Event::Failed { what: "loading the board".into(), error },
+    }
+}
+
+async fn send_write(
+    provider: &dyn Provider,
+    key: &IssueKey,
+    write: Write,
+) -> kolum_domain::Result<()> {
+    match write {
+        Write::Transition(t) => provider.transition(key, &t).await,
+        Write::Assign(user) => provider.assign(key, user.as_ref()).await,
+        Write::Comment(body) => provider.comment(key, body).await.map(|_| ()),
+        Write::Update(update) => provider.update(key, update).await,
     }
 }
 
@@ -284,6 +335,31 @@ mod tests {
         assert!(!issues.is_empty());
         service.send(Command::Search { id: 8, query: Query::Native("x".into()) });
         let Some(Event::SearchResults { id: 8, result: Err(DomainError::Unsupported(_)) }) =
+            events.recv().await
+        else {
+            panic!()
+        };
+    }
+
+    #[tokio::test]
+    async fn a_write_comes_back_with_the_issue_as_the_provider_has_it() {
+        let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), None);
+        events.recv().await; // Me
+        let key = IssueKey::new("ACME-9");
+        service.send(Command::Transitions(key.clone()));
+        let Some(Event::Transitions { result: Ok(ts), .. }) = events.recv().await else { panic!() };
+        let to_done = ts.iter().find(|t| t.name == "Done").unwrap().id.clone();
+        service.send(Command::Write { op: 1, key: key.clone(), write: Write::Transition(to_done) });
+        let Some(Event::Written { op: 1, issue: Some(issue), .. }) = events.recv().await else {
+            panic!()
+        };
+        assert_eq!(issue.status.name, "Done");
+        let hi = Write::Comment(kolum_domain::RichText::from_markdown("hi"));
+        service.send(Command::Write { op: 2, key: key.clone(), write: hi });
+        assert!(matches!(events.recv().await, Some(Event::Written { op: 2, .. })));
+        let nobody = Write::Assign(Some(kolum_domain::UserId::new("nobody")));
+        service.send(Command::Write { op: 3, key, write: nobody });
+        let Some(Event::WriteFailed { op: 3, error: DomainError::NotFound(_), .. }) =
             events.recv().await
         else {
             panic!()

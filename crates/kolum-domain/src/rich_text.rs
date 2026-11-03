@@ -89,6 +89,20 @@ impl RichText {
         markdown::parse(source)
     }
 
+    /// Writes Markdown that [`RichText::from_markdown`] reads back into the
+    /// same tree: the format of `$EDITOR`. Panels become GitHub alerts, so
+    /// the five kinds survive; a table cell's line break becomes a space.
+    pub fn to_markdown(&self) -> String {
+        let mut out = String::new();
+        for (i, block) in self.blocks.iter().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            markdown_out::block(block, &mut out);
+        }
+        out
+    }
+
     /// The text without its formatting: for search, and for a one-line
     /// summary where formatting has no room.
     pub fn plain_text(&self) -> String {
@@ -139,6 +153,141 @@ pub fn inline_text(inlines: &[Inline], out: &mut String) {
             }
             Inline::Break => out.push(' '),
         }
+    }
+}
+
+mod markdown_out {
+    use super::*;
+
+    pub fn block(node: &Block, out: &mut String) {
+        let line = |out: &mut String, text: &str| {
+            out.push_str(text);
+            out.push('\n');
+        };
+        match node {
+            Block::Paragraph(inlines) => {
+                for (i, l) in inlines_md(inlines).split('\n').enumerate() {
+                    // A hard break: two spaces, then the next line.
+                    if i > 0 {
+                        out.pop();
+                        out.push_str("  \n");
+                    }
+                    line(out, l);
+                }
+            }
+            Block::Heading { level, content } => {
+                line(out, &format!("{} {}", "#".repeat(*level as usize), inlines_md(content)))
+            }
+            // An item's blocks are written flush, then hung under the
+            // bullet; a nested list nests by the same rule.
+            Block::List { ordered, items } => {
+                for (n, item) in items.iter().enumerate() {
+                    let bullet = if *ordered { format!("{}. ", n + 1) } else { "- ".into() };
+                    let pad = " ".repeat(bullet.len());
+                    let mut text = String::new();
+                    item.iter().for_each(|b| block(b, &mut text));
+                    for (i, l) in text.lines().enumerate() {
+                        let lead = if i == 0 { &bullet } else { &pad };
+                        line(out, &if l.is_empty() { String::new() } else { format!("{lead}{l}") });
+                    }
+                }
+            }
+            Block::Code { language, text } => {
+                line(out, &format!("```{}", language.as_deref().unwrap_or("")));
+                text.lines().for_each(|l| line(out, l));
+                line(out, "```");
+            }
+            Block::Quote(blocks) | Block::Panel { blocks, .. } => {
+                let mut inner = String::new();
+                if let Block::Panel { kind, .. } = node {
+                    inner.push_str(&format!("[!{}]\n", alert(*kind)));
+                }
+                for (i, b) in blocks.iter().enumerate() {
+                    if i > 0 {
+                        inner.push('\n');
+                    }
+                    block(b, &mut inner);
+                }
+                for l in inner.lines() {
+                    line(out, &if l.is_empty() { ">".to_string() } else { format!("> {l}") });
+                }
+            }
+            Block::Table { rows, .. } => {
+                for (r, row) in rows.iter().enumerate() {
+                    let cells: Vec<String> = row
+                        .iter()
+                        .map(|c| inlines_md(c).replace('\n', " ").replace('|', "\\|"))
+                        .collect();
+                    line(out, &format!("| {} |", cells.join(" | ")));
+                    if r == 0 {
+                        line(out, &format!("|{}|", vec!["---"; row.len()].join("|")));
+                    }
+                }
+            }
+            Block::Rule => line(out, "---"),
+        }
+    }
+
+    fn alert(kind: PanelKind) -> &'static str {
+        match kind {
+            PanelKind::Info => "IMPORTANT",
+            PanelKind::Note => "NOTE",
+            PanelKind::Success => "TIP",
+            PanelKind::Warning => "WARNING",
+            PanelKind::Error => "CAUTION",
+        }
+    }
+
+    /// Characters Markdown would read as formatting, escaped.
+    fn escape(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        for c in text.chars() {
+            if matches!(c, '\\' | '*' | '_' | '`' | '[' | ']' | '<' | '~' | '#' | '|') {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+        out
+    }
+
+    fn inlines_md(inlines: &[Inline]) -> String {
+        let mut out = String::new();
+        for inline in inlines {
+            match inline {
+                Inline::Text { text, marks } if marks.code => out.push_str(&format!("`{text}`")),
+                Inline::Text { text, marks } => {
+                    let (lead, trail) = (
+                        &text[..text.len() - text.trim_start().len()],
+                        &text[text.trim_end().len()..],
+                    );
+                    let core = escape(text.trim());
+                    if core.is_empty() {
+                        out.push_str(text);
+                        continue;
+                    }
+                    let mut wrapped = core;
+                    if marks.italic {
+                        wrapped = format!("*{wrapped}*");
+                    }
+                    if marks.bold {
+                        wrapped = format!("**{wrapped}**");
+                    }
+                    if marks.strike {
+                        wrapped = format!("~~{wrapped}~~");
+                    }
+                    out.push_str(&format!("{lead}{wrapped}{trail}"));
+                }
+                Inline::Link { text, url } => out.push_str(&format!("[{}]({url})", escape(text))),
+                Inline::Mention { id, name } => out.push_str(&format!(
+                    "[@{}](mention:{})",
+                    escape(name),
+                    id.as_ref().map_or("", |i| i.as_str())
+                )),
+                Inline::Emoji(e) => out.push_str(e),
+                Inline::Break => out.push('\n'),
+            }
+        }
+        out
     }
 }
 
@@ -466,6 +615,58 @@ mod tests {
             ])
         );
         assert_eq!(rt.blocks[4], Block::Rule);
+    }
+
+    /// Text runs side by side merge in a round trip ("a" "b" is "ab"),
+    /// which is the same text; compare after merging them.
+    fn merged(rt: RichText) -> RichText {
+        fn inl(v: &[Inline]) -> Vec<Inline> {
+            let mut out: Vec<Inline> = vec![];
+            for i in v {
+                match (out.last_mut(), i) {
+                    (
+                        Some(Inline::Text { text: a, marks: ma }),
+                        Inline::Text { text: b, marks: mb },
+                    ) if ma == mb => a.push_str(b),
+                    _ => out.push(i.clone()),
+                }
+            }
+            out
+        }
+        fn blk(b: &Block) -> Block {
+            match b {
+                Block::Paragraph(v) => Block::Paragraph(inl(v)),
+                Block::Heading { level, content } => {
+                    Block::Heading { level: *level, content: inl(content) }
+                }
+                Block::List { ordered, items } => Block::List {
+                    ordered: *ordered,
+                    items: items.iter().map(|i| i.iter().map(blk).collect()).collect(),
+                },
+                Block::Quote(v) => Block::Quote(v.iter().map(blk).collect()),
+                Block::Panel { kind, blocks } => {
+                    Block::Panel { kind: *kind, blocks: blocks.iter().map(blk).collect() }
+                }
+                Block::Table { header, rows } => Block::Table {
+                    header: *header,
+                    rows: rows.iter().map(|r| r.iter().map(|c| inl(c)).collect()).collect(),
+                },
+                other => other.clone(),
+            }
+        }
+        RichText { blocks: rt.blocks.iter().map(blk).collect() }
+    }
+
+    #[test]
+    fn markdown_round_trips_through_the_editor_format() {
+        let src = "## Steps\n\nAfter **SSO** the page says *expired*, see `a.rs` and ~~old~~ [docs](https://d.x).  \nNext line with a_b and 2*3.\n\n                   1. Sign in\n2. Wait\n   - 25 s\n   - more\n\n```log\nERROR x\nWARN y\n```\n\n> quoted\n\n> [!WARNING]\n> careful\n>\n> twice\n\n                   | Plan | Limit |\n|---|---|\n| Free | 60 |\n\nping [@Ana Silva](mention:u2)\n\n---";
+        let first = RichText::from_markdown(src);
+        let written = first.to_markdown();
+        assert_eq!(merged(RichText::from_markdown(&written)), merged(first.clone()), "{written}");
+        assert_eq!(
+            merged(RichText::from_markdown(&RichText::from_markdown(&written).to_markdown())),
+            merged(first)
+        );
     }
 
     #[test]

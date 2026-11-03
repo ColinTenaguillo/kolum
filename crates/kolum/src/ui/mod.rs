@@ -38,7 +38,24 @@ pub enum Effect {
     Send(Command),
     Copy(String),
     Open(String),
+    /// Hand the terminal to `$EDITOR` with this text, and give the result
+    /// to [`App::on_edited`].
+    Edit {
+        purpose: EditPurpose,
+        text: String,
+    },
 }
+
+/// What an `$EDITOR` session was for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditPurpose {
+    Comment(IssueKey),
+    /// The title and the description, as `# Title` then Markdown.
+    Describe(IssueKey),
+}
+
+/// Everything from here down is instructions, not content.
+const MARKER: &str = "<!-- kolum:";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
@@ -81,6 +98,9 @@ pub struct Settings {
     pub problems: Vec<String>,
     /// The board to open; the provider's first when `None`.
     pub board: Option<kolum_domain::BoardId>,
+    /// The provider takes writes. When it does not, write actions say so
+    /// instead of failing at the provider.
+    pub writable: bool,
     /// How long typing must pause before a remote search goes out.
     pub remote_debounce: std::time::Duration,
 }
@@ -119,6 +139,12 @@ pub struct App {
     remote_debounce: std::time::Duration,
     /// The time of the key being handled, for the debounce.
     now: Instant,
+    /// Changes shown before the provider confirmed them.
+    ledger: kolum_app::Ledger,
+    /// Transitions asked for these issues; `Some(column)` when they are
+    /// for a move into that column.
+    awaiting: Option<(Vec<IssueKey>, Option<usize>)>,
+    writable: bool,
     pub quit: bool,
 }
 
@@ -168,6 +194,9 @@ impl App {
             search_due: None,
             remote_debounce: settings.remote_debounce,
             now: Instant::now(),
+            ledger: kolum_app::Ledger::default(),
+            awaiting: None,
+            writable: settings.writable,
             quit: false,
         }
     }
@@ -321,6 +350,27 @@ impl App {
                     }
                 }
             }
+            Event::Transitions { key, result } => self.on_transitions(key, result),
+            Event::Written { op, key, issue } => {
+                self.ledger.settle(op);
+                if let (Some(snapshot), Some(issue)) = (&mut self.board.snapshot, issue) {
+                    snapshot.merge(vec![*issue]);
+                    self.board.clamp();
+                }
+                self.sync_detail(&key);
+                if self.open_issue() == Some(&key) {
+                    self.effects.push(Effect::Send(Command::LoadIssue(key.clone())));
+                }
+                self.say(format!("{key} saved"), Level::Info);
+            }
+            Event::WriteFailed { op, key, error } => {
+                if let Some(snapshot) = &mut self.board.snapshot {
+                    self.ledger.rollback(snapshot, op);
+                    self.board.clamp();
+                }
+                self.sync_detail(&key);
+                self.say(format!("{key}: {error}; undone"), Level::Error);
+            }
             Event::Failed { what, error } => {
                 self.say(format!("{what} failed: {error}"), Level::Error)
             }
@@ -444,7 +494,12 @@ impl App {
                     self.issue_effect(action, &issue);
                 }
             }
-            _ => self.unavailable(action),
+            Action::MoveCardLeft => self.move_card(-n),
+            Action::MoveCardRight => self.move_card(n),
+            _ => {
+                let keys: Vec<IssueKey> = b.selected().map(|i| i.key.clone()).into_iter().collect();
+                self.issue_action(action, keys);
+            }
         }
     }
 
@@ -464,7 +519,10 @@ impl App {
                 let issue = d.issue.clone();
                 self.issue_effect(action, &issue);
             }
-            _ => self.unavailable(action),
+            _ => {
+                let keys = vec![d.issue.key.clone()];
+                self.issue_action(action, keys);
+            }
         }
     }
 
@@ -498,6 +556,223 @@ impl App {
             }
             (Action::OpenBrowser, Some(url)) => self.effects.push(Effect::Open(url.clone())),
             _ => self.say(format!("{} has no URL", issue.key), Level::Warn),
+        }
+    }
+
+    /// The actions that change issues, wherever they were asked from.
+    fn issue_action(&mut self, action: Action, keys: Vec<IssueKey>) {
+        let writes = matches!(
+            action,
+            Action::Transition | Action::Assign | Action::AssignMe | Action::Comment | Action::Edit
+        );
+        if keys.is_empty() || (writes && !self.can_write()) {
+            return;
+        }
+        match action {
+            Action::Transition => self.ask_transitions(keys, None),
+            Action::Assign => self.open_user_picker(keys),
+            Action::AssignMe => match self.me.clone() {
+                Some(me) => self.assign(keys, Some(me)),
+                None => self.say("Still finding out who you are", Level::Warn),
+            },
+            Action::Comment => self.edit(EditPurpose::Comment(keys[0].clone())),
+            Action::Edit => self.edit(EditPurpose::Describe(keys[0].clone())),
+            _ => self.unavailable(action),
+        }
+    }
+
+    fn can_write(&mut self) -> bool {
+        if !self.writable {
+            self.say("This provider is read-only in kolum for now", Level::Warn);
+        }
+        self.writable
+    }
+
+    fn issue(&self, key: &IssueKey) -> Option<&kolum_domain::Issue> {
+        let on_board =
+            self.board.snapshot.as_ref().and_then(|s| s.issues.iter().find(|i| &i.key == key));
+        on_board.or(self.detail.as_ref().map(|d| &d.issue).filter(|i| &i.key == key))
+    }
+
+    /// `H` and `L`: to the next visible column, by whichever transition
+    /// leads there.
+    fn move_card(&mut self, delta: i64) {
+        let Some(key) = self.board.selected().map(|i| i.key.clone()) else { return };
+        let visible = self.board.visible();
+        let pos = visible.iter().position(|&c| c == self.board.column).unwrap_or(0) as i64 + delta;
+        match usize::try_from(pos).ok().and_then(|p| visible.get(p)) {
+            Some(&column) if self.can_write() => self.ask_transitions(vec![key], Some(column)),
+            Some(_) => {}
+            None => self.say("No column that way", Level::Info),
+        }
+    }
+
+    fn ask_transitions(&mut self, keys: Vec<IssueKey>, column: Option<usize>) {
+        self.effects.push(Effect::Send(Command::Transitions(keys[0].clone())));
+        self.awaiting = Some((keys, column));
+    }
+
+    fn on_transitions(
+        &mut self,
+        key: IssueKey,
+        result: Result<Vec<kolum_domain::Transition>, kolum_domain::DomainError>,
+    ) {
+        let Some((keys, column)) = self.awaiting.take_if(|(keys, _)| keys[0] == key) else {
+            return;
+        };
+        let transitions = match result {
+            Ok(t) => t,
+            Err(e) => return self.say(format!("{key}: {e}"), Level::Error),
+        };
+        let board = self.board.snapshot.as_ref().map(|s| &s.board);
+        let transitions = match (column, board) {
+            (Some(c), Some(board)) => kolum_app::transitions_into(board, c, &transitions),
+            _ => transitions,
+        };
+        match (column, transitions.len()) {
+            (Some(c), 0) => {
+                let name = board
+                    .and_then(|b| b.columns.get(c))
+                    .map_or("there", |c| c.name.as_str())
+                    .to_string();
+                self.say(format!("No transition takes {key} to {name} from here"), Level::Warn)
+            }
+            (None, 0) => self.say(format!("No transition is open to {key}"), Level::Warn),
+            (Some(_), 1) => self.transition(keys, transitions[0].clone()),
+            _ => {
+                let source = sources::TransitionChoice { keys, transitions };
+                self.open_picker(Box::new(Picker::new(source, self.waker.clone())));
+            }
+        }
+    }
+
+    /// A transition that asks for fields (a resolution on the way to Done)
+    /// is left to the web app, which has the form for them.
+    fn transition(&mut self, keys: Vec<IssueKey>, t: kolum_domain::Transition) {
+        if !t.required_fields.is_empty() {
+            let fields: Vec<&str> = t.required_fields.iter().map(|f| f.as_str()).collect();
+            let msg = format!(
+                "`{}` asks for {}: press o to do it in the browser",
+                t.name,
+                fields.join(", ")
+            );
+            return self.say(msg, Level::Warn);
+        }
+        for key in &keys {
+            if let Some(op) = self.optimistic(key, kolum_app::Change::Status(t.to.clone())) {
+                let write = kolum_app::Write::Transition(t.id.clone());
+                self.effects.push(Effect::Send(Command::Write { op, key: key.clone(), write }));
+            }
+        }
+        self.board.select(&keys[0]);
+        let names: Vec<&str> = keys.iter().map(|k| k.as_str()).collect();
+        self.say(format!("{} → {}", names.join(", "), t.to.name), Level::Info);
+    }
+
+    /// Who an issue can go to: me, then whoever is on the board.
+    fn open_user_picker(&mut self, keys: Vec<IssueKey>) {
+        let mut users: Vec<kolum_domain::User> = self.me.clone().into_iter().collect();
+        let mut others: Vec<kolum_domain::User> = vec![];
+        for issue in self.board.snapshot.iter().flat_map(|s| &s.issues) {
+            for u in [&issue.assignee, &issue.reporter].into_iter().flatten() {
+                if !users.iter().chain(&others).any(|o| o.id == u.id) {
+                    others.push(u.clone());
+                }
+            }
+        }
+        others.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+        users.extend(others);
+        let mut choices: Vec<Option<kolum_domain::User>> = users.into_iter().map(Some).collect();
+        choices.push(None);
+        let source = sources::UserChoice { keys, users: choices };
+        self.open_picker(Box::new(Picker::new(source, self.waker.clone())));
+    }
+
+    fn assign(&mut self, keys: Vec<IssueKey>, user: Option<kolum_domain::User>) {
+        for key in &keys {
+            if let Some(op) = self.optimistic(key, kolum_app::Change::Assignee(user.clone())) {
+                let write = kolum_app::Write::Assign(user.as_ref().map(|u| u.id.clone()));
+                self.effects.push(Effect::Send(Command::Write { op, key: key.clone(), write }));
+            }
+        }
+        let who = user.as_ref().map_or("nobody".to_string(), |u| u.display_name.clone());
+        self.say(format!("Assigned to {who}"), Level::Info);
+    }
+
+    /// Shows the change on the board now; the id is the write's.
+    fn optimistic(&mut self, key: &IssueKey, change: kolum_app::Change) -> Option<u64> {
+        let snapshot = self.board.snapshot.as_mut()?;
+        let op = self.ledger.begin(snapshot, key, &change);
+        self.board.clamp();
+        self.board.select(key);
+        self.sync_detail(key);
+        Some(op)
+    }
+
+    /// The detail shows the board's copy of its issue, changes included.
+    fn sync_detail(&mut self, key: &IssueKey) {
+        let fresh = self
+            .board
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.issues.iter().find(|i| &i.key == key))
+            .cloned();
+        if let (Some(d), Some(fresh)) = (&mut self.detail, fresh)
+            && &d.issue.key == key
+        {
+            d.issue = fresh;
+        }
+    }
+
+    fn edit(&mut self, purpose: EditPurpose) {
+        let (EditPurpose::Comment(key) | EditPurpose::Describe(key)) = &purpose;
+        let Some(issue) = self.issue(key) else { return };
+        let text = match &purpose {
+            EditPurpose::Comment(_) => format!(
+                "\n\n{MARKER} a comment on {}: {}. Markdown above this line; leave it empty to cancel. -->\n",
+                issue.key, issue.title
+            ),
+            EditPurpose::Describe(_) => format!(
+                "# {}\n\n{}\n{MARKER} {}: the first `# ` line is the title, the rest the description, in Markdown. -->\n",
+                issue.title,
+                issue.description.to_markdown(),
+                issue.key
+            ),
+        };
+        self.effects.push(Effect::Edit { purpose, text });
+    }
+
+    /// What came back from `$EDITOR`.
+    pub fn on_edited(&mut self, purpose: EditPurpose, result: Result<String, String>) {
+        let text = match result {
+            Ok(text) => text.split(MARKER).next().unwrap_or_default().trim().to_string(),
+            Err(e) => return self.say(format!("$EDITOR: {e}"), Level::Error),
+        };
+        match purpose {
+            EditPurpose::Comment(_) if text.is_empty() => {
+                self.say("Nothing written: no comment", Level::Info)
+            }
+            EditPurpose::Comment(key) => {
+                let change = kolum_app::Change::Update(kolum_domain::IssueUpdate::default());
+                if let Some(op) = self.optimistic(&key, change) {
+                    let write =
+                        kolum_app::Write::Comment(kolum_domain::RichText::from_markdown(&text));
+                    self.effects.push(Effect::Send(Command::Write { op, key: key.clone(), write }));
+                    self.say(format!("Commenting on {key}…"), Level::Info);
+                }
+            }
+            EditPurpose::Describe(key) => {
+                let Some(issue) = self.issue(&key) else { return };
+                let update = description_update(issue, &text);
+                if update == kolum_domain::IssueUpdate::default() {
+                    return self.say("No change", Level::Info);
+                }
+                if let Some(op) = self.optimistic(&key, kolum_app::Change::Update(update.clone())) {
+                    let write = kolum_app::Write::Update(update);
+                    self.effects.push(Effect::Send(Command::Write { op, key: key.clone(), write }));
+                    self.say(format!("Saving {key}…"), Level::Info);
+                }
+            }
         }
     }
 
@@ -642,6 +917,18 @@ impl App {
                 self.theme_before_preview = None;
                 self.close_picker();
                 self.set_theme(&name);
+            }
+            Pick::OnIssues(action, keys) => {
+                self.close_picker();
+                self.issue_action(action, keys);
+            }
+            Pick::Transition { keys, transition } => {
+                self.close_picker();
+                self.transition(keys, transition);
+            }
+            Pick::Assign { keys, user } => {
+                self.close_picker();
+                self.assign(keys, user);
             }
             Pick::Board(id) => {
                 self.close_picker();
@@ -862,6 +1149,23 @@ impl App {
         frame.render_widget(Clear, rect);
         let title = format!("{} …", self.resolver.typed());
         frame.render_widget(Paragraph::new(lines).block(popup(&title, theme)), rect);
+    }
+}
+
+/// `# Title` then Markdown, against the issue as it is: only what moved is
+/// sent. The description is compared as Markdown, so a rich text that does
+/// not survive the round trip exactly is not rewritten for nothing.
+fn description_update(issue: &kolum_domain::Issue, text: &str) -> kolum_domain::IssueUpdate {
+    let (title, body) = match text.split_once('\n') {
+        Some((first, rest)) if first.starts_with("# ") => (Some(first[2..].trim()), rest.trim()),
+        None if text.starts_with("# ") => (Some(text[2..].trim()), ""),
+        _ => (None, text.trim()),
+    };
+    kolum_domain::IssueUpdate {
+        title: title.filter(|t| !t.is_empty() && *t != issue.title).map(String::from),
+        description: (body != issue.description.to_markdown().trim())
+            .then(|| kolum_domain::RichText::from_markdown(body)),
+        ..Default::default()
     }
 }
 

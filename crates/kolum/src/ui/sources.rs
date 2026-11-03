@@ -115,7 +115,9 @@ impl PickerSource for IssueSource {
             Action::CopyKey => {
                 Pick::Copy(issues.iter().map(|i| i.key.to_string()).collect::<Vec<_>>().join(" "))
             }
-            Action::Transition | Action::Assign => Pick::Unavailable(action),
+            Action::Transition | Action::Assign => {
+                Pick::OnIssues(action, issues.iter().map(|i| i.key.clone()).collect())
+            }
             _ => return None,
         })
     }
@@ -205,5 +207,62 @@ impl PickerSource for BoardChoice {
 
     fn act(&self, boards: &[Self::Item], action: Action) -> Option<Pick> {
         (action == Action::Confirm).then(|| Pick::Board(boards[0].id.clone()))
+    }
+}
+
+/// The transitions open to the issues in `keys`.
+pub struct TransitionChoice {
+    pub keys: Vec<kolum_domain::IssueKey>,
+    pub transitions: Vec<kolum_domain::Transition>,
+}
+
+impl PickerSource for TransitionChoice {
+    type Item = kolum_domain::Transition;
+
+    fn title(&self) -> String {
+        let keys: Vec<&str> = self.keys.iter().map(|k| k.as_str()).collect();
+        format!("Move {}", keys.join(", "))
+    }
+
+    fn candidates(&self, _query: &str) -> Vec<Self::Item> {
+        self.transitions.clone()
+    }
+
+    fn haystack(&self, t: &Self::Item) -> String {
+        if t.name == t.to.name { t.name.clone() } else { format!("{} → {}", t.name, t.to.name) }
+    }
+
+    fn act(&self, ts: &[Self::Item], action: Action) -> Option<Pick> {
+        (action == Action::Confirm)
+            .then(|| Pick::Transition { keys: self.keys.clone(), transition: ts[0].clone() })
+    }
+}
+
+/// Who to assign the issues in `keys` to: `None` unassigns.
+pub struct UserChoice {
+    pub keys: Vec<kolum_domain::IssueKey>,
+    pub users: Vec<Option<kolum_domain::User>>,
+}
+
+impl PickerSource for UserChoice {
+    type Item = Option<kolum_domain::User>;
+
+    fn title(&self) -> String {
+        let keys: Vec<&str> = self.keys.iter().map(|k| k.as_str()).collect();
+        format!("Assign {}", keys.join(", "))
+    }
+
+    fn candidates(&self, _query: &str) -> Vec<Self::Item> {
+        self.users.clone()
+    }
+
+    fn haystack(&self, user: &Self::Item) -> String {
+        user.as_ref()
+            .map_or("Unassigned".into(), |u| format!("{} ({})", u.display_name, u.initials()))
+    }
+
+    fn act(&self, users: &[Self::Item], action: Action) -> Option<Pick> {
+        (action == Action::Confirm)
+            .then(|| Pick::Assign { keys: self.keys.clone(), user: users[0].clone() })
     }
 }

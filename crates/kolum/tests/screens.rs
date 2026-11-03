@@ -22,6 +22,7 @@ fn settings() -> Settings {
         picker_layout: PickerLayout::Horizontal,
         problems: vec![],
         board: None,
+        writable: true,
         remote_debounce: std::time::Duration::from_millis(250),
     }
 }
@@ -250,8 +251,8 @@ async fn the_theme_changes_live_and_a_preview_is_undone_on_close() {
 #[tokio::test]
 async fn unfinished_actions_say_so_instead_of_doing_nothing() {
     let mut app = loaded().await;
-    press(&mut app, "L");
-    assert!(screen(&mut app, 120, 30).contains("`move_card_right` is not available yet"));
+    press(&mut app, "v");
+    assert!(screen(&mut app, 120, 30).contains("`visual_mode` is not available yet"));
 }
 
 #[tokio::test]
@@ -406,8 +407,11 @@ async fn picker_actions_reach_the_highlighted_issue() {
     );
     press(&mut app, "<Space>fstripe");
     settle(&mut app);
+    app.take_effects();
     press(&mut app, "<C-t>");
-    assert!(screen(&mut app, 150, 40).contains("`transition` is not available yet"));
+    assert_eq!(app.take_effects(), [Effect::Send(Command::Transitions(IssueKey::new("ACME-29")))]);
+    press(&mut app, "<Space>fstripe");
+    settle(&mut app);
     press(&mut app, "<C-d><C-u><Esc>Gggkj");
     press(&mut app, "<C-Space>");
     assert!(screen(&mut app, 150, 40).contains("[remote"), "the picker went remote");
@@ -620,4 +624,190 @@ async fn pickers_without_a_remote_say_so() {
     let mut app = loaded().await;
     press(&mut app, "<Space>t<C-Space>");
     assert!(screen(&mut app, 150, 40).contains("This picker has no remote search"));
+}
+
+/// The transitions the fake has for `key`, as the service would answer.
+async fn transitions_event(key: &str) -> Event {
+    use kolum_domain::IssueWriter;
+    let key = IssueKey::new(key);
+    let result = FakeProvider::new().transitions(&key).await;
+    Event::Transitions { key, result }
+}
+
+fn writes(effects: Vec<Effect>) -> Vec<(u64, String, kolum_app::Write)> {
+    effects
+        .into_iter()
+        .filter_map(|e| match e {
+            Effect::Send(Command::Write { op, key, write }) => Some((op, key.to_string(), write)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn column_of(app: &mut App, key: &str) -> usize {
+    // The board draws columns left to right; find which one holds the key.
+    let shown = screen(app, 150, 60);
+    let line = shown.lines().find(|l| l.contains(&format!("{key} "))).unwrap();
+    let at = line.find(&format!("{key} ")).unwrap();
+    line[..at].chars().count() / 30
+}
+
+#[tokio::test]
+async fn l_moves_a_card_at_once_and_a_refusal_puts_it_back() {
+    let mut app = loaded().await;
+    app.take_effects();
+    assert_eq!(column_of(&mut app, "ACME-9"), 0);
+    press(&mut app, "L");
+    assert_eq!(app.take_effects(), [Effect::Send(Command::Transitions(IssueKey::new("ACME-9")))]);
+    app.on_event(transitions_event("ACME-9").await);
+    let sent = writes(app.take_effects());
+    assert_eq!(sent.len(), 1, "one transition leads to To Do: no question asked");
+    assert_eq!(sent[0].2, kolum_app::Write::Transition(kolum_domain::TransitionId::new("to-todo")));
+    assert_eq!(column_of(&mut app, "ACME-9"), 1, "moved before the provider answered");
+    assert_eq!(selected(&app), "ACME-9", "the highlight follows the card");
+
+    let error = kolum_domain::DomainError::Conflict("workflow changed".into());
+    app.on_event(Event::WriteFailed { op: sent[0].0, key: IssueKey::new("ACME-9"), error });
+    assert_eq!(column_of(&mut app, "ACME-9"), 0, "undone");
+    assert!(screen(&mut app, 150, 60).contains("ACME-9: conflict: workflow changed; undone"));
+}
+
+#[tokio::test]
+async fn a_move_into_a_column_of_two_statuses_asks_which() {
+    let mut app = loaded().await;
+    app.take_effects();
+    press(&mut app, "jL"); // ACME-16 is in the Backlog; To Do first
+    app.on_event(transitions_event("ACME-16").await);
+    let first = writes(app.take_effects());
+    app.on_event(Event::Written { op: first[0].0, key: IssueKey::new("ACME-16"), issue: None });
+    press(&mut app, "L");
+    app.on_event(transitions_event("ACME-16").await);
+    settle(&mut app);
+    let shown = screen(&mut app, 150, 40);
+    assert!(shown.contains("Move ACME-16") && shown.contains("In Progress") && shown.contains("Blocked"), "{shown}");
+    press(&mut app, "<C-n><CR>");
+    let sent = writes(app.take_effects());
+    assert_eq!(sent[0].2, kolum_app::Write::Transition(kolum_domain::TransitionId::new("to-blocked")));
+    
+}
+
+#[tokio::test]
+async fn transitions_that_cannot_be_done_here_say_why() {
+    let mut app = loaded().await;
+    press(&mut app, "H");
+    assert!(screen(&mut app, 120, 30).contains("No column that way"));
+    app.take_effects();
+    press(&mut app, "t");
+    let mut required = transitions_event("ACME-9").await;
+    if let Event::Transitions { result: Ok(ts), .. } = &mut required {
+        ts.truncate(1);
+        ts[0].required_fields = vec![kolum_domain::FieldId::new("resolution")];
+    }
+    app.on_event(required);
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    assert!(writes(app.take_effects()).is_empty());
+    assert!(screen(&mut app, 150, 30).contains("asks for resolution: press o to do it in the browser"));
+
+    press(&mut app, "L");
+    app.on_event(Event::Transitions { key: IssueKey::new("ACME-9"), result: Ok(vec![]) });
+    assert!(screen(&mut app, 150, 30).contains("No transition takes ACME-9 to To Do from here"));
+    press(&mut app, "t");
+    app.on_event(Event::Transitions { key: IssueKey::new("ACME-1"), result: Ok(vec![]) });
+    assert!(!screen(&mut app, 150, 30).contains("No transition"), "a reply for another issue is ignored");
+}
+
+#[tokio::test]
+async fn assigning_from_the_picker_and_to_myself() {
+    let mut app = loaded().await;
+    app.take_effects();
+    press(&mut app, "<Space>a");
+    settle(&mut app);
+    let shown = screen(&mut app, 150, 40);
+    let me = shown.find("Colin Tenaguillo (CT)").unwrap();
+    assert!(me < shown.find("Ana Silva (AS)").unwrap(), "me first");
+    assert!(shown.contains("Unassigned"));
+        press(&mut app, "ana");
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    let sent = writes(app.take_effects());
+    assert_eq!(sent[0].2, kolum_app::Write::Assign(Some(kolum_domain::UserId::new("u-ana"))));
+    press(&mut app, "<Space>A");
+    let sent = writes(app.take_effects());
+    assert_eq!(sent[0].2, kolum_app::Write::Assign(Some(kolum_domain::UserId::new("u-colin"))));
+    assert!(screen(&mut app, 150, 40).contains("Assigned to Colin Tenaguillo"));
+}
+
+#[tokio::test]
+async fn a_comment_goes_through_the_editor() {
+    use kolum::ui::EditPurpose;
+    let mut app = loaded().await;
+    app.take_effects();
+    press(&mut app, "i");
+    let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else { panic!("expected the editor") };
+    assert_eq!(purpose, EditPurpose::Comment(IssueKey::new("ACME-9")));
+    assert!(text.contains("<!-- kolum:") && text.contains("ACME-9"));
+
+    app.on_edited(purpose.clone(), Ok(text.clone()));
+    assert!(writes(app.take_effects()).is_empty(), "left empty: cancelled");
+    app.on_edited(purpose.clone(), Ok(format!("Looks **good**\n{text}")));
+    let sent = writes(app.take_effects());
+    assert_eq!(sent[0].2, kolum_app::Write::Comment(kolum_domain::RichText::from_markdown("Looks **good**")));
+    app.on_edited(purpose, Err("vim exited with 1".into()));
+    assert!(screen(&mut app, 120, 30).contains("$EDITOR: vim exited with 1"));
+}
+
+#[tokio::test]
+async fn editing_sends_only_what_changed() {
+    use kolum::ui::EditPurpose;
+    let mut app = loaded().await;
+    press(&mut app, "<CR>");
+    app.take_effects();
+    press(&mut app, "e");
+    let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else { panic!() };
+    assert_eq!(purpose, EditPurpose::Describe(IssueKey::new("ACME-9")));
+    assert!(text.starts_with("# Enforce SSO per organisation\n\nAn admin switch"), "{text}");
+
+    app.on_edited(purpose.clone(), Ok(text.clone()));
+    assert!(writes(app.take_effects()).is_empty());
+    assert!(screen(&mut app, 120, 30).contains("No change"));
+
+    app.on_edited(purpose.clone(), Ok(text.replacen("# Enforce SSO", "# Require SSO", 1)));
+    let sent = writes(app.take_effects());
+    let kolum_app::Write::Update(update) = &sent[0].2 else { panic!() };
+    assert_eq!(update.title.as_deref(), Some("Require SSO per organisation"));
+    assert_eq!(update.description, None, "the description did not move");
+    assert!(screen(&mut app, 120, 30).contains("Require SSO per organisation"), "the detail shows it at once");
+
+    app.on_edited(purpose, Ok("# Require SSO per organisation\n\nNew *body*".into()));
+    let sent = writes(app.take_effects());
+    let kolum_app::Write::Update(update) = &sent[0].2 else { panic!() };
+    assert_eq!((update.title.as_ref(), update.description.as_ref().map(|d| d.plain_text())), (None, Some("New body".into())));
+}
+
+#[tokio::test]
+async fn a_saved_write_shows_the_providers_version_and_refreshes_the_detail() {
+    let mut app = loaded().await;
+    press(&mut app, "<CR>");
+    app.take_effects();
+        let issues = load_board(&FakeProvider::new(), None).await.unwrap().issues;
+    let mut issue = issues.into_iter().find(|i| i.key.as_str() == "ACME-9").unwrap();
+    issue.title = "As the provider has it".into();
+    let key = issue.key.clone();
+    app.on_event(Event::Written { op: 9, key: key.clone(), issue: Some(Box::new(issue)) });
+    assert!(screen(&mut app, 120, 30).contains("As the provider has it"));
+    assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(key))]);
+}
+
+#[tokio::test]
+async fn a_read_only_provider_is_told_not_tried() {
+    let mut settings = settings();
+    settings.writable = false;
+    let mut app = loaded_with(settings).await;
+    app.take_effects();
+    for keys in ["L", "t", "<Space>a", "i", "e"] {
+        press(&mut app, keys);
+        assert!(app.take_effects().is_empty(), "{keys} sent something");
+        assert!(screen(&mut app, 120, 30).contains("read-only"), "{keys}");
+    }
 }

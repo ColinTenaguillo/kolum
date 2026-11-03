@@ -28,6 +28,16 @@ pub enum Pick {
     OpenUrl(String),
     Theme(String),
     Board(kolum_domain::BoardId),
+    /// An issue action the app carries out, on these issues.
+    OnIssues(Action, Vec<kolum_domain::IssueKey>),
+    Transition {
+        keys: Vec<kolum_domain::IssueKey>,
+        transition: kolum_domain::Transition,
+    },
+    Assign {
+        keys: Vec<kolum_domain::IssueKey>,
+        user: Option<kolum_domain::User>,
+    },
     /// Run an action as if its key were pressed (the command palette).
     Run(Action),
     /// The action means something here, but not yet.

@@ -159,7 +159,8 @@ fn app() -> anyhow::Result<()> {
     }
     let (provider, board, profile) = provider(&args, &config)?;
     tracing::info!("starting on the {} provider", provider.name());
-    let settings = Settings { board, ..settings };
+    let writable = provider.capabilities().supports(kolum_domain::Capability::Write);
+    let settings = Settings { board, writable, ..settings };
     let cache = config::cache_dir().map(|d| kolum_app::Cache::new(d.join(profile)));
     let result = run_tui(provider, cache, settings);
     if args.debug
@@ -188,6 +189,7 @@ fn load(args: &Args, config_dir: Option<PathBuf>) -> (config::Config, Settings) 
         picker_layout: config.picker.layout,
         problems,
         board: None,
+        writable: false,
         remote_debounce: std::time::Duration::from_millis(config.picker.remote_debounce_ms),
     };
     (config, settings)
