@@ -351,7 +351,11 @@ impl App {
 
     pub fn on_event(&mut self, event: Event) {
         match event {
-            Event::Me(user) => self.me = Some(user),
+            Event::Me(user) => {
+                self.board.me = Some(user.id.clone());
+                self.me = Some(user);
+                self.board.clamp();
+            }
             Event::BoardLoaded { snapshot, fresh } => {
                 self.board_cached = !fresh;
                 if let Some(d) = &mut self.detail

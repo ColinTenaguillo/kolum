@@ -4,7 +4,8 @@ use super::glyph;
 use super::text::{truncate, width, wrap};
 use crate::config::{CardField, Swimlanes};
 use crate::theme::Theme;
-use kolum_app::BoardSnapshot;
+use kolum_app::{BoardSnapshot, parse_query};
+use kolum_domain::{Filter, Query};
 use kolum_domain::{Issue, IssueKey, UserId};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -28,20 +29,53 @@ pub struct BoardView {
     pub filter: String,
     pub hide_empty: bool,
     pub swimlanes: Swimlanes,
+    /// Who `@me` in the filter is.
+    pub me: Option<UserId>,
     /// Cards per column on screen at the last draw, for half-page moves.
     page: Cell<usize>,
     /// Visual mode: where the range started, in the current column.
     pub visual: Option<usize>,
 }
 
-fn matches(issue: &Issue, filter: &str) -> bool {
-    let f = filter.to_lowercase();
-    f.is_empty()
-        || issue.key.as_str().to_lowercase().contains(&f)
-        || issue.title.to_lowercase().contains(&f)
-        || issue.labels.iter().any(|l| l.to_lowercase().contains(&f))
+/// The `/` filter, read as the picker reads a query: `@me`, `@name`,
+/// `#bug`, `s:`, `l:`, `e:`, `sp:` constrain, and every other word must
+/// appear in the key, the title or a label.
+struct BoardFilter {
+    fields: Filter,
+    words: Vec<String>,
 }
 
+/// What a prefix looks like before its value is typed: ignored, so the
+/// board does not empty itself mid-word.
+const BARE_PREFIXES: &[&str] = &["@", "#", "s:", "l:", "e:", "sp:", "!"];
+
+impl BoardFilter {
+    fn parse(input: &str) -> Self {
+        let fields = match parse_query(input) {
+            Query::Filter(f) => f,
+            // A raw provider query means nothing on the board: its words
+            // are text.
+            Query::Native(text) => Filter { text: Some(text), ..Filter::default() },
+        };
+        let words = fields
+            .text
+            .iter()
+            .flat_map(|t| t.split_whitespace())
+            .filter(|w| !BARE_PREFIXES.contains(w))
+            .map(str::to_lowercase)
+            .collect();
+        BoardFilter { fields: Filter { text: None, ..fields }, words }
+    }
+
+    fn matches(&self, issue: &Issue, me: &UserId) -> bool {
+        let found = |w: &String| {
+            issue.key.as_str().to_lowercase().contains(w)
+                || issue.title.to_lowercase().contains(w)
+                || issue.labels.iter().any(|l| l.to_lowercase().contains(w))
+        };
+        self.fields.matches_fields(issue, me) && self.words.iter().all(found)
+    }
+}
 impl BoardView {
     /// A fresh snapshot keeps the highlight on the same issue when it is
     /// still there: a refresh must not throw the user back to the top.
@@ -60,12 +94,14 @@ impl BoardView {
     pub fn cards(&self) -> Vec<Vec<&Issue>> {
         let Some(snapshot) = &self.snapshot else { return vec![] };
         let mode = self.swimlanes;
+        let filter = BoardFilter::parse(&self.filter);
+        let me = self.me.clone().unwrap_or_else(|| UserId::new(""));
         snapshot
             .columns()
             .into_iter()
             .map(|col| {
                 let mut col: Vec<&Issue> =
-                    col.into_iter().filter(|i| matches(i, &self.filter)).collect();
+                    col.into_iter().filter(|i| filter.matches(i, &me)).collect();
                 // Stable: within a lane, the provider's order stands.
                 col.sort_by_cached_key(|i| lane(mode, i).map(|(key, _)| key));
                 col

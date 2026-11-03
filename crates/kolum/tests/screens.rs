@@ -1041,3 +1041,65 @@ async fn the_transitions_picker_leaves_out_the_status_the_issue_is_in() {
     assert!(shown.contains("Move ACME-9") && shown.contains("To Do"), "{shown}");
     assert!(!shown.contains("Backlog "), "not to where it already is: {shown}");
 }
+
+/// Every card key on screen.
+fn cards_shown(app: &mut App) -> Vec<String> {
+    let shown = screen(app, 150, 80);
+    let mut keys: Vec<String> = shown
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .filter(|w| w.starts_with("ACME-"))
+        .map(String::from)
+        .collect();
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+#[tokio::test]
+async fn the_board_filter_takes_the_pickers_prefixes() {
+    let all = load_board(&FakeProvider::new(), None).await.unwrap().issues;
+    let keys_where = |pred: &dyn Fn(&kolum_domain::Issue) -> bool| {
+        let mut keys: Vec<String> =
+            all.iter().filter(|i| pred(i)).map(|i| i.key.to_string()).collect();
+        keys.sort();
+        keys
+    };
+    let assigned_to = |name: &'static str| {
+        move |i: &kolum_domain::Issue| i.assignee.as_ref().is_some_and(|a| a.display_name == name)
+    };
+
+    let mut app = loaded().await;
+    press(&mut app, "/@me<CR>");
+    assert_eq!(
+        cards_shown(&mut app),
+        keys_where(&assigned_to("Colin Tenaguillo")),
+        "only my cards"
+    );
+    assert!(
+        selected(&app).is_empty()
+            || keys_where(&assigned_to("Colin Tenaguillo")).contains(&selected(&app).to_string())
+    );
+
+    press(&mut app, "/<C-u>@ana<CR>");
+    assert_eq!(
+        cards_shown(&mut app),
+        keys_where(&assigned_to("Ana Silva")),
+        "a name, in part and in any case"
+    );
+
+    press(&mut app, "/<C-u>@me #bug<CR>");
+    let my_bugs = keys_where(&|i| assigned_to("Colin Tenaguillo")(i) && i.kind.name == "Bug");
+    assert_eq!(cards_shown(&mut app), my_bugs, "prefixes combine");
+    assert!(!my_bugs.is_empty());
+
+    press(&mut app, "/<C-u>@me login<CR>");
+    assert_eq!(cards_shown(&mut app), ["ACME-5"], "with text");
+
+    press(&mut app, "/<C-u>l:mobile<CR>");
+    assert_eq!(cards_shown(&mut app), keys_where(&|i| i.labels.iter().any(|l| l == "mobile")));
+
+    press(&mut app, "/<C-u>@");
+    assert_eq!(cards_shown(&mut app).len(), all.len(), "a lone @ while typing hides nothing");
+    press(&mut app, "<Esc>");
+    assert_eq!(cards_shown(&mut app).len(), all.len());
+}
