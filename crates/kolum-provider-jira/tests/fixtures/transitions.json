@@ -1,0 +1,52 @@
+{
+  "expand": "transitions",
+  "transitions": [
+    {
+      "id": "21",
+      "name": "Start",
+      "to": {
+        "self": "https://acme.atlassian.net/rest/api/3/status/3",
+        "id": "3",
+        "name": "In Progress",
+        "statusCategory": {
+          "id": 4,
+          "key": "indeterminate",
+          "colorName": "blue-gray",
+          "name": "In Progress"
+        }
+      },
+      "hasScreen": false,
+      "isGlobal": true,
+      "fields": {}
+    },
+    {
+      "id": "31",
+      "name": "Done",
+      "to": {
+        "self": "https://acme.atlassian.net/rest/api/3/status/10002",
+        "id": "10002",
+        "name": "Done",
+        "statusCategory": {
+          "id": 3,
+          "key": "done",
+          "colorName": "blue-gray",
+          "name": "Done"
+        }
+      },
+      "hasScreen": true,
+      "fields": {
+        "resolution": {
+          "required": true,
+          "name": "Resolution",
+          "schema": {
+            "type": "resolution"
+          }
+        },
+        "comment": {
+          "required": false,
+          "name": "Comment"
+        }
+      }
+    }
+  ]
+}

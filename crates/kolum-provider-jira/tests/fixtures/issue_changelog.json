@@ -1,0 +1,53 @@
+{
+  "id": "10005",
+  "key": "ACME-5",
+  "fields": {
+    "summary": "Login times out after SSO redirect"
+  },
+  "changelog": {
+    "startAt": 0,
+    "maxResults": 2,
+    "total": 2,
+    "histories": [
+      {
+        "id": "1",
+        "author": {
+          "accountId": "557058:colin",
+          "displayName": "Colin Tenaguillo",
+          "avatarUrls": {
+            "48x48": "https://avatar.invalid/colin-48.png",
+            "24x24": "https://avatar.invalid/colin-24.png"
+          },
+          "active": true,
+          "timeZone": "Europe/Paris"
+        },
+        "created": "2026-09-03T11:00:00.000+0000",
+        "items": [
+          {
+            "field": "status",
+            "fieldtype": "jira",
+            "fieldId": "status",
+            "from": "10000",
+            "fromString": "Backlog",
+            "to": "3",
+            "toString": "In Progress"
+          }
+        ]
+      },
+      {
+        "id": "2",
+        "created": "2026-09-03T12:00:00.000+0000",
+        "items": [
+          {
+            "field": "labels",
+            "fieldtype": "jira",
+            "from": null,
+            "fromString": "",
+            "to": null,
+            "toString": "auth backend"
+          }
+        ]
+      }
+    ]
+  }
+}

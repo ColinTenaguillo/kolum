@@ -4,8 +4,8 @@ A kanban client for ticket trackers, in the terminal. Vim keys, everything
 rebindable, a Telescope-style fuzzy picker, and issues laid out like the web
 app. Jira first; the core knows no provider, so others plug in beside it.
 
-> Early days: the board, the picker, the issue detail and the key engine run
-> on built-in demo data. The Jira adapter is next (see [Status](#status)).
+> Early days: the board, the picker, the issue detail and the key engine work
+> on built-in demo data and, read-only, on Jira Cloud (see [Status](#status)).
 
 ## Try it
 
@@ -53,11 +53,16 @@ box at start, and the rest of the file still applies.
 default_profile = "work"
 
 [profiles.work]
-provider = "jira"                 # not in this build yet: try --demo
+provider = "jira"
 base_url = "https://acme.atlassian.net"
-email = "me@acme.com"
-token_cmd = "pass show jira/acme"
-board = 42
+email = "me@acme.com"               # Cloud: e-mail and an API token
+token_cmd = "pass show jira/acme"   # or token = "...", or $KOLUM_TOKEN
+board = 42                          # else the first board listed
+# flavor = "datacenter"             # guessed: *.atlassian.net is Cloud
+# [profiles.work.fields]            # found from /field; force them if wrong
+# estimate = "customfield_10016"
+# sprint = "customfield_10020"
+# epic_link = "customfield_10014"
 
 [ui]
 theme = "kanagawa"                # dark light kanagawa catppuccin tokyonight gruvbox
@@ -103,6 +108,7 @@ A Cargo workspace whose crate boundaries are the architecture's:
 | `kolum-domain` | entities, `RichText`, `Query`, the ports, typed errors | any I/O: no HTTP, terminal or runtime |
 | `kolum-app` | use cases: load a board, parse a search, the `Service` the TUI talks through | a provider, the TUI |
 | `kolum-provider-fake` | an in-memory provider with demo data | the app, the TUI |
+| `kolum-provider-jira` | Jira's REST and Agile APIs; ADF and JQL stop here | the app, the TUI |
 | `kolum` | the TUI: keymap, theme, config, picker, views | a provider, except to build one in `main` |
 
 The TUI sends a `Command` and later receives an `Event`; it never waits on the
@@ -133,14 +139,30 @@ network. A provider is a crate implementing the ports, plus one line in the
 - **Picker**: the fuzzy chooser. A **source** supplies its items, preview and
   actions.
 
+## Jira
+
+Jira Cloud is read through REST v3 and Agile 1.0: boards and their column
+configuration, issues with their custom fields, comments, history and the
+transitions open to an issue. Descriptions and comments arrive as ADF and are
+converted to the neutral RichText; what ADF has and RichText does not (an
+expand, a media node, a table cell's blocks) is flattened to its words. The
+estimate, sprint and epic-link fields are found from `/field` by schema and
+name, and can be forced in the profile. Requests are capped at four in flight,
+and a 429 is retried after its `Retry-After`.
+
+Data Center is designed in (`flavor`: REST v2, a Bearer token, wiki markup)
+but untested against a live server; its wiki markup is shown as plain text for
+now. Writes are not built yet: the adapter answers `Unsupported` and says so
+in its capabilities.
+
 ## Status
 
 Done: the domain and its ports, the fake provider, the key engine, themes, the
 validated config, the board, the issue picker, the issue detail, generated
-help.
+help, and the Jira adapter for reading.
 
-Next, in order: the Jira Cloud adapter (read), the cache with background sync
-and remote search; then transitions (`H` `L` `t`), assigning, comments and
+Next, in order: the cache with background sync and remote search in the
+picker (`Ctrl-Space`); then transitions (`H` `L` `t`), assigning, comments and
 `$EDITOR` edits with optimistic updates; then swimlanes, visual mode,
 creating and cloning. Actions bound but not built yet say so when pressed.
 

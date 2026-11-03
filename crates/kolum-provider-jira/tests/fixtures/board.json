@@ -1,0 +1,15 @@
+{
+  "id": 42,
+  "self": "https://acme.atlassian.net/rest/agile/1.0/board/42",
+  "name": "ACME board",
+  "type": "kanban",
+  "location": {
+    "projectId": 10000,
+    "displayName": "Acme Web (ACME)",
+    "projectName": "Acme Web",
+    "projectKey": "ACME",
+    "projectTypeKey": "software",
+    "avatarURI": "x",
+    "name": "Acme Web (ACME)"
+  }
+}

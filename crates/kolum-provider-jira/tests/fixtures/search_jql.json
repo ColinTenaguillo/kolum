@@ -1,0 +1,49 @@
+{
+  "issues": [
+    {
+      "id": "10006",
+      "self": "x",
+      "key": "ACME-6",
+      "fields": {
+        "summary": "SAML assertion consumer endpoint",
+        "issuetype": {
+          "id": "10001",
+          "name": "Story",
+          "subtask": false,
+          "hierarchyLevel": 0
+        },
+        "status": {
+          "self": "https://acme.atlassian.net/rest/api/3/status/10001",
+          "id": "10001",
+          "name": "Selected for Development",
+          "statusCategory": {
+            "id": 2,
+            "key": "new",
+            "colorName": "blue-gray",
+            "name": "To Do"
+          }
+        },
+        "priority": {
+          "name": "Minor",
+          "id": "4"
+        },
+        "assignee": null,
+        "reporter": null,
+        "labels": [],
+        "parent": null,
+        "subtasks": [],
+        "issuelinks": [],
+        "created": "2026-09-03T03:00:00.000+0000",
+        "updated": "2026-09-03T03:00:00.000+0000",
+        "duedate": null,
+        "description": null,
+        "timeoriginalestimate": 7200,
+        "customfield_10016": null,
+        "customfield_10020": null,
+        "customfield_10014": "ACME-1"
+      }
+    }
+  ],
+  "nextPageToken": "CAEaAggD",
+  "isLast": false
+}

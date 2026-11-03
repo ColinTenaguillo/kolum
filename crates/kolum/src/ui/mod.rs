@@ -79,6 +79,8 @@ pub struct Settings {
     pub picker_layout: PickerLayout,
     /// Shown in a box at start until a key is pressed.
     pub problems: Vec<String>,
+    /// The board to open; the provider's first when `None`.
+    pub board: Option<kolum_domain::BoardId>,
 }
 
 pub struct App {
@@ -148,7 +150,7 @@ impl App {
             prompt: None,
             problems,
             message: None,
-            effects: vec![Effect::Send(Command::LoadBoard(None))],
+            effects: vec![Effect::Send(Command::LoadBoard(settings.board))],
             waker,
             quit: false,
         }

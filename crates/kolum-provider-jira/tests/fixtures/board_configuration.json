@@ -1,0 +1,76 @@
+{
+  "id": 42,
+  "name": "ACME board",
+  "type": "kanban",
+  "self": "x",
+  "location": {
+    "type": "project",
+    "key": "ACME",
+    "id": "10000",
+    "self": "x",
+    "name": "Acme Web"
+  },
+  "filter": {
+    "id": "10001",
+    "self": "x"
+  },
+  "subQuery": {
+    "query": "resolution = EMPTY OR resolution changed after -2w"
+  },
+  "columnConfig": {
+    "columns": [
+      {
+        "name": "Backlog",
+        "statuses": [
+          {
+            "id": "10000",
+            "self": "x"
+          }
+        ]
+      },
+      {
+        "name": "Selected for Development",
+        "statuses": [
+          {
+            "id": "10001",
+            "self": "x"
+          }
+        ]
+      },
+      {
+        "name": "In Progress",
+        "statuses": [
+          {
+            "id": "3",
+            "self": "x"
+          },
+          {
+            "id": "10004",
+            "self": "x"
+          }
+        ],
+        "max": 4
+      },
+      {
+        "name": "Done",
+        "statuses": [
+          {
+            "id": "10002",
+            "self": "x"
+          }
+        ]
+      }
+    ],
+    "constraintType": "issueCount"
+  },
+  "estimation": {
+    "type": "field",
+    "field": {
+      "fieldId": "customfield_10016",
+      "displayName": "Story point estimate"
+    }
+  },
+  "ranking": {
+    "rankCustomFieldId": 10019
+  }
+}

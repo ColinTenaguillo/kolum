@@ -1,0 +1,29 @@
+{
+  "maxResults": 50,
+  "startAt": 0,
+  "total": 2,
+  "isLast": true,
+  "values": [
+    {
+      "id": 42,
+      "self": "https://acme.atlassian.net/rest/agile/1.0/board/42",
+      "name": "ACME board",
+      "type": "kanban",
+      "location": {
+        "projectId": 10000,
+        "displayName": "Acme Web (ACME)",
+        "projectName": "Acme Web",
+        "projectKey": "ACME",
+        "projectTypeKey": "software",
+        "avatarURI": "x",
+        "name": "Acme Web (ACME)"
+      }
+    },
+    {
+      "id": 7,
+      "self": "x",
+      "name": "Mobile sprints",
+      "type": "scrum"
+    }
+  ]
+}

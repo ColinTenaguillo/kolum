@@ -54,12 +54,30 @@ type Build = fn(&Profile) -> anyhow::Result<Arc<dyn Provider>>;
 
 /// The providers this build knows, by the name a profile gives. Adding one
 /// is a crate and a line here; nothing else changes.
-const PROVIDERS: &[(&str, Build)] =
-    &[("fake", |_| Ok(Arc::new(kolum_provider_fake::FakeProvider::new())))];
+const PROVIDERS: &[(&str, Build)] = &[
+    ("fake", |_| Ok(Arc::new(kolum_provider_fake::FakeProvider::new()))),
+    ("jira", |p| {
+        let jira = kolum_provider_jira::JiraProvider::from_profile(&p.settings)
+            .map_err(anyhow::Error::msg)?;
+        Ok(Arc::new(jira))
+    }),
+];
 
-fn provider(args: &Args, config: &config::Config) -> anyhow::Result<Arc<dyn Provider>> {
+/// The board a profile opens: `board = 42` or `board = "PROJ"`. Without
+/// one, the provider's first board.
+fn profile_board(profile: &Profile) -> Option<kolum_domain::BoardId> {
+    match profile.settings.get("board")? {
+        toml::Value::Integer(n) => Some(kolum_domain::BoardId::new(n.to_string())),
+        toml::Value::String(s) => Some(kolum_domain::BoardId::new(s)),
+        _ => None,
+    }
+}
+
+type Opened = (Arc<dyn Provider>, Option<kolum_domain::BoardId>);
+
+fn provider(args: &Args, config: &config::Config) -> anyhow::Result<Opened> {
     if args.demo {
-        return Ok(Arc::new(kolum_provider_fake::FakeProvider::new()));
+        return Ok((Arc::new(kolum_provider_fake::FakeProvider::new()), None));
     }
     let name = args.profile.clone().or_else(|| config.default_profile.clone()).or_else(|| {
         (config.profiles.len() == 1).then(|| config.profiles.keys().next().cloned()).flatten()
@@ -75,7 +93,10 @@ fn provider(args: &Args, config: &config::Config) -> anyhow::Result<Arc<dyn Prov
         anyhow::bail!("no profile `{name}` in the config (it has: {})", known.join(", "));
     };
     match PROVIDERS.iter().find(|(n, _)| *n == profile.provider) {
-        Some((_, build)) => build(profile),
+        Some((_, build)) => {
+            let opened = build(profile).map_err(|e| e.context(format!("profile `{name}`")))?;
+            Ok((opened, profile_board(profile)))
+        }
         None => {
             let known: Vec<_> = PROVIDERS.iter().map(|(n, _)| *n).collect();
             anyhow::bail!(
@@ -134,8 +155,9 @@ fn app() -> anyhow::Result<()> {
     for p in &settings.problems {
         tracing::warn!("config: {p}");
     }
-    let provider = provider(&args, &config)?;
+    let (provider, board) = provider(&args, &config)?;
     tracing::info!("starting on the {} provider", provider.name());
+    let settings = Settings { board, ..settings };
     let result = run_tui(provider, settings);
     if args.debug
         && let Some(log) = log
@@ -162,6 +184,7 @@ fn load(args: &Args, config_dir: Option<PathBuf>) -> (config::Config, Settings) 
         ui: config.ui.clone(),
         picker_layout: config.picker.layout,
         problems,
+        board: None,
     };
     (config, settings)
 }
@@ -231,7 +254,9 @@ mod tests {
     }
 
     fn opened(args: Args, src: &str) -> Result<String, String> {
-        provider(&args, &config(src)).map(|p| p.name().to_string()).map_err(|e| e.to_string())
+        provider(&args, &config(src))
+            .map(|(p, _)| p.name().to_string())
+            .map_err(|e| format!("{e:#}"))
     }
 
     #[test]
@@ -254,6 +279,25 @@ mod tests {
             Err("no profile `zz` in the config (it has: a, b)".into())
         );
         assert!(opened(Args::default(), "").unwrap_err().starts_with("no profile to open"));
+    }
+
+    #[test]
+    fn a_jira_profile_is_checked_and_opens_its_board() {
+        let jira = "[profiles.work]\nprovider = \"jira\"\nbase_url = \"https://acme.atlassian.net\"\n\
+                    email = \"me@acme.com\"\ntoken = \"t\"\nboard = 42";
+        let (p, board) = provider(&Args::default(), &config(jira)).unwrap();
+        assert_eq!(p.name(), "jira");
+        assert_eq!(board, Some(kolum_domain::BoardId::new("42")));
+        let broken = "[profiles.work]\nprovider = \"jira\"\nbase_url = \"https://acme.atlassian.net\"\ntoken = \"t\"";
+        assert_eq!(
+            opened(Args::default(), broken),
+            Err("profile `work`: `email` is required on Jira Cloud".into())
+        );
+        let named = "[profiles.x]\nprovider = \"fake\"\nboard = \"MAIN\"";
+        assert_eq!(
+            provider(&Args::default(), &config(named)).unwrap().1,
+            Some(kolum_domain::BoardId::new("MAIN"))
+        );
     }
 
     #[test]

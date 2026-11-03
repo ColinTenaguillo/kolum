@@ -1,0 +1,25 @@
+[package]
+name = "kolum-provider-jira"
+description = "kolum's Jira adapter: REST and Agile APIs, ADF, JQL, mapped onto the domain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64 = "0.22"
+kolum-domain.workspace = true
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
+serde.workspace = true
+serde_json = "1"
+time.workspace = true
+tokio.workspace = true
+toml = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

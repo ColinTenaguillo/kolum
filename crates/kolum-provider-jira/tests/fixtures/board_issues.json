@@ -1,0 +1,699 @@
+{
+  "expand": "schema,names",
+  "startAt": 0,
+  "maxResults": 100,
+  "total": 2,
+  "issues": [
+    {
+      "expand": "",
+      "id": "10005",
+      "self": "https://acme.atlassian.net/rest/api/3/issue/10005",
+      "key": "ACME-5",
+      "fields": {
+        "summary": "Login times out after SSO redirect",
+        "issuetype": {
+          "id": "10004",
+          "name": "Bug",
+          "subtask": false,
+          "hierarchyLevel": 0,
+          "iconUrl": "https://x.invalid/bug.svg"
+        },
+        "status": {
+          "self": "https://acme.atlassian.net/rest/api/3/status/3",
+          "id": "3",
+          "name": "In Progress",
+          "statusCategory": {
+            "id": 4,
+            "key": "indeterminate",
+            "colorName": "blue-gray",
+            "name": "In Progress"
+          }
+        },
+        "priority": {
+          "self": "x",
+          "iconUrl": "x",
+          "name": "High",
+          "id": "2"
+        },
+        "assignee": {
+          "accountId": "557058:colin",
+          "displayName": "Colin Tenaguillo",
+          "avatarUrls": {
+            "48x48": "https://avatar.invalid/colin-48.png",
+            "24x24": "https://avatar.invalid/colin-24.png"
+          },
+          "active": true,
+          "timeZone": "Europe/Paris"
+        },
+        "reporter": {
+          "accountId": "557058:ana",
+          "displayName": "Ana Silva",
+          "avatarUrls": {
+            "48x48": "https://avatar.invalid/ana-48.png"
+          },
+          "active": true
+        },
+        "labels": [
+          "auth",
+          "backend"
+        ],
+        "parent": {
+          "id": "1-1",
+          "key": "ACME-1",
+          "self": "x",
+          "fields": {
+            "summary": "Single sign-on",
+            "status": {
+              "self": "https://acme.atlassian.net/rest/api/3/status/3",
+              "id": "3",
+              "name": "In Progress",
+              "statusCategory": {
+                "id": 4,
+                "key": "indeterminate",
+                "colorName": "blue-gray",
+                "name": "In Progress"
+              }
+            },
+            "priority": {
+              "name": "Medium",
+              "id": "3"
+            },
+            "issuetype": {
+              "id": "10000",
+              "name": "Epic",
+              "subtask": false,
+              "hierarchyLevel": 1
+            }
+          }
+        },
+        "subtasks": [
+          {
+            "id": "150",
+            "key": "ACME-50",
+            "self": "x",
+            "fields": {
+              "summary": "Raise the state TTL",
+              "status": {
+                "self": "https://acme.atlassian.net/rest/api/3/status/10000",
+                "id": "10000",
+                "name": "Backlog",
+                "statusCategory": {
+                  "id": 2,
+                  "key": "new",
+                  "colorName": "blue-gray",
+                  "name": "To Do"
+                }
+              },
+              "priority": {
+                "name": "Medium",
+                "id": "3"
+              },
+              "issuetype": {
+                "id": "10003",
+                "name": "Subtask",
+                "subtask": true,
+                "hierarchyLevel": -1
+              }
+            }
+          }
+        ],
+        "issuelinks": [
+          {
+            "id": "1",
+            "self": "x",
+            "type": {
+              "id": "10000",
+              "name": "Blocks",
+              "inward": "is blocked by",
+              "outward": "blocks"
+            },
+            "outwardIssue": {
+              "id": "134",
+              "key": "ACME-34",
+              "self": "x",
+              "fields": {
+                "summary": "GraphQL endpoint",
+                "status": {
+                  "self": "https://acme.atlassian.net/rest/api/3/status/10000",
+                  "id": "10000",
+                  "name": "Backlog",
+                  "statusCategory": {
+                    "id": 2,
+                    "key": "new",
+                    "colorName": "blue-gray",
+                    "name": "To Do"
+                  }
+                },
+                "priority": {
+                  "name": "Medium",
+                  "id": "3"
+                },
+                "issuetype": {
+                  "id": "10001",
+                  "name": "Story",
+                  "subtask": false,
+                  "hierarchyLevel": 0
+                }
+              }
+            }
+          },
+          {
+            "id": "2",
+            "self": "x",
+            "type": {
+              "id": "10003",
+              "name": "Relates",
+              "inward": "relates to",
+              "outward": "relates to"
+            },
+            "inwardIssue": {
+              "id": "129",
+              "key": "ACME-29",
+              "self": "x",
+              "fields": {
+                "summary": "Stripe retries",
+                "status": {
+                  "self": "https://acme.atlassian.net/rest/api/3/status/10002",
+                  "id": "10002",
+                  "name": "Done",
+                  "statusCategory": {
+                    "id": 3,
+                    "key": "done",
+                    "colorName": "blue-gray",
+                    "name": "Done"
+                  }
+                },
+                "priority": {
+                  "name": "Medium",
+                  "id": "3"
+                },
+                "issuetype": {
+                  "id": "10004",
+                  "name": "Bug",
+                  "subtask": false,
+                  "hierarchyLevel": 0,
+                  "iconUrl": "https://x.invalid/bug.svg"
+                }
+              }
+            }
+          }
+        ],
+        "created": "2026-09-02T20:00:00.000+0000",
+        "updated": "2026-09-03T11:00:00.000+0200",
+        "duedate": "2026-09-12",
+        "description": {
+          "type": "doc",
+          "version": 1,
+          "content": [
+            {
+              "type": "heading",
+              "attrs": {
+                "level": 2
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Steps"
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "After the "
+                },
+                {
+                  "type": "text",
+                  "text": "SSO",
+                  "marks": [
+                    {
+                      "type": "strong"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "text": " redirect the page says "
+                },
+                {
+                  "type": "text",
+                  "text": "Session expired",
+                  "marks": [
+                    {
+                      "type": "em"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "text": ", see "
+                },
+                {
+                  "type": "text",
+                  "text": "auth/session.rs",
+                  "marks": [
+                    {
+                      "type": "code"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "text": "."
+                }
+              ]
+            },
+            {
+              "type": "orderedList",
+              "attrs": {
+                "order": 1
+              },
+              "content": [
+                {
+                  "type": "listItem",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Sign in"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "listItem",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "Wait"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "bulletList",
+                      "content": [
+                        {
+                          "type": "listItem",
+                          "content": [
+                            {
+                              "type": "paragraph",
+                              "content": [
+                                {
+                                  "type": "text",
+                                  "text": "25 s"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "codeBlock",
+              "attrs": {
+                "language": "log"
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "ERROR auth::session expired\nWARN retrying"
+                }
+              ]
+            },
+            {
+              "type": "panel",
+              "attrs": {
+                "panelType": "warning"
+              },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Production only"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "mention",
+                  "attrs": {
+                    "id": "557058:ana",
+                    "text": "@Ana Silva",
+                    "accessLevel": ""
+                  }
+                },
+                {
+                  "type": "text",
+                  "text": " can you look "
+                },
+                {
+                  "type": "emoji",
+                  "attrs": {
+                    "shortName": ":eyes:",
+                    "id": "1f440",
+                    "text": "👀"
+                  }
+                },
+                {
+                  "type": "hardBreak"
+                },
+                {
+                  "type": "text",
+                  "text": "docs",
+                  "marks": [
+                    {
+                      "type": "link",
+                      "attrs": {
+                        "href": "https://docs.invalid/sso"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "text": " and "
+                },
+                {
+                  "type": "inlineCard",
+                  "attrs": {
+                    "url": "https://acme.atlassian.net/browse/ACME-34"
+                  }
+                },
+                {
+                  "type": "text",
+                  "text": " "
+                },
+                {
+                  "type": "status",
+                  "attrs": {
+                    "text": "blocked",
+                    "color": "red",
+                    "localId": "x"
+                  }
+                },
+                {
+                  "type": "text",
+                  "text": " "
+                },
+                {
+                  "type": "date",
+                  "attrs": {
+                    "timestamp": "1788220800000"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "table",
+              "attrs": {
+                "isNumberColumnEnabled": false,
+                "layout": "default"
+              },
+              "content": [
+                {
+                  "type": "tableRow",
+                  "content": [
+                    {
+                      "type": "tableHeader",
+                      "attrs": {},
+                      "content": [
+                        {
+                          "type": "paragraph",
+                          "content": [
+                            {
+                              "type": "text",
+                              "text": "Plan"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "tableHeader",
+                      "attrs": {},
+                      "content": [
+                        {
+                          "type": "paragraph",
+                          "content": [
+                            {
+                              "type": "text",
+                              "text": "Limit"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "tableRow",
+                  "content": [
+                    {
+                      "type": "tableCell",
+                      "attrs": {},
+                      "content": [
+                        {
+                          "type": "paragraph",
+                          "content": [
+                            {
+                              "type": "text",
+                              "text": "Free"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "tableCell",
+                      "attrs": {},
+                      "content": [
+                        {
+                          "type": "paragraph",
+                          "content": [
+                            {
+                              "type": "text",
+                              "text": "60"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "paragraph",
+                          "content": [
+                            {
+                              "type": "text",
+                              "text": "per min"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "taskList",
+              "attrs": {
+                "localId": "t"
+              },
+              "content": [
+                {
+                  "type": "taskItem",
+                  "attrs": {
+                    "localId": "1",
+                    "state": "DONE"
+                  },
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Reproduce"
+                    }
+                  ]
+                },
+                {
+                  "type": "taskItem",
+                  "attrs": {
+                    "localId": "2",
+                    "state": "TODO"
+                  },
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Fix"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "expand",
+              "attrs": {
+                "title": "Raw headers"
+              },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "X-Trace: 7f3a"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "mediaSingle",
+              "attrs": {
+                "layout": "center"
+              },
+              "content": [
+                {
+                  "type": "media",
+                  "attrs": {
+                    "id": "abc",
+                    "type": "file",
+                    "collection": ""
+                  }
+                }
+              ]
+            },
+            {
+              "type": "rule"
+            },
+            {
+              "type": "blockquote",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "quoted"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "someFutureNode",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "kept"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "timeoriginalestimate": null,
+        "customfield_10016": 3.0,
+        "customfield_10020": [
+          {
+            "id": 14,
+            "name": "Sprint 14",
+            "state": "closed",
+            "boardId": 42
+          },
+          {
+            "id": 15,
+            "name": "Sprint 15",
+            "state": "active",
+            "boardId": 42
+          }
+        ],
+        "customfield_10014": null,
+        "customfield_10050": {
+          "self": "x",
+          "value": "Platform",
+          "id": "10100"
+        },
+        "customfield_10060": [
+          {
+            "value": "iOS",
+            "id": "1"
+          },
+          {
+            "value": "Android",
+            "id": "2"
+          }
+        ],
+        "customfield_10070": {
+          "accountId": "557058:ana",
+          "displayName": "Ana Silva",
+          "avatarUrls": {
+            "48x48": "https://avatar.invalid/ana-48.png"
+          },
+          "active": true
+        },
+        "customfield_10080": null
+      }
+    },
+    {
+      "id": "10006",
+      "self": "x",
+      "key": "ACME-6",
+      "fields": {
+        "summary": "SAML assertion consumer endpoint",
+        "issuetype": {
+          "id": "10001",
+          "name": "Story",
+          "subtask": false,
+          "hierarchyLevel": 0
+        },
+        "status": {
+          "self": "https://acme.atlassian.net/rest/api/3/status/10001",
+          "id": "10001",
+          "name": "Selected for Development",
+          "statusCategory": {
+            "id": 2,
+            "key": "new",
+            "colorName": "blue-gray",
+            "name": "To Do"
+          }
+        },
+        "priority": {
+          "name": "Minor",
+          "id": "4"
+        },
+        "assignee": null,
+        "reporter": null,
+        "labels": [],
+        "parent": null,
+        "subtasks": [],
+        "issuelinks": [],
+        "created": "2026-09-03T03:00:00.000+0000",
+        "updated": "2026-09-03T03:00:00.000+0000",
+        "duedate": null,
+        "description": null,
+        "timeoriginalestimate": 7200,
+        "customfield_10016": null,
+        "customfield_10020": null,
+        "customfield_10014": "ACME-1"
+      }
+    }
+  ]
+}
