@@ -57,6 +57,7 @@ The defaults follow vim. Counts work on motions (`3j`, `5G`), sequences wait
 | `Space '` | reopen the last picker as you left it |
 | `H` `L` · `t` | move the card a column left or right · pick a transition |
 | `Space a` `Space A` | assign · assign to me |
+| `Space u` | show the cards of one or several people: `Tab` marks, `Enter` applies (`Everyone` clears) |
 | `i` · `e` | comment · edit the title and description, in `$EDITOR` as Markdown |
 | `yy` `yu` `o` | copy the key, copy the URL, open in the browser |
 | `v` | visual mode: a range of cards in a column for one action (`t` `H` `L` `Space a` `yy` `C`) |

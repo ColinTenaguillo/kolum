@@ -349,7 +349,7 @@ mod tests {
         use kolum_domain::{Filter, UserSel};
         let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), None);
         events.recv().await; // Me
-        let mine = Query::Filter(Filter { assignee: Some(UserSel::Me), ..Default::default() });
+        let mine = Query::Filter(Filter { assignees: vec![UserSel::Me], ..Default::default() });
         service.send(Command::Search { id: 7, query: mine });
         let Some(Event::SearchResults { id: 7, result: Ok(issues) }) = events.recv().await else {
             panic!()

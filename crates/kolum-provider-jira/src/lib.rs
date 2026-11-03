@@ -97,14 +97,16 @@ impl JiraProvider {
         dtos.iter().map(|d| map::issue(d, ctx)).collect()
     }
 
-    /// `@name` resolved to account ids, for JQL.
+    /// Every `@name` resolved to account ids, for JQL.
     async fn assignee_ids(&self, query: &Query) -> Result<Vec<String>> {
-        match query {
-            Query::Filter(Filter { assignee: Some(UserSel::Named(name)), .. }) => {
-                Ok(self.find_users(name).await?.into_iter().map(|u| u.id.0).collect())
+        let Query::Filter(filter) = query else { return Ok(vec![]) };
+        let mut ids = vec![];
+        for sel in &filter.assignees {
+            if let UserSel::Named(name) = sel {
+                ids.extend(self.find_users(name).await?.into_iter().map(|u| u.id.0));
             }
-            _ => Ok(vec![]),
         }
+        Ok(ids)
     }
 }
 
@@ -206,7 +208,10 @@ impl IssueSearch for JiraProvider {
             Query::Native(jql) => jql.clone(),
             Query::Filter(filter) => {
                 let ids = self.assignee_ids(query).await?;
-                if matches!(filter.assignee, Some(UserSel::Named(_))) && ids.is_empty() {
+                // Only names, and none of them anyone: nothing can match.
+                let only_names = !filter.assignees.is_empty()
+                    && filter.assignees.iter().all(|s| matches!(s, UserSel::Named(_)));
+                if only_names && ids.is_empty() {
                     return Ok(Page { items: vec![], next: None });
                 }
                 jql::filter(filter, &ids)

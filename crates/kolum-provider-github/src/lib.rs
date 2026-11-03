@@ -466,10 +466,20 @@ pub fn search_query(query: &Query, owner: &str, number: u64) -> String {
     };
     let mut parts = vec![format!("project:{owner}/{number}")];
     parts.extend(filter.text.clone());
-    match &filter.assignee {
-        Some(UserSel::Me) => parts.push("assignee:@me".into()),
-        Some(UserSel::Named(n)) => parts.push(format!("assignee:{n}")),
-        None => {}
+    let who: Vec<String> = filter
+        .assignees
+        .iter()
+        .map(|sel| match sel {
+            UserSel::Me => "assignee:@me".to_string(),
+            UserSel::Named(n) => format!("assignee:{n}"),
+            UserSel::Nobody => "no:assignee".to_string(),
+        })
+        .collect();
+    match who.len() {
+        0 => {}
+        1 => parts.extend(who),
+        // Alternatives: GitHub's issue search takes OR and parentheses.
+        _ => parts.push(format!("({})", who.join(" OR "))),
     }
     parts.extend(filter.labels.iter().map(|l| format!("label:{}", quote(l))));
     parts.extend(filter.types.iter().map(|t| match t.to_lowercase().as_str() {

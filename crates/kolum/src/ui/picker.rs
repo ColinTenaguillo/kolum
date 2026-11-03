@@ -28,6 +28,9 @@ pub enum Pick {
     OpenUrl(String),
     Theme(String),
     Board(kolum_domain::BoardId),
+    /// Show these people's cards: `@` tokens for the board filter. An
+    /// empty token is everyone.
+    People(Vec<String>),
     /// An issue action the app carries out, on these issues.
     OnIssues(Action, Vec<kolum_domain::IssueKey>),
     Transition {
@@ -146,6 +149,12 @@ impl<S: PickerSource> Picker<S> {
         picker
     }
 
+    /// Starts with these rows marked, by the text they show.
+    pub fn with_marks(mut self, marks: impl IntoIterator<Item = String>) -> Self {
+        self.marks.extend(marks);
+        self
+    }
+
     fn inject(&mut self) {
         let injector = self.nucleo.injector();
         for item in self.source.candidates(self.input.text()) {
@@ -185,16 +194,18 @@ impl<S: PickerSource> Picker<S> {
     }
 
     /// The marked items in rank order, or the highlighted one.
+    /// The marked items, in the order they were given, whatever the query
+    /// now shows (a mark made before typing something else still counts);
+    /// or the highlighted one when nothing is marked.
     fn targets(&self) -> Vec<S::Item> {
         let snapshot = self.nucleo.snapshot();
-        let marked: Vec<S::Item> = snapshot
-            .matched_items(..)
+        let marked: Vec<S::Item> = (0..snapshot.item_count())
+            .filter_map(|i| snapshot.get_item(i))
             .filter(|i| self.marks.contains(&self.source.haystack(i.data)))
             .map(|i| i.data.clone())
             .collect();
         if marked.is_empty() { self.current().cloned().into_iter().collect() } else { marked }
     }
-
     fn source_label(&self) -> &'static str {
         match (self.remote, self.loading) {
             (false, _) => "local",

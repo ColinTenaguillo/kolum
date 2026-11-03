@@ -582,6 +582,7 @@ impl App {
                     self.create();
                 }
             }
+            Action::PickerUsers => self.open_people_picker(),
             Action::MoveCardLeft => self.move_card(-n),
             Action::MoveCardRight => self.move_card(n),
             _ => {
@@ -590,6 +591,78 @@ impl App {
                 self.issue_action(action, keys);
             }
         }
+    }
+
+    /// Everyone, me, then whoever has a card on the board by name, then no
+    /// one; with how many cards each has, and those already in the filter
+    /// marked.
+    fn open_people_picker(&mut self) {
+        let issues = self.board.snapshot.iter().flat_map(|s| &s.issues);
+        let mut counts: Vec<(Option<kolum_domain::User>, usize)> = vec![];
+        for issue in issues {
+            match counts
+                .iter_mut()
+                .find(|(u, _)| u.as_ref().map(|u| &u.id) == issue.assignee.as_ref().map(|a| &a.id))
+            {
+                Some((_, n)) => *n += 1,
+                None => counts.push((issue.assignee.clone(), 1)),
+            }
+        }
+        let me = self.me.as_ref().map(|u| u.id.clone());
+        let cards = |n: usize| if n == 1 { "1 card".to_string() } else { format!("{n} cards") };
+        let count_of = |id: Option<&kolum_domain::UserId>| {
+            counts.iter().find(|(u, _)| u.as_ref().map(|u| &u.id) == id).map_or(0, |(_, n)| *n)
+        };
+        let mut people = vec![(String::new(), "Everyone".to_string())];
+        if let Some(me_user) = &self.me {
+            people.push((
+                "@me".into(),
+                format!("{} (me)  {}", me_user.display_name, cards(count_of(me.as_ref()))),
+            ));
+        }
+        let mut others: Vec<&kolum_domain::User> = counts
+            .iter()
+            .filter_map(|(u, _)| u.as_ref())
+            .filter(|u| Some(&u.id) != me.as_ref())
+            .collect();
+        others.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+        for u in others {
+            let token = format!("@{}", u.display_name.replace(' ', ""));
+            people.push((token, format!("{}  {}", u.display_name, cards(count_of(Some(&u.id))))));
+        }
+        let unassigned = count_of(None);
+        if unassigned > 0 {
+            people.push(("@none".into(), format!("Unassigned  {}", cards(unassigned))));
+        }
+        let shown: Vec<&str> =
+            self.board.filter.split_whitespace().filter(|w| w.starts_with('@')).collect();
+        let marks: Vec<String> = people
+            .iter()
+            .filter(|(t, _)| shown.contains(&t.as_str()))
+            .map(|(_, label)| label.clone())
+            .collect();
+        let picker =
+            Picker::new(sources::PeopleChoice { people }, self.waker.clone()).with_marks(marks);
+        self.open_picker(Box::new(picker));
+    }
+
+    /// The `@` part of the board filter becomes these people; the rest of
+    /// what was typed stays.
+    fn show_people(&mut self, tokens: &[String]) {
+        let everyone = tokens.iter().any(String::is_empty);
+        let mut words: Vec<&str> =
+            self.board.filter.split_whitespace().filter(|w| !w.starts_with('@')).collect();
+        if !everyone {
+            words.extend(tokens.iter().map(String::as_str));
+        }
+        self.board.filter = words.join(" ");
+        self.board.clamp();
+        let msg = if everyone || tokens.is_empty() {
+            "Everyone's cards".to_string()
+        } else {
+            format!("Cards of {}", tokens.join(" "))
+        };
+        self.say(msg, Level::Info);
     }
 
     fn toggle_swimlanes(&mut self) {
@@ -1145,6 +1218,10 @@ impl App {
             Pick::Assign { keys, user } => {
                 self.close_picker();
                 self.assign(keys, user);
+            }
+            Pick::People(tokens) => {
+                self.close_picker();
+                self.show_people(&tokens);
             }
             Pick::Board(id) => {
                 self.close_picker();

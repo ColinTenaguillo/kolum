@@ -20,17 +20,31 @@ fn any_of(field: &str, values: &[String]) -> Option<String> {
     }
 }
 
-/// `assignees` are the ids a `@name` resolved to; `@me` needs none.
+/// `assignees` are the ids every `@name` resolved to; `@me` and `@none`
+/// need none.
 pub fn filter(f: &Filter, assignees: &[String]) -> String {
     use kolum_domain::UserSel;
     let mut clauses: Vec<String> = vec![];
     if let Some(text) = &f.text {
         clauses.push(format!("text ~ {}", quote(text)));
     }
-    match &f.assignee {
-        Some(UserSel::Me) => clauses.push("assignee = currentUser()".into()),
-        Some(UserSel::Named(_)) => clauses.extend(any_of("assignee", assignees)),
-        None => {}
+    // One clause for every way of naming the assignee, ORed: they are
+    // alternatives, like the values of any field.
+    let mut who: Vec<String> = vec![];
+    for sel in &f.assignees {
+        match sel {
+            UserSel::Me => who.push("assignee = currentUser()".into()),
+            UserSel::Nobody => who.push("assignee is EMPTY".into()),
+            UserSel::Named(_) => {}
+        }
+    }
+    if f.assignees.iter().any(|s| matches!(s, UserSel::Named(_))) {
+        who.extend(any_of("assignee", assignees));
+    }
+    match who.len() {
+        0 => {}
+        1 => clauses.push(who.remove(0)),
+        _ => clauses.push(format!("({})", who.join(" OR "))),
     }
     clauses.extend(any_of("status", &f.statuses));
     clauses.extend(any_of("issuetype", &f.types));
@@ -82,7 +96,7 @@ mod tests {
     fn every_field_becomes_a_clause() {
         let f = Filter {
             text: Some("login timeout".into()),
-            assignee: Some(UserSel::Me),
+            assignees: vec![UserSel::Me],
             statuses: vec!["In Review".into()],
             types: vec!["Bug".into(), "Story".into()],
             labels: vec!["backend".into()],
@@ -100,7 +114,7 @@ mod tests {
     #[test]
     fn a_named_assignee_uses_the_resolved_ids_and_a_sprint_name_is_quoted() {
         let f = Filter {
-            assignee: Some(UserSel::Named("ana".into())),
+            assignees: vec![UserSel::Named("ana".into())],
             sprint: Some("Sprint 14".into()),
             ..Filter::default()
         };
@@ -108,6 +122,20 @@ mod tests {
             filter(&f, &["5b10a2844c20165700ede21g".into(), "abc".into()]),
             "assignee in (\"5b10a2844c20165700ede21g\", \"abc\") AND sprint = \"Sprint 14\" ORDER BY updated DESC"
         );
+    }
+
+    #[test]
+    fn several_people_are_one_or_group() {
+        let f = Filter {
+            assignees: vec![UserSel::Me, UserSel::Named("ana".into()), UserSel::Nobody],
+            ..Filter::default()
+        };
+        assert_eq!(
+            filter(&f, &["acc-ana".into()]),
+            "(assignee = currentUser() OR assignee is EMPTY OR assignee = \"acc-ana\") ORDER BY updated DESC"
+        );
+        let nobody = Filter { assignees: vec![UserSel::Nobody], ..Filter::default() };
+        assert_eq!(filter(&nobody, &[]), "assignee is EMPTY ORDER BY updated DESC");
     }
 
     #[test]

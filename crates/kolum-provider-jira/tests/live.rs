@@ -103,7 +103,7 @@ async fn reads_a_real_board() {
         ..Default::default()
     });
     eprintln!("search by text: {} hits", p.search(&text, None).await.unwrap().items.len());
-    let mine = Query::Filter(Filter { assignee: Some(UserSel::Me), ..Default::default() });
+    let mine = Query::Filter(Filter { assignees: vec![UserSel::Me], ..Default::default() });
     eprintln!("search @me: {} hits", p.search(&mine, None).await.unwrap().items.len());
     let project = first.key.as_str().split('-').next().unwrap();
     let native = p

@@ -270,3 +270,31 @@ fn titled(verb: &str, keys: &[kolum_domain::IssueKey]) -> String {
     let keys: Vec<&str> = keys.iter().map(|k| k.as_str()).collect();
     format!("{verb} {}", keys.join(", "))
 }
+
+/// People to show the cards of: everyone, me, the board's assignees by
+/// name, no one. Each row is an `@` token for the board filter and what
+/// it shows.
+pub struct PeopleChoice {
+    pub people: Vec<(String, String)>,
+}
+
+impl PickerSource for PeopleChoice {
+    type Item = (String, String);
+
+    fn title(&self) -> String {
+        "Show the cards of (Tab marks several)".into()
+    }
+
+    fn candidates(&self, _query: &str) -> Vec<Self::Item> {
+        self.people.clone()
+    }
+
+    fn haystack(&self, (_, label): &Self::Item) -> String {
+        label.clone()
+    }
+
+    fn act(&self, people: &[Self::Item], action: Action) -> Option<Pick> {
+        (action == Action::Confirm)
+            .then(|| Pick::People(people.iter().map(|(token, _)| token.clone()).collect()))
+    }
+}

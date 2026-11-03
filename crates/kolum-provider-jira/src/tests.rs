@@ -391,7 +391,7 @@ async fn search_translates_the_query_and_resolves_names() {
     let jira = fake_jira(None).await;
     let p = provider(&jira);
     let filter = Filter {
-        assignee: Some(UserSel::Named("ana".into())),
+        assignees: vec![UserSel::Named("ana".into())],
         text: Some("saml".into()),
         ..Filter::default()
     };

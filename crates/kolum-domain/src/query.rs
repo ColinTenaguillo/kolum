@@ -16,8 +16,11 @@ pub enum Query {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UserSel {
     Me,
-    /// Matched against the display name, so `@colin` finds "Colin T.".
+    /// Matched against the display name, so `@colin` finds "Colin T.",
+    /// and against it without its spaces, so `@AnaSilva` is one person.
     Named(String),
+    /// No one.
+    Nobody,
 }
 
 /// Every field is a constraint; an empty one constrains nothing. Values of
@@ -26,7 +29,8 @@ pub enum UserSel {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Filter {
     pub text: Option<String>,
-    pub assignee: Option<UserSel>,
+    /// Alternatives, like every other field: `@me @ana` is either.
+    pub assignees: Vec<UserSel>,
     pub statuses: Vec<String>,
     pub types: Vec<String>,
     pub labels: Vec<String>,
@@ -47,13 +51,15 @@ impl Filter {
     /// left out because locally it is matched fuzzily and ranked, which is
     /// not a yes or no.
     pub fn matches_fields(&self, issue: &Issue, me: &UserId) -> bool {
-        let assignee = match &self.assignee {
-            None => true,
-            Some(UserSel::Me) => issue.is_assigned_to(me),
-            Some(UserSel::Named(n)) => {
-                issue.assignee.as_ref().is_some_and(|a| contains(&a.display_name, n))
-            }
-        };
+        let assignee = self.assignees.is_empty()
+            || self.assignees.iter().any(|sel| match (sel, &issue.assignee) {
+                (UserSel::Me, _) => issue.is_assigned_to(me),
+                (UserSel::Nobody, a) => a.is_none(),
+                (UserSel::Named(n), Some(a)) => {
+                    contains(&a.display_name, n) || contains(&a.display_name.replace(' ', ""), n)
+                }
+                (UserSel::Named(_), None) => false,
+            });
         let epic = self.epic.as_ref().is_none_or(|e| {
             issue
                 .parent
@@ -133,13 +139,20 @@ mod tests {
 
     #[test]
     fn each_field_constrains() {
-        assert!(matches(Filter { assignee: Some(UserSel::Me), ..Default::default() }));
+        let who = |sel: Vec<UserSel>| Filter { assignees: sel, ..Default::default() };
+        assert!(matches(who(vec![UserSel::Me])));
+        assert!(
+            matches(who(vec![UserSel::Named("AnaSilva".into())])),
+            "the name without its spaces"
+        );
+        assert!(!matches(who(vec![UserSel::Nobody])), "Ana has it");
+        assert!(matches(who(vec![UserSel::Named("bob".into()), UserSel::Me])), "alternatives");
         assert!(matches(Filter {
-            assignee: Some(UserSel::Named("ana".into())),
+            assignees: vec![UserSel::Named("ana".into())],
             ..Default::default()
         }));
         assert!(!matches(Filter {
-            assignee: Some(UserSel::Named("bob".into())),
+            assignees: vec![UserSel::Named("bob".into())],
             ..Default::default()
         }));
         assert!(matches(Filter { statuses: vec!["review".into()], ..Default::default() }));

@@ -243,7 +243,7 @@ async fn search_runs_inside_the_project_and_keeps_what_the_board_knows() {
     let gh = fake_github(200, None).await;
     let (p, _) = loaded(&gh).await;
     let mine = Query::Filter(Filter {
-        assignee: Some(UserSel::Me),
+        assignees: vec![UserSel::Me],
         text: Some("picker".into()),
         ..Default::default()
     });
@@ -270,7 +270,7 @@ fn the_neutral_query_in_github_search_syntax() {
     let q = |f: Filter| search_query(&Query::Filter(f), "octo", 5);
     assert_eq!(q(Filter::default()), "project:octo/5");
     let f = Filter {
-        assignee: Some(UserSel::Named("ana".into())),
+        assignees: vec![UserSel::Named("ana".into())],
         labels: vec!["good first issue".into()],
         types: vec!["pr".into(), "bug".into()],
         statuses: vec!["Done".into()],
@@ -284,6 +284,8 @@ fn the_neutral_query_in_github_search_syntax() {
         search_query(&Query::Native("repo:a/b is:open".into()), "octo", 5),
         "repo:a/b is:open"
     );
+    let several = Filter { assignees: vec![UserSel::Me, UserSel::Nobody], ..Default::default() };
+    assert_eq!(q(several), "project:octo/5 (assignee:@me OR no:assignee)");
 }
 
 #[tokio::test]

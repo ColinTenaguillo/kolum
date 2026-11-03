@@ -2,7 +2,8 @@
 
 use kolum_domain::{Filter, Query, UserSel};
 
-/// `@me` (or `@moi`) and `@name` for the assignee, `#bug` for the type,
+/// `@me` (or `@moi`), `@name` and `@none` for the assignee (several are
+/// alternatives), `#bug` for the type,
 /// `s:review` status, `l:backend` label, `e:PROJ-10` epic, `sp:14` sprint.
 /// The rest is free text. A leading `!` sends everything after it to the
 /// provider as written (JQL on Jira).
@@ -37,9 +38,12 @@ fn apply_prefix(filter: &mut Filter, word: &str) -> bool {
     let value = value.to_string();
     match prefix {
         "@" if matches!(value.to_lowercase().as_str(), "me" | "moi") => {
-            filter.assignee = Some(UserSel::Me)
+            filter.assignees.push(UserSel::Me)
         }
-        "@" => filter.assignee = Some(UserSel::Named(value)),
+        "@" if matches!(value.to_lowercase().as_str(), "none" | "nobody" | "unassigned") => {
+            filter.assignees.push(UserSel::Nobody)
+        }
+        "@" => filter.assignees.push(UserSel::Named(value)),
         "#" => filter.types.push(value),
         "s" => filter.statuses.push(value),
         "l" => filter.labels.push(value),
@@ -64,7 +68,7 @@ mod tests {
     fn prefixes_become_fields_and_the_rest_is_text() {
         let f = filter("login @me #bug s:review l:backend e:PROJ-10 sp:14 timeout");
         assert_eq!(f.text.as_deref(), Some("login timeout"));
-        assert_eq!(f.assignee, Some(UserSel::Me));
+        assert_eq!(f.assignees, [UserSel::Me]);
         assert_eq!(f.types, ["bug"]);
         assert_eq!(f.statuses, ["review"]);
         assert_eq!(f.labels, ["backend"]);
@@ -74,8 +78,13 @@ mod tests {
 
     #[test]
     fn a_name_after_at_is_an_assignee_and_moi_is_me() {
-        assert_eq!(filter("@colin").assignee, Some(UserSel::Named("colin".into())));
-        assert_eq!(filter("@Moi").assignee, Some(UserSel::Me));
+        assert_eq!(filter("@colin").assignees, [UserSel::Named("colin".into())]);
+        assert_eq!(filter("@Moi").assignees, [UserSel::Me]);
+        assert_eq!(
+            filter("@me @AnaSilva @none").assignees,
+            [UserSel::Me, UserSel::Named("AnaSilva".into()), UserSel::Nobody]
+        );
+        assert_eq!(filter("@unassigned").assignees, [UserSel::Nobody]);
     }
 
     #[test]

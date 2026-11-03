@@ -568,7 +568,7 @@ async fn a_remote_search_waits_for_typing_to_pause_and_drops_stale_replies() {
     wait_until(&mut app, due - std::time::Duration::from_millis(100));
     assert!(searches(app.take_effects()).is_empty(), "still typing");
     wait_until(&mut app, due);
-    let mine = Query::Filter(Filter { assignee: Some(UserSel::Me), ..Filter::default() });
+    let mine = Query::Filter(Filter { assignees: vec![UserSel::Me], ..Filter::default() });
     assert_eq!(searches(app.take_effects()), [(2, mine.clone())]);
 
     let fake = FakeProvider::new();
@@ -1102,4 +1102,57 @@ async fn the_board_filter_takes_the_pickers_prefixes() {
     assert_eq!(cards_shown(&mut app).len(), all.len(), "a lone @ while typing hides nothing");
     press(&mut app, "<Esc>");
     assert_eq!(cards_shown(&mut app).len(), all.len());
+}
+
+#[tokio::test]
+async fn space_u_picks_one_or_several_people_to_show() {
+    let all = load_board(&FakeProvider::new(), None).await.unwrap().issues;
+    let of = |names: &[&str]| {
+        let mut keys: Vec<String> = all
+            .iter()
+            .filter(|i| match &i.assignee {
+                Some(a) => names.contains(&a.display_name.as_str()),
+                None => names.contains(&"nobody"),
+            })
+            .map(|i| i.key.to_string())
+            .collect();
+        keys.sort();
+        keys
+    };
+    let mut app = loaded().await;
+    press(&mut app, "<Space>u");
+    settle(&mut app);
+    let menu = screen(&mut app, 150, 50);
+    let at = |s: &str| menu.find(s).unwrap_or_else(|| panic!("{s} missing from {menu}"));
+    assert!(at("Everyone") < at("Colin Tenaguillo (me)"), "everyone, then me first");
+    assert!(at("Colin Tenaguillo (me)") < at("Ana Silva"), "then the others by name");
+    assert!(menu.contains("Unassigned"));
+    assert!(menu.contains("6 cards"), "with how many each has: {menu}");
+
+    press(&mut app, "ana");
+    settle(&mut app);
+    press(&mut app, "<Tab><C-w>colin");
+    settle(&mut app);
+    press(&mut app, "<Tab><CR>");
+    let header = screen(&mut app, 150, 50).lines().next().unwrap_or("").to_string();
+    assert!(header.contains("/@AnaSilva @me") || header.contains("/@me @AnaSilva"), "{header}");
+    assert_eq!(cards_shown(&mut app), of(&["Ana Silva", "Colin Tenaguillo"]), "both, together");
+
+    press(&mut app, "<Space>u");
+    settle(&mut app);
+    let again = screen(&mut app, 150, 50);
+    let marked: Vec<&str> = again.lines().filter(|l| l.contains("+ ")).collect();
+    assert_eq!(marked.len(), 2, "the people already shown come back marked: {again}");
+
+    press(&mut app, "<C-w>unassigned");
+    settle(&mut app);
+    press(&mut app, "<Esc>"); // to normal mode
+    press(&mut app, "<Esc>"); // and out: nothing changed
+    assert_eq!(cards_shown(&mut app), of(&["Ana Silva", "Colin Tenaguillo"]));
+
+    press(&mut app, "<Space>ueveryone");
+    settle(&mut app);
+    press(&mut app, "<Tab><CR>");
+    assert_eq!(cards_shown(&mut app).len(), all.len(), "everyone again");
+    assert!(!screen(&mut app, 150, 50).contains("/@"));
 }

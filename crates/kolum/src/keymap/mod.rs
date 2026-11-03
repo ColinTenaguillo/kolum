@@ -120,6 +120,7 @@ const DEFAULTS: &[(Context, &str, Action)] = &[
     (C::Board, "t", A::Transition),
     (C::Board, "<leader>a", A::Assign),
     (C::Board, "<leader>A", A::AssignMe),
+    (C::Board, "<leader>u", A::PickerUsers),
     (C::Board, "c", A::Create),
     (C::Board, "C", A::Clone),
     (C::Board, "e", A::Edit),

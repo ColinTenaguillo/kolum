@@ -52,7 +52,7 @@ async fn a_transition_moves_the_issue_and_is_recorded() {
 #[tokio::test]
 async fn search_filters_by_fields_and_text_and_refuses_native_queries() {
     let p = FakeProvider::new();
-    let mine = Query::Filter(Filter { assignee: Some(UserSel::Me), ..Default::default() });
+    let mine = Query::Filter(Filter { assignees: vec![UserSel::Me], ..Default::default() });
     let hits = p.search(&mine, None).await.unwrap().items;
     assert!(!hits.is_empty());
     assert!(hits.iter().all(|i| i.assignee.as_ref().unwrap().display_name == "Colin Tenaguillo"));
