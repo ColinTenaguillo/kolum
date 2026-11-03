@@ -1141,8 +1141,12 @@ async fn space_u_picks_one_or_several_people_to_show() {
     press(&mut app, "<Space>u");
     settle(&mut app);
     let again = screen(&mut app, 150, 50);
-    let marked: Vec<&str> = again.lines().filter(|l| l.contains("+ ")).collect();
-    assert_eq!(marked.len(), 2, "the people already shown come back marked: {again}");
+    let shown: Vec<&str> = again.lines().filter(|l| l.contains("· shown")).collect();
+    assert_eq!(shown.len(), 2, "the people already shown say so: {again}");
+    assert!(
+        !again.lines().any(|l| l.contains("+ ")),
+        "but are not marked: Enter takes the highlighted one"
+    );
 
     press(&mut app, "<C-w>unassigned");
     settle(&mut app);
@@ -1155,4 +1159,18 @@ async fn space_u_picks_one_or_several_people_to_show() {
     press(&mut app, "<Tab><CR>");
     assert_eq!(cards_shown(&mut app).len(), all.len(), "everyone again");
     assert!(!screen(&mut app, 150, 50).contains("/@"));
+}
+
+#[tokio::test]
+async fn enter_in_space_u_takes_the_highlighted_person_even_when_someone_is_shown() {
+    let mut app = loaded().await;
+    press(&mut app, "/@AnaSilva<CR>");
+    press(&mut app, "<Space>ubruno");
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    let header = screen(&mut app, 150, 50).lines().next().unwrap_or("").to_string();
+    assert!(
+        header.contains("/@BrunoCosta") && !header.contains("Ana"),
+        "Bruno instead of Ana: {header}"
+    );
 }

@@ -149,12 +149,6 @@ impl<S: PickerSource> Picker<S> {
         picker
     }
 
-    /// Starts with these rows marked, by the text they show.
-    pub fn with_marks(mut self, marks: impl IntoIterator<Item = String>) -> Self {
-        self.marks.extend(marks);
-        self
-    }
-
     fn inject(&mut self) {
         let injector = self.nucleo.injector();
         for item in self.source.candidates(self.input.text()) {

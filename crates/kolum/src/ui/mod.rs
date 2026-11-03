@@ -594,8 +594,7 @@ impl App {
     }
 
     /// Everyone, me, then whoever has a card on the board by name, then no
-    /// one; with how many cards each has, and those already in the filter
-    /// marked.
+    /// one; with how many cards each has, and those already shown flagged.
     fn open_people_picker(&mut self) {
         let issues = self.board.snapshot.iter().flat_map(|s| &s.issues);
         let mut counts: Vec<(Option<kolum_domain::User>, usize)> = vec![];
@@ -634,15 +633,16 @@ impl App {
         if unassigned > 0 {
             people.push(("@none".into(), format!("Unassigned  {}", cards(unassigned))));
         }
+        // Those already shown say so rather than being marked: with marks,
+        // Enter would act on them and not on the person highlighted.
         let shown: Vec<&str> =
             self.board.filter.split_whitespace().filter(|w| w.starts_with('@')).collect();
-        let marks: Vec<String> = people
-            .iter()
-            .filter(|(t, _)| shown.contains(&t.as_str()))
-            .map(|(_, label)| label.clone())
-            .collect();
-        let picker =
-            Picker::new(sources::PeopleChoice { people }, self.waker.clone()).with_marks(marks);
+        for (token, label) in &mut people {
+            if shown.contains(&token.as_str()) {
+                label.push_str("  · shown");
+            }
+        }
+        let picker = Picker::new(sources::PeopleChoice { people }, self.waker.clone());
         self.open_picker(Box::new(picker));
     }
 
