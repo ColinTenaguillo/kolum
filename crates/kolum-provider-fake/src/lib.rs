@@ -136,8 +136,9 @@ fn issue(row: &data::Row) -> Issue {
     }
 }
 
-fn history(issue: &Issue) -> Vec<ActivityEntry> {
-    let reporter = issue.reporter.clone().unwrap_or_else(|| user(0));
+/// Created by its reporter, and moved by its assignee (or the reporter)
+/// unless it is still in the backlog.
+fn history(issue: &Issue, reporter: User) -> Vec<ActivityEntry> {
     let mut entries = vec![ActivityEntry {
         author: reporter.clone(),
         at: issue.created,
@@ -179,7 +180,11 @@ impl FakeProvider {
                 created: created_at(n) + Duration::hours(i as i64 + 1),
             });
         }
-        let activity = issues.iter().map(|i| (i.key.clone(), history(i))).collect();
+        let activity = issues
+            .iter()
+            .zip(data::ROWS)
+            .map(|(i, row)| (i.key.clone(), history(i, user(row.reporter))))
+            .collect();
         Self { state: Mutex::new(State { issues, comments, activity }) }
     }
 

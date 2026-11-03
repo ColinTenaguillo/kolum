@@ -169,3 +169,52 @@ async fn avatars_are_generated_per_user() {
     assert!(p.image("fake://avatar/nobody").await.is_err());
     assert!(p.capabilities().supports(Capability::Images));
 }
+
+/// The demo data's shape, pinned: the board, the snapshots and the
+/// screens all lean on it.
+#[tokio::test]
+async fn the_demo_data_follows_its_rules() {
+    let p = FakeProvider::new();
+    let get = |n: u32| {
+        let p = &p;
+        async move { p.issue(&IssueKey::new(format!("ACME-{n}"))).await.unwrap() }
+    };
+    let (five, six, nine, sso) = (get(5).await, get(6).await, get(9).await, get(1).await);
+    let base = time::macros::datetime!(2026-09-01 09:00 UTC);
+    assert_eq!(five.created, base + time::Duration::hours(35), "7 hours per issue number");
+    assert_eq!(six.created - five.created, time::Duration::hours(7));
+    assert_eq!(five.updated, five.created + time::Duration::hours(15), "3 hours per n mod 9");
+    assert_eq!(get(9).await.updated, get(9).await.created, "9 mod 9 is 0");
+
+    assert_eq!(five.sprint.as_ref().unwrap().name, "Sprint 14", "in progress: in the sprint");
+    assert_eq!(nine.sprint, None, "the backlog is not in the sprint");
+    assert_eq!(sso.sprint, None, "nor are epics");
+
+    assert_eq!(
+        five.due,
+        Some((five.created + time::Duration::days(10)).date()),
+        "Highest has a due date"
+    );
+    assert_eq!(six.due, None);
+
+    let children: Vec<&str> = sso.subtasks.iter().map(|r| r.key.as_str()).collect();
+    assert_eq!(children, ["ACME-5", "ACME-6", "ACME-7", "ACME-8", "ACME-9", "ACME-36"]);
+    assert!(five.subtasks.is_empty(), "only epics have children");
+
+    let activity = |key: &str| {
+        let p = &p;
+        let key = IssueKey::new(key);
+        async move { p.activity(&key).await.unwrap() }
+    };
+    let backlog = activity("ACME-9").await;
+    assert_eq!(backlog.len(), 1, "still in the backlog: created, never moved");
+    assert_eq!(backlog[0].author.display_name, "Colin Tenaguillo", "by its reporter");
+    let moved = activity("ACME-5").await;
+    assert_eq!(moved.len(), 2);
+    assert_eq!(moved[1].author.display_name, "Colin Tenaguillo", "moved by its assignee");
+    assert_eq!(activity("ACME-26").await[0].author.display_name, "Emma Johansson");
+
+    // `since` includes an issue updated at exactly that moment.
+    let changed = p.board_issues(&board_id(), Some(five.updated), None).await.unwrap().items;
+    assert!(changed.iter().any(|i| i.key.as_str() == "ACME-5"));
+}
