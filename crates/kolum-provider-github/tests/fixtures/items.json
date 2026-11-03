@@ -1,0 +1,169 @@
+{
+  "data": {
+    "node": {
+      "items": {
+        "pageInfo": {
+          "hasNextPage": true,
+          "endCursor": "Y3Vyc29yOjM="
+        },
+        "nodes": [
+          {
+            "id": "PVTI_aaa111",
+            "updatedAt": "2026-10-03T12:00:00Z",
+            "fieldValues": {
+              "nodes": [
+                {},
+                {
+                  "name": "In Progress",
+                  "optionId": "o_prog",
+                  "field": {
+                    "name": "Status"
+                  }
+                },
+                {
+                  "name": "P1",
+                  "optionId": "p1",
+                  "field": {
+                    "name": "Priority"
+                  }
+                },
+                {
+                  "number": 3,
+                  "field": {
+                    "name": "Estimate"
+                  }
+                },
+                {
+                  "title": "Iteration 4",
+                  "iterationId": "it4",
+                  "field": {
+                    "name": "Iteration"
+                  }
+                },
+                {
+                  "name": "Mobile",
+                  "optionId": "t1",
+                  "field": {
+                    "name": "Team"
+                  }
+                }
+              ]
+            },
+            "content": {
+              "__typename": "Issue",
+              "id": "I_42",
+              "number": 42,
+              "title": "Picker opens slowly",
+              "body": "It takes **2 s**.\n\n- on Jira\n- with 2k issues",
+              "url": "https://github.com/ColinTenaguillo/kolum/issues/42",
+              "state": "OPEN",
+              "createdAt": "2026-10-01T09:00:00Z",
+              "updatedAt": "2026-10-03T12:00:00Z",
+              "author": {
+                "id": "U_ana",
+                "login": "anasilva",
+                "name": "",
+                "avatarUrl": null
+              },
+              "repository": {
+                "name": "kolum"
+              },
+              "assignees": {
+                "nodes": [
+                  {
+                    "id": "U_colin",
+                    "login": "ColinTenaguillo",
+                    "name": "Colin Tenaguillo",
+                    "avatarUrl": "https://avatars.invalid/c"
+                  }
+                ]
+              },
+              "labels": {
+                "nodes": [
+                  {
+                    "name": "bug"
+                  },
+                  {
+                    "name": "picker"
+                  }
+                ]
+              },
+              "parent": {
+                "number": 10,
+                "title": "Telescope picker",
+                "repository": {
+                  "name": "kolum"
+                }
+              }
+            }
+          },
+          {
+            "id": "PVTI_bbb222",
+            "updatedAt": "2026-10-04T08:00:00Z",
+            "fieldValues": {
+              "nodes": [
+                {
+                  "name": "Todo",
+                  "optionId": "o_todo",
+                  "field": {
+                    "name": "Status"
+                  }
+                }
+              ]
+            },
+            "content": {
+              "__typename": "PullRequest",
+              "id": "PR_43",
+              "number": 43,
+              "title": "Debounce the remote search",
+              "body": "Fixes #42",
+              "url": "https://github.com/ColinTenaguillo/kolum/pull/43",
+              "state": "OPEN",
+              "createdAt": "2026-10-02T09:00:00Z",
+              "updatedAt": "2026-10-04T08:00:00Z",
+              "author": {
+                "id": "U_colin",
+                "login": "ColinTenaguillo",
+                "name": "Colin Tenaguillo",
+                "avatarUrl": "https://avatars.invalid/c"
+              },
+              "repository": {
+                "name": "kolum"
+              },
+              "assignees": {
+                "nodes": []
+              },
+              "labels": {
+                "nodes": []
+              }
+            }
+          },
+          {
+            "id": "PVTI_ccc333",
+            "updatedAt": "2026-09-20T10:00:00Z",
+            "fieldValues": {
+              "nodes": []
+            },
+            "content": {
+              "__typename": "DraftIssue",
+              "id": "DI_7",
+              "title": "Write the README",
+              "body": "",
+              "createdAt": "2026-09-20T10:00:00Z",
+              "updatedAt": "2026-09-20T10:00:00Z",
+              "creator": {
+                "id": "U_colin",
+                "login": "ColinTenaguillo",
+                "name": "Colin Tenaguillo",
+                "avatarUrl": "https://avatars.invalid/c"
+              },
+              "assignees": {
+                "nodes": []
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

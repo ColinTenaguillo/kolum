@@ -77,6 +77,12 @@ board = 42                          # else the first board listed
 # sprint = "customfield_10020"
 # epic_link = "customfield_10014"
 
+[profiles.perso]
+provider = "github"
+project = "ColinTenaguillo/12"      # owner/number, a user's or an org's
+token_cmd = "gh auth token"         # needs the read:project (and project) scope
+# status_field = "Status"           # the single-select field used as columns
+
 [ui]
 theme = "kanagawa"                # dark light kanagawa catppuccin tokyonight gruvbox
 hide_empty_columns = true
@@ -127,6 +133,7 @@ A Cargo workspace whose crate boundaries are the architecture's:
 | `kolum-app` | use cases: load a board, parse a search, the `Service` the TUI talks through | a provider, the TUI |
 | `kolum-provider-fake` | an in-memory provider with demo data | the app, the TUI |
 | `kolum-provider-jira` | Jira's REST and Agile APIs; ADF and JQL stop here | the app, the TUI |
+| `kolum-provider-github` | GitHub Projects over GraphQL | the app, the TUI |
 | `kolum` | the TUI: keymap, theme, config, picker, views | a provider, except to build one in `main` |
 
 The TUI sends a `Command` and later receives an `Event`; it never waits on the
@@ -179,6 +186,22 @@ Data Center is designed in (`flavor`: REST v2, a Bearer token, user names)
 but untested against a live server; its wiki markup is read as plain text and
 written as Markdown for now.
 
+## GitHub Projects
+
+The second provider, there to prove the domain is not Jira's in disguise. A
+project (ProjectV2) is a board; the options of its Status field are the
+columns, "No Status" first as on github.com, and a move sets that field.
+Issues, pull requests and draft issues are its cards, keyed `repo#42`; bodies
+and comments are Markdown both ways. Priority, an estimate (Estimate, Size or
+Points) and an iteration are read from project fields of those names; other
+single-select and number fields show in the detail. Remote search uses
+GitHub's syntax inside the project (`project:owner/12`), `!` for raw queries.
+Creating and cloning add draft issues. Not yet: history, and editing labels or
+priority from kolum.
+
+`gh auth token` works as `token_cmd` once its token has the project scopes:
+`gh auth refresh -s read:project,project`.
+
 ## Status
 
 Done: the domain and its ports, the fake provider, the key engine, themes, the
@@ -195,8 +218,9 @@ Also done: swimlanes, visual mode with grouped actions, creating and cloning.
 
 Also done: the first-run wizard.
 
-Next: Jira Data Center against a live server, a second
-provider (GitHub Projects) to prove the abstraction, images, packaging. Actions bound but not built yet say so when pressed.
+Also done: GitHub Projects as a second provider.
+
+Next: Jira Data Center and GitHub against live servers, images, packaging. Actions bound but not built yet say so when pressed.
 
 ## License
 

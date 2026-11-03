@@ -1,0 +1,27 @@
+{
+  "data": {
+    "node": {
+      "comments": {
+        "nodes": [
+          {
+            "id": "IC_1",
+            "author": {
+              "id": "U_ana",
+              "login": "anasilva",
+              "name": "",
+              "avatarUrl": null
+            },
+            "body": "Seen with `--release` too.",
+            "createdAt": "2026-10-01T10:00:00Z"
+          },
+          {
+            "id": "IC_2",
+            "author": null,
+            "body": "+1",
+            "createdAt": "2026-10-02T10:00:00Z"
+          }
+        ]
+      }
+    }
+  }
+}

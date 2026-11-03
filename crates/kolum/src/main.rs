@@ -62,7 +62,39 @@ const PROVIDERS: &[(&str, Build)] = &[
             .map_err(anyhow::Error::msg)?;
         Ok(Arc::new(jira))
     }),
+    ("github", |p| {
+        let github = kolum_provider_github::GithubProvider::from_profile(&p.settings)
+            .map_err(anyhow::Error::msg)?;
+        Ok(Arc::new(github))
+    }),
 ];
+
+/// Runs a profile's `token_cmd`, once, for every provider: the secret is
+/// handled here and nowhere else, and the adapter reads only `token`.
+fn with_token(
+    profile: &Profile,
+    run: impl Fn(&str) -> Result<String, String>,
+) -> Result<Profile, String> {
+    let mut profile = profile.clone();
+    if let Some(cmd) = profile.settings.remove("token_cmd") {
+        let cmd = cmd.as_str().ok_or("`token_cmd` must be a command in quotes")?.to_string();
+        if !profile.settings.contains_key("token") {
+            let token = run(&cmd).map_err(|e| format!("token_cmd `{cmd}`: {e}"))?;
+            profile.settings.insert("token".into(), toml::Value::String(token.trim().to_string()));
+        }
+    }
+    Ok(profile)
+}
+
+/// Runs `token_cmd` through the shell, as a password manager expects.
+fn run_token_cmd(cmd: &str) -> Result<String, String> {
+    let out =
+        std::process::Command::new("sh").arg("-c").arg(cmd).output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(format!("exited with {}", out.status));
+    }
+    String::from_utf8(out.stdout).map_err(|_| "printed something that is not UTF-8".into())
+}
 
 /// The board a profile opens: `board = 42` or `board = "PROJ"`. Without
 /// one, the provider's first board.
@@ -97,8 +129,10 @@ fn provider(args: &Args, config: &config::Config) -> anyhow::Result<Opened> {
     };
     match PROVIDERS.iter().find(|(n, _)| *n == profile.provider) {
         Some((_, build)) => {
-            let opened = build(profile).map_err(|e| e.context(format!("profile `{name}`")))?;
-            Ok((opened, profile_board(profile), name.clone()))
+            let profile = with_token(profile, run_token_cmd)
+                .map_err(|e| anyhow::anyhow!("profile `{name}`: {e}"))?;
+            let opened = build(&profile).map_err(|e| e.context(format!("profile `{name}`")))?;
+            Ok((opened, profile_board(&profile), name.clone()))
         }
         None => {
             let known: Vec<_> = PROVIDERS.iter().map(|(n, _)| *n).collect();
@@ -347,11 +381,41 @@ mod tests {
             opened(Args::default(), broken),
             Err("profile `work`: `email` is required on Jira Cloud".into())
         );
+        let gh = "[profiles.perso]\nprovider = \"github\"\nproject = \"octo/5\"\ntoken = \"t\"";
+        assert_eq!(opened(Args::default(), gh), Ok("github".into()));
         let named = "[profiles.x]\nprovider = \"fake\"\nboard = \"MAIN\"";
         assert_eq!(
             provider(&Args::default(), &config(named)).unwrap().1,
             Some(kolum_domain::BoardId::new("MAIN"))
         );
+    }
+
+    #[test]
+    fn token_cmd_is_run_once_here_and_handed_over_as_token() {
+        let profile = |src: &str| config(src).profiles.remove("p").unwrap();
+        let echo = |c: &str| Ok(format!("{c}-out\n"));
+        let p =
+            with_token(&profile("[profiles.p]\nprovider = \"jira\"\ntoken_cmd = \"pass x\""), echo)
+                .unwrap();
+        assert_eq!(p.settings["token"].as_str(), Some("pass x-out"));
+        assert!(!p.settings.contains_key("token_cmd"), "the adapter never sees it");
+        let both =
+            profile("[profiles.p]\nprovider = \"jira\"\ntoken = \"t\"\ntoken_cmd = \"pass x\"");
+        let kept = with_token(&both, |_| Err("not run".into())).unwrap();
+        assert_eq!(
+            kept.settings["token"].as_str(),
+            Some("t"),
+            "token wins, and the command is not run"
+        );
+        let failing = profile("[profiles.p]\nprovider = \"jira\"\ntoken_cmd = \"pass x\"");
+        assert_eq!(
+            with_token(&failing, |_| Err("no shell".into())).unwrap_err(),
+            "token_cmd `pass x`: no shell"
+        );
+        let bad = profile("[profiles.p]\nprovider = \"jira\"\ntoken_cmd = 3");
+        assert!(with_token(&bad, echo).is_err());
+        assert_eq!(run_token_cmd("printf secret").unwrap(), "secret");
+        assert!(run_token_cmd("exit 3").unwrap_err().contains("exited"));
     }
 
     #[test]

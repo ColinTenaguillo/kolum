@@ -1,0 +1,94 @@
+{
+  "data": {
+    "node": {
+      "id": "PVTI_aaa111",
+      "updatedAt": "2026-10-03T12:00:00Z",
+      "fieldValues": {
+        "nodes": [
+          {},
+          {
+            "name": "In Progress",
+            "optionId": "o_prog",
+            "field": {
+              "name": "Status"
+            }
+          },
+          {
+            "name": "P1",
+            "optionId": "p1",
+            "field": {
+              "name": "Priority"
+            }
+          },
+          {
+            "number": 3,
+            "field": {
+              "name": "Estimate"
+            }
+          },
+          {
+            "title": "Iteration 4",
+            "iterationId": "it4",
+            "field": {
+              "name": "Iteration"
+            }
+          },
+          {
+            "name": "Mobile",
+            "optionId": "t1",
+            "field": {
+              "name": "Team"
+            }
+          }
+        ]
+      },
+      "content": {
+        "__typename": "Issue",
+        "id": "I_42",
+        "number": 42,
+        "title": "Picker opens slowly",
+        "body": "It takes **2 s**.\n\n- on Jira\n- with 2k issues",
+        "url": "https://github.com/ColinTenaguillo/kolum/issues/42",
+        "state": "OPEN",
+        "createdAt": "2026-10-01T09:00:00Z",
+        "updatedAt": "2026-10-03T12:00:00Z",
+        "author": {
+          "id": "U_ana",
+          "login": "anasilva",
+          "name": "",
+          "avatarUrl": null
+        },
+        "repository": {
+          "name": "kolum"
+        },
+        "assignees": {
+          "nodes": [
+            {
+              "id": "U_colin",
+              "login": "ColinTenaguillo",
+              "name": "Colin Tenaguillo",
+              "avatarUrl": "https://avatars.invalid/c"
+            }
+          ]
+        },
+        "labels": {
+          "nodes": [
+            {
+              "name": "bug"
+            },
+            {
+              "name": "picker"
+            }
+          ]
+        },
+        "parent": {
+          "number": 10,
+          "title": "Telescope picker",
+          "repository": {
+            "name": "kolum"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,23 @@
+[package]
+name = "kolum-provider-github"
+description = "kolum's GitHub Projects adapter: a ProjectV2 as a board, its Status field as columns"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+kolum-domain.workspace = true
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+serde.workspace = true
+serde_json = "1"
+time.workspace = true
+tokio.workspace = true
+toml = "1"
+tracing = "0.1"
+
+[lints]
+workspace = true

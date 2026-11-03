@@ -220,8 +220,7 @@ impl PickerSource for TransitionChoice {
     type Item = kolum_domain::Transition;
 
     fn title(&self) -> String {
-        let keys: Vec<&str> = self.keys.iter().map(|k| k.as_str()).collect();
-        format!("Move {}", keys.join(", "))
+        titled("Move", &self.keys)
     }
 
     fn candidates(&self, _query: &str) -> Vec<Self::Item> {
@@ -248,8 +247,7 @@ impl PickerSource for UserChoice {
     type Item = Option<kolum_domain::User>;
 
     fn title(&self) -> String {
-        let keys: Vec<&str> = self.keys.iter().map(|k| k.as_str()).collect();
-        format!("Assign {}", keys.join(", "))
+        titled("Assign", &self.keys)
     }
 
     fn candidates(&self, _query: &str) -> Vec<Self::Item> {
@@ -265,4 +263,10 @@ impl PickerSource for UserChoice {
         (action == Action::Confirm)
             .then(|| Pick::Assign { keys: self.keys.clone(), user: users[0].clone() })
     }
+}
+
+/// "Move ACME-1, ACME-2": what a picker does, to which issues.
+fn titled(verb: &str, keys: &[kolum_domain::IssueKey]) -> String {
+    let keys: Vec<&str> = keys.iter().map(|k| k.as_str()).collect();
+    format!("{verb} {}", keys.join(", "))
 }

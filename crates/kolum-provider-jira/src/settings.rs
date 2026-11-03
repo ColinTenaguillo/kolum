@@ -33,16 +33,12 @@ pub struct JiraSettings {
     pub fields: FieldIds,
 }
 
-const KNOWN: &[&str] = &["base_url", "email", "token", "token_cmd", "board", "flavor", "fields"];
+/// `token_cmd` is not here: the binary runs it and hands over `token`.
+const KNOWN: &[&str] = &["base_url", "email", "token", "board", "flavor", "fields"];
 
-/// `token` in the profile, else the output of `token_cmd`, else
-/// `$KOLUM_TOKEN`. `run` runs a command and returns its output, so the
-/// tests need no shell.
-pub fn parse(
-    table: &toml::Table,
-    env_token: Option<String>,
-    run: impl Fn(&str) -> Result<String, String>,
-) -> Result<JiraSettings, String> {
+/// `token` in the profile (or its `token_cmd`, already run), else
+/// `$KOLUM_TOKEN`.
+pub fn parse(table: &toml::Table, env_token: Option<String>) -> Result<JiraSettings, String> {
     let unknown: Vec<&str> =
         table.keys().map(String::as_str).filter(|k| !KNOWN.contains(k)).collect();
     if !unknown.is_empty() {
@@ -55,7 +51,9 @@ pub fn parse(
     let base_url =
         text(table, "base_url").ok_or("`base_url` is required")?.trim_end_matches('/').to_string();
     let flavor = flavor(text(table, "flavor").as_deref(), &base_url)?;
-    let token = token(table, env_token, run)?;
+    let token = text(table, "token")
+        .or(env_token)
+        .ok_or("no token: set `token_cmd`, `token`, or $KOLUM_TOKEN")?;
     let auth = auth(flavor, text(table, "email"), &token)?;
     let board = match table.get("board") {
         None => None,
@@ -89,22 +87,6 @@ fn flavor(named: Option<&str>, base_url: &str) -> Result<JiraFlavor, String> {
     }
 }
 
-fn token(
-    table: &toml::Table,
-    env_token: Option<String>,
-    run: impl Fn(&str) -> Result<String, String>,
-) -> Result<String, String> {
-    match (text(table, "token"), text(table, "token_cmd")) {
-        (Some(token), _) => Ok(token),
-        (None, Some(cmd)) => {
-            Ok(run(&cmd).map_err(|e| format!("token_cmd `{cmd}`: {e}"))?.trim().to_string())
-        }
-        (None, None) => {
-            env_token.ok_or_else(|| "no token: set `token_cmd`, `token`, or $KOLUM_TOKEN".into())
-        }
-    }
-}
-
 fn auth(flavor: JiraFlavor, email: Option<String>, token: &str) -> Result<String, String> {
     match flavor {
         JiraFlavor::Cloud => {
@@ -116,16 +98,6 @@ fn auth(flavor: JiraFlavor, email: Option<String>, token: &str) -> Result<String
     }
 }
 
-/// Runs `token_cmd` through the shell, as a password manager expects.
-pub fn run_command(cmd: &str) -> Result<String, String> {
-    let out =
-        std::process::Command::new("sh").arg("-c").arg(cmd).output().map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        return Err(format!("exited with {}", out.status));
-    }
-    String::from_utf8(out.stdout).map_err(|_| "printed something that is not UTF-8".into())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,18 +106,14 @@ mod tests {
         toml::from_str(src).unwrap()
     }
 
-    fn no_shell(_: &str) -> Result<String, String> {
-        Err("no shell in tests".into())
+    fn err(src: &str) -> String {
+        parse(&table(src), Some("t".into())).unwrap_err()
     }
 
     #[test]
     fn a_cloud_profile_uses_basic_auth_with_the_email() {
-        let s = parse(
-            &table("base_url = \"https://acme.atlassian.net/\"\nemail = \"me@acme.com\"\ntoken = \"t0k\"\nboard = 42"),
-            None,
-            no_shell,
-        )
-        .unwrap();
+        let src = "base_url = \"https://acme.atlassian.net/\"\nemail = \"me@acme.com\"\ntoken = \"t0k\"\nboard = 42";
+        let s = parse(&table(src), None).unwrap();
         assert_eq!(s.base_url, "https://acme.atlassian.net");
         assert_eq!(s.flavor, JiraFlavor::Cloud);
         assert_eq!(s.auth, "Basic bWVAYWNtZS5jb206dDBr");
@@ -154,35 +122,34 @@ mod tests {
 
     #[test]
     fn a_self_hosted_url_is_data_center_with_a_bearer_token() {
-        let s =
-            parse(&table("base_url = \"https://jira.acme.corp\""), Some("pat".into()), no_shell)
-                .unwrap();
+        let s = parse(&table("base_url = \"https://jira.acme.corp\""), Some("pat".into())).unwrap();
         assert_eq!(s.flavor, JiraFlavor::DataCenter);
         assert_eq!(s.auth, "Bearer pat");
         assert_eq!(s.flavor.api(), "/rest/api/2");
     }
 
     #[test]
-    fn the_token_comes_from_the_file_then_the_command_then_the_environment() {
-        let run = |cmd: &str| Ok(format!("{cmd}-out\n"));
+    fn the_token_comes_from_the_profile_then_the_environment() {
         let base = "base_url = \"https://x.corp\"\n";
-        let s = parse(
-            &table(&format!("{base}token = \"file\"\ntoken_cmd = \"pass\"")),
-            Some("env".into()),
-            run,
+        assert_eq!(
+            parse(&table(&format!("{base}token = \"file\"")), Some("env".into())).unwrap().auth,
+            "Bearer file"
         );
-        assert_eq!(s.unwrap().auth, "Bearer file");
-        let s = parse(&table(&format!("{base}token_cmd = \"pass\"")), Some("env".into()), run);
-        assert_eq!(s.unwrap().auth, "Bearer pass-out");
-        let s = parse(&table(base), Some("env".into()), run);
-        assert_eq!(s.unwrap().auth, "Bearer env");
+        assert_eq!(parse(&table(base), Some("env".into())).unwrap().auth, "Bearer env");
+        assert_eq!(
+            parse(&table(base), None).unwrap_err(),
+            "no token: set `token_cmd`, `token`, or $KOLUM_TOKEN"
+        );
     }
 
     #[test]
     fn mistakes_are_named() {
-        let err = |src: &str| parse(&table(src), Some("t".into()), no_shell).unwrap_err();
         assert_eq!(err(""), "`base_url` is required");
         assert!(err("base_url = \"https://x\"\nbord = 4").starts_with("unknown setting(s) bord"));
+        assert!(
+            err("base_url = \"https://x\"\ntoken_cmd = \"pass\"")
+                .starts_with("unknown setting(s) token_cmd")
+        );
         assert_eq!(
             err("base_url = \"https://a.atlassian.net\""),
             "`email` is required on Jira Cloud"
@@ -192,31 +159,22 @@ mod tests {
             "flavor `saas`: expected cloud or datacenter"
         );
         assert_eq!(err("base_url = \"https://x\"\nboard = \"main\""), "`board` must be a board id");
-        let failing =
-            parse(&table("base_url = \"https://x\"\ntoken_cmd = \"pass\""), None, no_shell);
-        assert_eq!(failing.unwrap_err(), "token_cmd `pass`: no shell in tests");
-        assert_eq!(
-            parse(&table("base_url = \"https://x\""), None, no_shell).unwrap_err(),
-            "no token: set `token_cmd`, `token`, or $KOLUM_TOKEN"
-        );
+        let forced = |f: &str| {
+            let src = format!(
+                "base_url = \"https://a.atlassian.net\"\nflavor = \"{f}\"\nemail = \"e\"\ntoken = \"t\""
+            );
+            parse(&table(&src), None).unwrap().flavor
+        };
+        assert_eq!(forced("server"), JiraFlavor::DataCenter, "a proxy in front of Data Center");
+        assert_eq!(forced("cloud"), JiraFlavor::Cloud);
     }
 
     #[test]
     fn fields_can_be_forced() {
-        let s = parse(
-            &table("base_url = \"https://x\"\ntoken = \"t\"\n[fields]\nestimate = \"customfield_1\"\nsprint = \"customfield_2\""),
-            None,
-            no_shell,
-        )
-        .unwrap();
+        let src = "base_url = \"https://x\"\ntoken = \"t\"\n[fields]\nestimate = \"customfield_1\"\nsprint = \"customfield_2\"";
+        let s = parse(&table(src), None).unwrap();
         assert_eq!(s.fields.estimate.as_deref(), Some("customfield_1"));
         assert_eq!(s.fields.sprint.as_deref(), Some("customfield_2"));
         assert_eq!(s.fields.epic_link, None);
-    }
-
-    #[test]
-    fn run_command_returns_stdout_or_the_failure() {
-        assert_eq!(run_command("printf secret").unwrap(), "secret");
-        assert!(run_command("exit 3").unwrap_err().contains("exited"));
     }
 }

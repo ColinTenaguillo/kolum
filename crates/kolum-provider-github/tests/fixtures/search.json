@@ -1,0 +1,93 @@
+{
+  "data": {
+    "search": {
+      "pageInfo": {
+        "hasNextPage": false,
+        "endCursor": null
+      },
+      "nodes": [
+        {
+          "__typename": "Issue",
+          "id": "I_42",
+          "number": 42,
+          "title": "Picker opens slowly",
+          "body": "It takes **2 s**.\n\n- on Jira\n- with 2k issues",
+          "url": "https://github.com/ColinTenaguillo/kolum/issues/42",
+          "state": "OPEN",
+          "createdAt": "2026-10-01T09:00:00Z",
+          "updatedAt": "2026-10-03T12:00:00Z",
+          "author": {
+            "id": "U_ana",
+            "login": "anasilva",
+            "name": "",
+            "avatarUrl": null
+          },
+          "repository": {
+            "name": "kolum"
+          },
+          "assignees": {
+            "nodes": [
+              {
+                "id": "U_colin",
+                "login": "ColinTenaguillo",
+                "name": "Colin Tenaguillo",
+                "avatarUrl": "https://avatars.invalid/c"
+              }
+            ]
+          },
+          "labels": {
+            "nodes": [
+              {
+                "name": "bug"
+              },
+              {
+                "name": "picker"
+              }
+            ]
+          },
+          "parent": {
+            "number": 10,
+            "title": "Telescope picker",
+            "repository": {
+              "name": "kolum"
+            }
+          }
+        },
+        {
+          "__typename": "Issue",
+          "id": "I_50",
+          "number": 50,
+          "title": "Crash on empty board",
+          "body": "It takes **2 s**.\n\n- on Jira\n- with 2k issues",
+          "url": "https://github.com/ColinTenaguillo/kolum/issues/42",
+          "state": "CLOSED",
+          "createdAt": "2026-10-01T09:00:00Z",
+          "updatedAt": "2026-10-03T12:00:00Z",
+          "author": {
+            "id": "U_ana",
+            "login": "anasilva",
+            "name": "",
+            "avatarUrl": null
+          },
+          "repository": {
+            "name": "kolum"
+          },
+          "assignees": {
+            "nodes": [
+              {
+                "id": "U_colin",
+                "login": "ColinTenaguillo",
+                "name": "Colin Tenaguillo",
+                "avatarUrl": "https://avatars.invalid/c"
+              }
+            ]
+          },
+          "labels": {
+            "nodes": []
+          },
+          "parent": null
+        }
+      ]
+    }
+  }
+}

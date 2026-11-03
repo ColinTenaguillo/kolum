@@ -1,0 +1,28 @@
+{
+  "data": {
+    "node": {
+      "id": "PVTI_new999",
+      "updatedAt": "2026-11-03T10:00:00Z",
+      "fieldValues": {
+        "nodes": []
+      },
+      "content": {
+        "__typename": "DraftIssue",
+        "id": "DI_8",
+        "title": "CLONE - Picker opens slowly",
+        "body": "",
+        "createdAt": "2026-09-20T10:00:00Z",
+        "updatedAt": "2026-09-20T10:00:00Z",
+        "creator": {
+          "id": "U_colin",
+          "login": "ColinTenaguillo",
+          "name": "Colin Tenaguillo",
+          "avatarUrl": "https://avatars.invalid/c"
+        },
+        "assignees": {
+          "nodes": []
+        }
+      }
+    }
+  }
+}

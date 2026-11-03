@@ -1,0 +1,19 @@
+{
+  "data": {
+    "addComment": {
+      "commentEdge": {
+        "node": {
+          "id": "IC_3",
+          "author": {
+            "id": "U_colin",
+            "login": "ColinTenaguillo",
+            "name": "Colin Tenaguillo",
+            "avatarUrl": "https://avatars.invalid/c"
+          },
+          "body": "Looks **good**",
+          "createdAt": "2026-11-03T10:00:00Z"
+        }
+      }
+    }
+  }
+}

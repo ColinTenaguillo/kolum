@@ -49,8 +49,7 @@ impl JiraProvider {
     /// From a profile's settings, the token resolved from the file, the
     /// command or `$KOLUM_TOKEN`.
     pub fn from_profile(table: &toml::Table) -> std::result::Result<Self, String> {
-        let settings =
-            settings::parse(table, std::env::var("KOLUM_TOKEN").ok(), settings::run_command)?;
+        let settings = settings::parse(table, std::env::var("KOLUM_TOKEN").ok())?;
         Ok(Self::new(settings))
     }
 

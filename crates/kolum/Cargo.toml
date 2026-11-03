@@ -25,6 +25,7 @@ kolum-app.workspace = true
 kolum-domain.workspace = true
 kolum-provider-fake.workspace = true
 kolum-provider-jira = { path = "../kolum-provider-jira" }
+kolum-provider-github = { path = "../kolum-provider-github" }
 # Helix's matcher: ranks better than fuzzy-matcher, and matches on its own
 # threads so typing never waits on a sort.
 nucleo = "0.5"
