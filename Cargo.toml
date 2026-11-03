@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = ["crates/kolum-domain"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# The floor is the toolchain the project is built on: edition 2024 and
+# let chains need 1.88, and ratatui 0.30 asks no more.
+rust-version = "1.88"
+# Undecided until the author picks one, before the first public push.
+publish = false
+
+[workspace.dependencies]
+kolum-domain = { path = "crates/kolum-domain" }
+kolum-app = { path = "crates/kolum-app" }
+kolum-provider-fake = { path = "crates/kolum-provider-fake" }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+time = { version = "0.3", features = ["serde", "macros", "formatting", "parsing"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

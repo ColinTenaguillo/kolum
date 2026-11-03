@@ -1,0 +1,21 @@
+[package]
+name = "kolum-domain"
+description = "kolum's core: the entities, value objects and ports every provider maps onto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Nothing here may do I/O: no HTTP client, no terminal, no runtime. A
+# provider is an adapter that depends on this crate, never the reverse.
+[dependencies]
+async-trait.workspace = true
+# Markdown is the editing format ($EDITOR), so its reading lives beside
+# RichText rather than in any one provider. A parser, no I/O.
+pulldown-cmark = { version = "0.13", default-features = false }
+serde.workspace = true
+thiserror.workspace = true
+time.workspace = true
+
+[lints]
+workspace = true

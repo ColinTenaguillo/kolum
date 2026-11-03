@@ -1,0 +1,28 @@
+//! The provider-neutral model of a ticket tracker.
+//!
+//! Jira, GitHub Projects or Linear each map their own shapes onto these
+//! types; nothing in this crate names one of them. The words a provider
+//! would use (JQL, ADF, a Jira sprint field id) belong in its adapter.
+
+mod board;
+mod error;
+mod ids;
+mod issue;
+mod ports;
+mod query;
+pub mod rich_text;
+
+pub use board::{Board, BoardKind, BoardSummary, Column, Project};
+pub use error::{DomainError, Result};
+pub use ids::{BoardId, FieldId, IssueId, IssueKey, StatusId, TransitionId, UserId};
+pub use issue::{
+    ActivityEntry, Comment, CustomField, Estimate, FieldChange, FieldValue, Issue, IssueKind,
+    IssueLink, IssueRef, IssueType, IssueUpdate, NewIssue, Priority, Sprint, Status,
+    StatusCategory, Transition, User,
+};
+pub use ports::{
+    BoardSource, Capabilities, Capability, IssueReader, IssueSearch, IssueWriter, Page, PageToken,
+    Provider, UserDirectory,
+};
+pub use query::{Filter, Query, UserSel};
+pub use rich_text::RichText;
