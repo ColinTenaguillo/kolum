@@ -329,3 +329,13 @@ async fn errors_are_typed() {
         matches!(provider(&broken).me().await, Err(DomainError::Transport(m)) if m.starts_with("HTTP 502"))
     );
 }
+
+#[tokio::test]
+async fn avatars_are_fetched_without_the_token() {
+    let gh = fake_github(200, Some("PNGBYTES")).await;
+    let p = provider(&gh);
+    assert_eq!(p.image(&gh.url).await.unwrap(), b"PNGBYTES");
+    assert_eq!(gh.seen.lock().unwrap()[0]["authorization"], "", "public: no token");
+    let missing = fake_github(404, Some("")).await;
+    assert!(matches!(provider(&missing).image(&missing.url).await, Err(DomainError::NotFound(_))));
+}

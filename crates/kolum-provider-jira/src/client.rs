@@ -48,6 +48,26 @@ impl Client {
         serde_json::from_value(value).map_err(|e| DomainError::Transport(format!("{path}: {e}")))
     }
 
+    /// The bytes at an absolute URL: an avatar. The credentials go only to
+    /// this Jira; an avatar served from elsewhere (a CDN, Gravatar) gets a
+    /// plain request.
+    pub async fn bytes(&self, url: &str) -> Result<Vec<u8>> {
+        let mut request = self.http.get(url);
+        if same_site(&self.base, url) {
+            request = request.header(AUTHORIZATION, &self.auth);
+        }
+        let response =
+            request.send().await.map_err(|e| DomainError::Transport(format!("{url}: {e}")))?;
+        let status = response.status().as_u16();
+        let bytes =
+            response.bytes().await.map_err(|e| DomainError::Transport(format!("{url}: {e}")))?;
+        if (200..300).contains(&status) {
+            Ok(bytes.to_vec())
+        } else {
+            Err(status_error(status, &String::from_utf8_lossy(&bytes), None))
+        }
+    }
+
     /// A write. Jira answers most of them with 204 and no body, which
     /// comes back as `Null`.
     pub async fn send(&self, method: Method, path: &str, body: &Value) -> Result<Value> {
@@ -105,6 +125,17 @@ impl Client {
     }
 }
 
+/// Whether `url` is on the site at `base`: same scheme, host and port. A
+/// prefix test alone would let `https://acme.atlassian.net.evil.example`
+/// through.
+pub fn same_site(base: &str, url: &str) -> bool {
+    let origin = |u: &str| -> Option<String> {
+        let (scheme, rest) = u.split_once("://")?;
+        Some(format!("{scheme}://{}", rest.split(['/', '?', '#']).next()?).to_lowercase())
+    };
+    origin(base).is_some_and(|b| origin(url) == Some(b))
+}
+
 /// Jira's own words when it gave any (`errorMessages`, `errors`), else the
 /// start of the body.
 fn message(body: &str) -> String {
@@ -133,6 +164,18 @@ pub fn status_error(status: u16, body: &str, retry_after_secs: Option<u64>) -> D
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credentials_stay_on_the_jira_site() {
+        let base = "https://acme.atlassian.net";
+        assert!(same_site(base, "https://acme.atlassian.net/secure/useravatar?id=1"));
+        assert!(same_site(base, "https://ACME.atlassian.net"));
+        assert!(!same_site(base, "https://acme.atlassian.net.evil.example/a"));
+        assert!(!same_site(base, "https://secure.gravatar.com/avatar/x"));
+        assert!(!same_site(base, "http://acme.atlassian.net/a"), "another scheme");
+        assert!(!same_site(base, "https://acme.atlassian.net:8443/a"), "another port");
+        assert!(!same_site(base, "not a url"));
+    }
 
     #[test]
     fn statuses_become_errors_the_ui_can_act_on() {

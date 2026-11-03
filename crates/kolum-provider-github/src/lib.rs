@@ -630,6 +630,15 @@ impl UserDirectory for GithubProvider {
         let data = self.graphql(queries::USERS, json!({ "q": query })).await?;
         Ok(data["search"]["nodes"].as_array().into_iter().flatten().filter_map(user).collect())
     }
+
+    /// Avatars are public: no token goes with the request.
+    async fn image(&self, url: &str) -> Result<Vec<u8>> {
+        let response = self.http.get(url).send().await.map_err(transport)?;
+        if !response.status().is_success() {
+            return Err(DomainError::NotFound(format!("{url}: HTTP {}", response.status())));
+        }
+        Ok(response.bytes().await.map_err(transport)?.to_vec())
+    }
 }
 
 impl Provider for GithubProvider {
@@ -639,7 +648,16 @@ impl Provider for GithubProvider {
 
     fn capabilities(&self) -> Capabilities {
         use Capability::*;
-        Capabilities::new([Sprints, Epics, Estimates, NativeQuery, CustomFields, Comments, Write])
+        Capabilities::new([
+            Sprints,
+            Epics,
+            Estimates,
+            NativeQuery,
+            CustomFields,
+            Comments,
+            Write,
+            Images,
+        ])
     }
 }
 

@@ -165,6 +165,9 @@ fn init_logging(debug: bool) -> Option<PathBuf> {
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some(kolum::images::PROBE_FLAG) {
+        kolum::images::probe_child();
+    }
     if let Err(e) = app() {
         eprintln!("kolum: {e:#}");
         std::process::exit(1);
@@ -198,6 +201,8 @@ fn app() -> anyhow::Result<()> {
     let state_file = config::cache_dir().map(|d| d.join(&profile).join("state.toml"));
     let settings = with_state(Settings { board, writable, ..settings }, state_file.as_deref());
     let cache = config::cache_dir().map(|d| kolum_app::Cache::new(d.join(&profile)));
+    // Before raw mode: the probe talks to the terminal.
+    let settings = Settings { images: kolum::images::probe(settings.ui.images), ..settings };
     let result = run_tui(provider, cache, state_file, settings);
     if args.debug
         && let Some(log) = log
@@ -266,6 +271,7 @@ fn load(args: &Args, config_dir: Option<PathBuf>) -> (config::Config, Settings) 
         problems,
         board: None,
         writable: false,
+        images: None,
         remote_debounce: std::time::Duration::from_millis(config.picker.remote_debounce_ms),
     };
     (config, settings)

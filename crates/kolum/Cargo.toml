@@ -27,6 +27,9 @@ base64 = "0.22"
 crossterm = { version = "0.29", features = ["event-stream"] }
 directories = "6"
 futures = "0.3"
+# Avatars: decoded here, drawn by ratatui-image. Only the formats avatars
+# come in (GitHub's PNG and JPEG, the demo's PNM).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "pnm", "gif", "webp"] }
 kolum-app.workspace = true
 kolum-domain.workspace = true
 kolum-provider-fake.workspace = true
@@ -38,6 +41,7 @@ nucleo = "0.5"
 # `unstable-rendered-line-info` is for Paragraph::line_count, which is how
 # far a wrapped issue can scroll. Unstable in name; pinned with ratatui.
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
+ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
 serde.workspace = true
 # Collects the settings serde would skip without a word: a misspelt key
 # that silently does nothing is worse than an error on screen.

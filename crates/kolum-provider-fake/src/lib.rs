@@ -29,7 +29,27 @@ struct State {
 
 fn user(i: usize) -> User {
     let (id, name) = data::USERS[i];
-    User { id: UserId::new(id), display_name: name.into(), avatar_url: None }
+    User {
+        id: UserId::new(id),
+        display_name: name.into(),
+        avatar_url: Some(format!("fake://avatar/{id}")),
+    }
+}
+
+/// A 16x16 avatar, as a PPM (the simplest format an image reader takes):
+/// the user's colour with a lighter cross, so each looks like someone.
+fn avatar(id: &str) -> Vec<u8> {
+    let hash = id.bytes().fold(0x811c9dc5u32, |h, b| (h ^ u32::from(b)).wrapping_mul(0x01000193));
+    let base = [(hash >> 16) as u8 | 0x40, (hash >> 8) as u8 | 0x40, hash as u8 | 0x40];
+    let mut out = b"P6\n16 16\n255\n".to_vec();
+    for y in 0..16 {
+        for x in 0..16 {
+            let light = (5..11).contains(&x) && (3..7).contains(&y)
+                || (3..13).contains(&x) && (9..14).contains(&y);
+            out.extend(base.map(|c| if light { c.saturating_add(90) } else { c }));
+        }
+    }
+    out
 }
 
 fn status(id: &str) -> Status {
@@ -418,6 +438,13 @@ impl UserDirectory for FakeProvider {
             .filter(|u| u.display_name.to_lowercase().contains(&q))
             .collect())
     }
+
+    async fn image(&self, url: &str) -> Result<Vec<u8>> {
+        match url.strip_prefix("fake://avatar/") {
+            Some(id) if data::USERS.iter().any(|u| u.0 == id) => Ok(avatar(id)),
+            _ => Err(DomainError::NotFound(url.into())),
+        }
+    }
 }
 
 impl Provider for FakeProvider {
@@ -436,6 +463,7 @@ impl Provider for FakeProvider {
             Comments,
             Activity,
             Write,
+            Images,
         ])
     }
 }

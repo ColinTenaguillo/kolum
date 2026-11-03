@@ -100,7 +100,8 @@ token_cmd = "gh auth token"         # needs the read:project (and project) scope
 # status_field = "Status"           # the single-select field used as columns
 
 [ui]
-theme = "kanagawa"                # dark light kanagawa catppuccin tokyonight gruvbox
+theme = "kanagawa"
+images = "auto"                   # auto, halfblocks, off: avatars in the issue view                # dark light kanagawa catppuccin tokyonight gruvbox
 hide_empty_columns = true
 card_fields = ["type", "key", "priority", "labels", "epic", "estimate", "assignee"]
 detail_fields = ["status", "assignee", "reporter", "priority", "sprint", "epic", "labels", "customfield_10016"]
@@ -135,6 +136,12 @@ The last board of each profile is kept in `~/.cache/kolum/<profile>/`: at
 start it is on screen at once, marked "cached, syncing…", while only the issues
 changed since are fetched. An issue that left the board is only dropped by a
 full reload (`r`).
+
+Avatars: the issue view shows the assignee's. In kitty, Ghostty, WezTerm,
+iTerm2 and foot they use the terminal's image protocol; elsewhere half blocks.
+The terminal is asked by a short-lived child process first, so one that never
+answers (tmux without `allow-passthrough`, a pipe) cannot swallow kolum's keys.
+Jira's credentials only go with avatar requests to the Jira site itself.
 
 Logs go to `~/.cache/kolum/kolum.log`, never to the screen; `--debug` raises
 the level and prints where the file is.
@@ -236,7 +243,9 @@ Also done: the first-run wizard.
 
 Also done: GitHub Projects as a second provider.
 
-Next: Jira Data Center and GitHub against live servers, images, packaging. Actions bound but not built yet say so when pressed.
+Also done: avatars, packaging (dist, Homebrew, Nix, AUR), CI.
+
+Next: Jira Data Center and GitHub against live servers, attachments. Actions bound but not built yet say so when pressed.
 
 ## License
 

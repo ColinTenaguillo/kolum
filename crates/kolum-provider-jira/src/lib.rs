@@ -357,6 +357,10 @@ impl UserDirectory for JiraProvider {
             .await?;
         Ok(users.iter().map(map::user).collect())
     }
+
+    async fn image(&self, url: &str) -> Result<Vec<u8>> {
+        self.client.bytes(url).await
+    }
 }
 
 impl Provider for JiraProvider {
@@ -376,6 +380,7 @@ impl Provider for JiraProvider {
             Comments,
             Activity,
             Write,
+            Images,
         ])
     }
 }

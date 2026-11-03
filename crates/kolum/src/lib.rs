@@ -2,6 +2,7 @@
 //! the way the binary does.
 
 pub mod config;
+pub mod images;
 pub mod keymap;
 pub mod run;
 pub mod theme;

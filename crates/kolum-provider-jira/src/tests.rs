@@ -496,3 +496,15 @@ async fn a_refused_write_is_a_typed_error() {
     let refused = p.transition(&IssueKey::new("ACME-404"), &TransitionId::new("21")).await;
     assert_eq!(refused, Err(DomainError::NotFound("No such thing".into())));
 }
+
+#[tokio::test]
+async fn avatars_are_fetched_with_credentials_only_from_jira_itself() {
+    let jira = fake_jira(None).await;
+    let elsewhere = fake_jira(None).await;
+    let p = provider(&jira);
+    p.image(&format!("{}/rest/api/3/myself", jira.url)).await.unwrap();
+    p.image(&format!("{}/rest/api/3/myself", elsewhere.url)).await.unwrap();
+    assert!(jira.seen.lock().unwrap()[0].ends_with("[Basic dGVzdA==]"));
+    assert!(elsewhere.seen.lock().unwrap()[0].ends_with("[]"), "no credentials to another site");
+    assert!(matches!(p.image(&format!("{}/nope", jira.url)).await, Err(DomainError::NotFound(_))));
+}

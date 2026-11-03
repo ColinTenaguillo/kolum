@@ -26,6 +26,8 @@ pub enum Command {
     },
     /// The transitions open to an issue now.
     Transitions(IssueKey),
+    /// An avatar's bytes.
+    Image(String),
     Create(kolum_domain::NewIssue),
     Clone(IssueKey),
     /// A change, under the id the optimistic ledger gave it.
@@ -74,6 +76,10 @@ pub enum Event {
         op: u64,
         key: IssueKey,
         error: DomainError,
+    },
+    Image {
+        url: String,
+        result: Result<Vec<u8>, DomainError>,
     },
     /// A new issue, made by Create or Clone.
     Created(Box<Issue>),
@@ -186,6 +192,10 @@ async fn run(
             }
             Err(error) => Event::WriteFailed { op, key, error },
         },
+        Command::Image(url) => {
+            let result = provider.image(&url).await;
+            Event::Image { url, result }
+        }
         Command::Create(new) => match provider.create(new).await {
             Ok(issue) => Event::Created(Box::new(issue)),
             Err(error) => Event::Failed { what: "creating the issue".into(), error },
@@ -401,5 +411,18 @@ mod tests {
         assert!(
             matches!(events.recv().await, Some(Event::Failed { what, .. }) if what == "cloning NOPE-1")
         );
+    }
+
+    #[tokio::test]
+    async fn an_avatar_comes_back_by_its_url() {
+        let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), None);
+        let Some(Event::Me(me)) = events.recv().await else { panic!() };
+        let url = me.avatar_url.unwrap();
+        service.send(Command::Image(url.clone()));
+        let Some(Event::Image { url: back, result: Ok(bytes) }) = events.recv().await else {
+            panic!()
+        };
+        assert_eq!(back, url);
+        assert!(bytes.starts_with(b"P6"));
     }
 }

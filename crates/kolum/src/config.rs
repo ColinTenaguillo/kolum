@@ -73,9 +73,21 @@ impl Swimlanes {
     }
 }
 
+/// Avatars: drawn with the terminal's image protocol when it has one
+/// (kitty, sixel, iTerm), as half blocks otherwise, or not at all.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImagesMode {
+    #[default]
+    Auto,
+    Halfblocks,
+    Off,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
+    pub images: ImagesMode,
     pub theme: String,
     pub hide_empty_columns: bool,
     pub swimlanes: Swimlanes,
@@ -90,6 +102,7 @@ impl Default for UiConfig {
         use CardField::*;
         UiConfig {
             theme: "dark".into(),
+            images: ImagesMode::Auto,
             hide_empty_columns: false,
             swimlanes: Swimlanes::None,
             card_fields: vec![Type, Key, Priority, Labels, Epic, Estimate, Assignee],

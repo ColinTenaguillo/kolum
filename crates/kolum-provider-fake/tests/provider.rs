@@ -156,3 +156,16 @@ async fn a_created_issue_starts_in_the_backlog_with_its_own_key() {
     assert!(issue.assignee.is_none() && issue.labels.is_empty());
     assert_eq!(p.issue(&IssueKey::new("ACME-45")).await.unwrap().title, "Write the release notes");
 }
+
+#[tokio::test]
+async fn avatars_are_generated_per_user() {
+    let p = FakeProvider::new();
+    let me = p.me().await.unwrap();
+    let ppm = p.image(me.avatar_url.as_deref().unwrap()).await.unwrap();
+    assert!(ppm.starts_with(b"P6\n16 16\n255\n"));
+    assert_eq!(ppm.len(), b"P6\n16 16\n255\n".len() + 16 * 16 * 3);
+    let ana = p.find_users("ana").await.unwrap().remove(0);
+    assert_ne!(p.image(ana.avatar_url.as_deref().unwrap()).await.unwrap(), ppm, "each their own");
+    assert!(p.image("fake://avatar/nobody").await.is_err());
+    assert!(p.capabilities().supports(Capability::Images));
+}

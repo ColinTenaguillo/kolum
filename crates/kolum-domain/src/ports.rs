@@ -35,6 +35,8 @@ pub enum Capability {
     Comments,
     Activity,
     Write,
+    /// Avatars can be fetched.
+    Images,
 }
 
 /// What a provider can do. The UI hides the rest instead of offering it
@@ -95,6 +97,12 @@ pub trait IssueWriter: Send + Sync {
 pub trait UserDirectory: Send + Sync {
     async fn me(&self) -> Result<User>;
     async fn find_users(&self, query: &str) -> Result<Vec<User>>;
+
+    /// The bytes behind an avatar URL, fetched the way this provider can
+    /// reach it (Jira's often need the session's credentials).
+    async fn image(&self, _url: &str) -> Result<Vec<u8>> {
+        Err(crate::DomainError::Unsupported(Capability::Images))
+    }
 }
 
 /// Everything the application needs from one provider instance.

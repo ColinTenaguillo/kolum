@@ -13,6 +13,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use std::cell::Cell;
 
+/// An avatar's height in rows; twice that in columns makes it square.
+const AVATAR_ROWS: u16 = 4;
+
 /// Below this, two columns leave neither enough room.
 const SIDE_BY_SIDE_MIN_WIDTH: u16 = 100;
 
@@ -72,6 +75,7 @@ impl DetailView {
         theme: &Theme,
         fields: &[String],
         me: Option<&UserId>,
+        avatar: Option<&mut ratatui_image::protocol::StatefulProtocol>,
     ) {
         let issue = &self.issue;
         let [head, body] =
@@ -87,6 +91,7 @@ impl DetailView {
         let mut content = self.content(theme, left.width.saturating_sub(2));
         let field_lines = field_lines(issue, fields, theme, me);
         if side {
+            let right = self.draw_avatar(frame, right, theme, avatar);
             let block =
                 Block::new().borders(Borders::LEFT).border_style(Style::new().fg(theme.border));
             let fields = Paragraph::new(field_lines).block(block).wrap(Wrap { trim: false });
@@ -102,6 +107,44 @@ impl DetailView {
             paragraph.scroll((self.scroll, 0)),
             Rect { width: left.width.saturating_sub(1), ..left },
         );
+    }
+
+    /// The assignee's picture and name above the fields, when there is a
+    /// picture; the rest of the column is what is left.
+    fn draw_avatar(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        theme: &Theme,
+        avatar: Option<&mut ratatui_image::protocol::StatefulProtocol>,
+    ) -> Rect {
+        let (Some(protocol), Some(who)) = (avatar, &self.issue.assignee) else { return area };
+        if area.height < AVATAR_ROWS + 4 || area.width < 20 {
+            return area;
+        }
+        let [top, rest] =
+            Layout::vertical([Constraint::Length(AVATAR_ROWS + 1), Constraint::Min(0)]).areas(area);
+        let picture = Rect { x: top.x + 2, y: top.y, width: AVATAR_ROWS * 2, height: AVATAR_ROWS };
+        frame.render_stateful_widget(
+            ratatui_image::StatefulImage::<ratatui_image::protocol::StatefulProtocol>::new(),
+            picture,
+            protocol,
+        );
+        let name = Rect {
+            x: picture.right() + 2,
+            y: top.y + AVATAR_ROWS / 2 - 1,
+            width: top.width.saturating_sub(picture.width + 4),
+            height: 2,
+        };
+        let lines = vec![
+            Line::from(Span::styled("Assignee", Style::new().fg(theme.muted))),
+            Line::from(Span::styled(
+                who.display_name.clone(),
+                Style::new().fg(theme.fg).add_modifier(Modifier::BOLD),
+            )),
+        ];
+        frame.render_widget(Paragraph::new(lines), name);
+        rest
     }
 
     fn content(&self, theme: &Theme, cols: u16) -> Vec<Line<'static>> {

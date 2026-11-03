@@ -108,6 +108,8 @@ pub struct Settings {
     /// The provider takes writes. When it does not, write actions say so
     /// instead of failing at the provider.
     pub writable: bool,
+    /// How this terminal draws pictures; `None` draws none.
+    pub images: Option<ratatui_image::picker::Picker>,
     /// How long typing must pause before a remote search goes out.
     pub remote_debounce: std::time::Duration,
 }
@@ -152,7 +154,16 @@ pub struct App {
     /// for a move into that column.
     awaiting: Option<(Vec<IssueKey>, Option<usize>)>,
     writable: bool,
+    images: Option<ratatui_image::picker::Picker>,
+    /// Avatars by URL: asked for, drawn, or not to be had.
+    avatars: std::collections::HashMap<String, Avatar>,
     pub quit: bool,
+}
+
+enum Avatar {
+    Loading,
+    Ready(Box<ratatui_image::protocol::StatefulProtocol>),
+    Failed,
 }
 
 impl App {
@@ -205,6 +216,8 @@ impl App {
             ledger: kolum_app::Ledger::default(),
             awaiting: None,
             writable: settings.writable,
+            images: settings.images,
+            avatars: std::collections::HashMap::new(),
             quit: false,
         }
     }
@@ -342,6 +355,7 @@ impl App {
                 {
                     d.issue = detail.issue.clone();
                     d.loaded = Some(*detail);
+                    self.want_avatar();
                 }
             }
             Event::Boards(boards) => {
@@ -381,6 +395,21 @@ impl App {
                 }
                 self.sync_detail(&key);
                 self.say(format!("{key}: {error}; undone"), Level::Error);
+            }
+            Event::Image { url, result } => {
+                let decoded = result.map_err(|e| e.to_string()).and_then(|bytes| {
+                    let picker = self.images.as_ref().ok_or("no pictures here")?;
+                    let image = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+                    Ok(picker.new_resize_protocol(image))
+                });
+                let avatar = match decoded {
+                    Ok(protocol) => Avatar::Ready(Box::new(protocol)),
+                    Err(e) => {
+                        tracing::info!("avatar {url}: {e}");
+                        Avatar::Failed
+                    }
+                };
+                self.avatars.insert(url, avatar);
             }
             Event::Created(issue) => {
                 let key = issue.key.clone();
@@ -903,11 +932,24 @@ impl App {
         }
     }
 
+    /// Asks for the assignee's avatar, once per URL, when pictures can be
+    /// drawn here.
+    fn want_avatar(&mut self) {
+        let url = self.detail.as_ref().and_then(|d| d.issue.assignee.as_ref()?.avatar_url.clone());
+        if let Some(url) = url.filter(|u| self.images.is_some() && !self.avatars.contains_key(u)) {
+            self.avatars.insert(url.clone(), Avatar::Loading);
+            self.effects.push(Effect::Send(Command::Image(url)));
+        }
+    }
+
     fn open_detail(&mut self, key: IssueKey) {
         let issue =
             self.board.snapshot.as_ref().and_then(|s| s.issues.iter().find(|i| i.key == key));
         match issue {
-            Some(issue) => self.detail = Some(DetailView::new(issue.clone())),
+            Some(issue) => {
+                self.detail = Some(DetailView::new(issue.clone()));
+                self.want_avatar();
+            }
             None => self.say(format!("{key} is not on this board"), Level::Warn),
         }
         self.effects.push(Effect::Send(Command::LoadIssue(key)));
@@ -1145,8 +1187,14 @@ impl App {
         let [main, status] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
         let me = self.me.as_ref().map(|u| &u.id);
+        let avatar_url =
+            self.detail.as_ref().and_then(|d| d.issue.assignee.as_ref()?.avatar_url.clone());
+        let avatar = match avatar_url.and_then(|u| self.avatars.get_mut(&u)) {
+            Some(Avatar::Ready(protocol)) => Some(protocol.as_mut()),
+            _ => None,
+        };
         match &self.detail {
-            Some(d) => d.draw(frame, main, &theme, &self.ui.detail_fields, me),
+            Some(d) => d.draw(frame, main, &theme, &self.ui.detail_fields, me, avatar),
             None => {
                 let [head, body] =
                     Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(main);

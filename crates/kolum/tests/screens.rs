@@ -23,6 +23,7 @@ fn settings() -> Settings {
         problems: vec![],
         board: None,
         writable: true,
+        images: None,
         remote_debounce: std::time::Duration::from_millis(250),
     }
 }
@@ -930,4 +931,42 @@ async fn swimlanes_group_each_column_and_navigation_follows_them() {
     assert!(screen(&mut app, 150, 60).contains("── Highest"));
     press(&mut app, "s");
     assert!(!screen(&mut app, 150, 60).contains("── "), "and off again");
+}
+
+#[tokio::test]
+async fn the_detail_shows_the_assignees_avatar() {
+    use kolum_domain::UserDirectory;
+    let mut settings = settings();
+    settings.images = Some(ratatui_image::picker::Picker::halfblocks());
+    let mut app = loaded_with(settings).await;
+    press(&mut app, "ll"); // ACME-5, assigned to me
+    app.take_effects();
+    press(&mut app, "<CR>");
+    let me = FakeProvider::new().me().await.unwrap();
+    let url = me.avatar_url.clone().unwrap();
+    assert!(app.take_effects().contains(&Effect::Send(Command::Image(url.clone()))));
+    press(&mut app, "q<CR>");
+    assert!(
+        !app.take_effects().contains(&Effect::Send(Command::Image(url.clone()))),
+        "asked for once"
+    );
+
+    let before = screen(&mut app, 140, 40);
+    let bytes = FakeProvider::new().image(&url).await;
+    app.on_event(Event::Image { url: url.clone(), result: bytes });
+    let after = screen(&mut app, 140, 40);
+    assert_ne!(before, after, "the picture is drawn");
+    assert!(after.contains("Colin Tenaguillo"));
+
+    app.on_event(Event::Image { url, result: Ok(b"not an image".to_vec()) });
+    screen(&mut app, 140, 40); // a broken picture is no picture, not a crash
+}
+
+#[tokio::test]
+async fn without_pictures_no_avatar_is_asked_for() {
+    let mut app = loaded().await;
+    press(&mut app, "ll");
+    app.take_effects();
+    press(&mut app, "<CR>");
+    assert!(!app.take_effects().iter().any(|e| matches!(e, Effect::Send(Command::Image(_)))));
 }
