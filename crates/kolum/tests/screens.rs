@@ -345,6 +345,26 @@ async fn the_detail_shows_rich_custom_fields_under_the_description() {
     assert!(open(&mut loaded_with(settings).await).contains("Tokens refresh"), "by id");
 }
 
+/// The board's copy of an issue carries fewer fields than the detail
+/// loaded (Jira sends rich text fields only for one issue): a sync must
+/// not take them away from the open detail.
+#[tokio::test]
+async fn a_board_sync_keeps_the_fields_only_the_detail_loaded() {
+    let fake = FakeProvider::new();
+    let mut app = loaded().await;
+    press(&mut app, "/ACME-10<CR><CR>");
+    let key = IssueKey::new("ACME-10");
+    let issue = fake.issue(&key).await.unwrap();
+    let detail = IssueDetail { issue, comments: vec![], activity: vec![] };
+    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    let mut snapshot = load_board(&fake, None).await.unwrap();
+    for issue in &mut snapshot.issues {
+        issue.fields.clear();
+    }
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true });
+    assert!(screen(&mut app, 140, 40).contains("Tokens refresh before they expire"));
+}
+
 #[tokio::test]
 async fn the_detail_lists_links_and_configured_custom_fields() {
     let mut settings = settings();

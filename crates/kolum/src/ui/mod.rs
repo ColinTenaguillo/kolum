@@ -424,7 +424,7 @@ impl App {
                 if let Some(d) = &mut self.detail
                     && let Some(fresh) = snapshot.issues.iter().find(|i| i.key == d.issue.key)
                 {
-                    d.issue = fresh.clone();
+                    refresh_detail(&mut d.issue, fresh);
                 }
                 self.board.set_snapshot(snapshot);
             }
@@ -1029,7 +1029,7 @@ impl App {
         if let (Some(d), Some(fresh)) = (&mut self.detail, fresh)
             && &d.issue.key == key
         {
-            d.issue = fresh;
+            refresh_detail(&mut d.issue, &fresh);
         }
     }
 
@@ -1626,6 +1626,19 @@ impl App {
 /// `# Title` then Markdown, against the issue as it is: only what moved is
 /// sent. The description is compared as Markdown, so a rich text that does
 /// not survive the round trip exactly is not rewritten for nothing.
+/// The board's copy of the open issue, keeping the fields only the detail
+/// loaded: Jira sends rich text fields for one issue, not for a board.
+fn refresh_detail(shown: &mut kolum_domain::Issue, fresh: &kolum_domain::Issue) {
+    let only_here: Vec<_> = shown
+        .fields
+        .iter()
+        .filter(|f| !fresh.fields.iter().any(|x| x.id == f.id))
+        .cloned()
+        .collect();
+    *shown = fresh.clone();
+    shown.fields.extend(only_here);
+}
+
 fn description_update(issue: &kolum_domain::Issue, text: &str) -> kolum_domain::IssueUpdate {
     let (title, body) = split_title(text);
     kolum_domain::IssueUpdate {
