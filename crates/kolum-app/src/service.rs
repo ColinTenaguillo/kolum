@@ -51,6 +51,13 @@ pub struct IssueDetail {
     pub layout: Option<kolum_domain::FieldLayout>,
 }
 
+/// The project and the issue type an issue's field layout belongs to:
+/// every issue of a type in a project has the same.
+pub fn layout_key(issue: &Issue) -> String {
+    let project = issue.key.as_str().split(['-', '#']).next().unwrap_or_default();
+    format!("{project}/{}", issue.kind.name)
+}
+
 /// What comes back, in whatever order the requests finish.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
@@ -61,6 +68,8 @@ pub enum Event {
         fresh: bool,
     },
     Boards(Vec<BoardSummary>),
+    /// The field layouts kept from earlier runs, by `layout_key`, first of all.
+    FieldLayouts(std::collections::BTreeMap<String, kolum_domain::FieldLayout>),
     Sprints(Result<Vec<kolum_domain::Sprint>, DomainError>),
     IssueLoaded(Box<IssueDetail>),
     /// For the search with this id; stale ones were cancelled.
@@ -123,6 +132,10 @@ impl Service {
             capabilities: provider.capabilities(),
             provider: provider.name().to_string(),
         };
+        let kept = cache.as_ref().map(Cache::layouts).unwrap_or_default();
+        if !kept.is_empty() {
+            let _ = events.send(Event::FieldLayouts(kept));
+        }
         let me = (provider.clone(), events.clone());
         tokio::spawn(async move {
             let event = match me.0.me().await {
@@ -225,7 +238,14 @@ async fn run(
             Event::SearchResults { id, result }
         }
         Command::LoadIssue(key) => match load_issue(provider.as_ref(), &key).await {
-            Ok(detail) => Event::IssueLoaded(Box::new(detail)),
+            Ok(detail) => {
+                if let (Some(cache), Some(layout)) = (&cache, &detail.layout)
+                    && let Err(e) = cache.save_layout(&layout_key(&detail.issue), layout)
+                {
+                    tracing::warn!("keeping the field layout of {key}: {e}");
+                }
+                Event::IssueLoaded(Box::new(detail))
+            }
             Err(error) => Event::Failed { what: format!("loading {key}"), error },
         },
     };
@@ -391,6 +411,30 @@ mod tests {
         else {
             panic!()
         };
+    }
+
+    #[tokio::test]
+    async fn a_layout_is_the_project_and_the_type_of_an_issue() {
+        use kolum_domain::IssueReader;
+        let mut issue = FakeProvider::new().issue(&IssueKey::new("ACME-12")).await.unwrap();
+        issue.kind.name = "Bug".into();
+        assert_eq!(layout_key(&issue), "ACME/Bug");
+    }
+
+    #[tokio::test]
+    async fn an_issue_layout_is_kept_for_the_next_run() {
+        let dir = crate::cache::tests::temp_dir("service-layouts");
+        let fake = Arc::new(FakeProvider::new());
+        let (service, mut events) = Service::spawn(fake.clone(), Some(Cache::new(&dir)));
+        events.recv().await; // Me
+        service.send(Command::LoadIssue(IssueKey::new("ACME-5")));
+        let Some(Event::IssueLoaded(detail)) = events.recv().await else { panic!() };
+        let (_again, mut events) = Service::spawn(fake, Some(Cache::new(&dir)));
+        let Some(Event::FieldLayouts(layouts)) = events.recv().await else {
+            panic!("the layouts come first")
+        };
+        assert_eq!(layouts.get(&layout_key(&detail.issue)), detail.layout.as_ref());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]

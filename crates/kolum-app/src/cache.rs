@@ -3,8 +3,9 @@
 //! point; the provider stays the truth.
 
 use crate::board::BoardSnapshot;
-use kolum_domain::{Board, Issue};
+use kolum_domain::{Board, FieldLayout, Issue};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use time::OffsetDateTime;
 
@@ -20,6 +21,17 @@ struct Entry {
     board: Board,
     issues: Vec<Issue>,
 }
+
+/// A field layout, one file per project and issue type: two issues opened
+/// at once write two files, never the same one.
+#[derive(Serialize, Deserialize)]
+struct LayoutEntry {
+    version: u32,
+    key: String,
+    layout: FieldLayout,
+}
+
+const LAYOUT_FILE: &str = "layout-";
 
 /// One directory per profile: two Jira instances can both have a board 42.
 #[derive(Debug, Clone)]
@@ -76,10 +88,38 @@ impl Cache {
             board: snapshot.board.clone(),
             issues: snapshot.issues.clone(),
         };
+        self.write(key, &serde_json::to_vec(&entry)?)
+    }
+
+    /// Written beside and renamed into place, so a crash mid-write leaves
+    /// the previous file rather than half of a new one.
+    fn write(&self, key: &str, bytes: &[u8]) -> std::io::Result<()> {
+        std::fs::create_dir_all(&self.dir)?;
         let path = self.path(key);
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(&entry)?)?;
+        std::fs::write(&tmp, bytes)?;
         std::fs::rename(&tmp, &path)
+    }
+
+    /// The field layout of a project's issue type, as the provider last gave it.
+    pub fn save_layout(&self, key: &str, layout: &FieldLayout) -> std::io::Result<()> {
+        let entry = LayoutEntry { version: VERSION, key: key.into(), layout: layout.clone() };
+        self.write(&format!("{LAYOUT_FILE}{key}"), &serde_json::to_vec(&entry)?)
+    }
+
+    /// Every layout kept, by project and issue type; what does not read is
+    /// left out.
+    pub fn layouts(&self) -> BTreeMap<String, FieldLayout> {
+        let Ok(files) = std::fs::read_dir(&self.dir) else { return BTreeMap::new() };
+        files
+            .flatten()
+            .filter(|f| f.file_name().to_string_lossy().starts_with(LAYOUT_FILE))
+            .filter_map(|f| {
+                let entry: LayoutEntry =
+                    serde_json::from_str(&std::fs::read_to_string(f.path()).ok()?).ok()?;
+                (entry.version == VERSION).then_some((entry.key, entry.layout))
+            })
+            .collect()
     }
 
     pub fn dir(&self) -> &Path {
@@ -125,6 +165,25 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(cache.load("2").is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn layouts_are_kept_one_file_each() {
+        use kolum_domain::{FieldId, FieldLayout};
+        let dir = temp_dir("cache-layouts");
+        let cache = Cache::new(&dir);
+        assert!(cache.layouts().is_empty(), "nothing yet");
+        let bug = FieldLayout { side: vec![], body: vec![FieldId::new("description")] };
+        let story = FieldLayout::default();
+        cache.save_layout("ACME/Bug", &bug).unwrap();
+        cache.save_layout("ACME/Story", &story).unwrap();
+        std::fs::write(dir.join("1.json"), "a board, not a layout").unwrap();
+        let wanted = std::collections::BTreeMap::from([
+            ("ACME/Bug".to_string(), bug),
+            ("ACME/Story".to_string(), story),
+        ]);
+        assert_eq!(cache.layouts(), wanted);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

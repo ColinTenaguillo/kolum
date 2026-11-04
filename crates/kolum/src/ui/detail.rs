@@ -3,7 +3,6 @@
 //! go under the content.
 
 use super::{glyph, rich};
-use crate::config::UiConfig;
 use crate::theme::Theme;
 use kolum_app::IssueDetail;
 use kolum_domain::{CustomField, FieldLayout, FieldValue, Issue, IssueRef, RichText, UserId};
@@ -94,7 +93,7 @@ impl DetailView {
         frame: &mut Frame,
         area: Rect,
         theme: &Theme,
-        ui: &UiConfig,
+        shown: Shown,
         me: Option<&UserId>,
         pictures: Pictures,
     ) {
@@ -109,10 +108,9 @@ impl DetailView {
         } else {
             [body, Rect::default()]
         };
-        let layout = self.loaded.as_ref().and_then(|d| d.layout.as_ref());
-        let sections = body_sections(issue, ui.detail_sections.as_deref(), layout);
+        let sections = body_sections(issue, shown.sections, shown.layout);
         let mut content = self.content(theme, left.width.saturating_sub(2), &sections);
-        let names = field_names(issue, ui.detail_fields.as_deref(), layout);
+        let names = field_names(issue, shown.fields, shown.layout);
         let field_lines = field_lines(issue, &names, theme, me);
         if side {
             let right = self.draw_avatar(frame, right, theme, pictures.avatar);
@@ -378,6 +376,14 @@ fn activity(detail: &IssueDetail, tab: Tab, theme: &Theme, cols: u16) -> Vec<Lin
         out.extend(lines);
     }
     out
+}
+
+/// Which fields the detail shows: the config's lists where it has them,
+/// else the provider's layout, else kolum's own choice.
+pub struct Shown<'a> {
+    pub fields: Option<&'a [String]>,
+    pub sections: Option<&'a [String]>,
+    pub layout: Option<&'a FieldLayout>,
 }
 
 /// The fields of the right-hand column, in the order kolum shows them by default.

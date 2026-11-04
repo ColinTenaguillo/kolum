@@ -445,6 +445,34 @@ async fn the_detail_follows_the_providers_layout() {
     assert!(configured.contains("Reporter") && !configured.contains("Due date"), "config wins");
 }
 
+/// The layout is the same for every issue of a type: an issue opens with
+/// the one its type had last time, before its own fields arrive.
+#[tokio::test]
+async fn an_issue_opens_with_the_layout_its_type_had() {
+    use kolum_domain::{FieldId, FieldLayout, LayoutField};
+    let issue = FakeProvider::new().issue(&IssueKey::new("ACME-10")).await.unwrap();
+    let layout = |name: &str| FieldLayout {
+        side: vec![LayoutField {
+            id: FieldId::new("customfield_10020"),
+            name: name.into(),
+            only_filled: false,
+        }],
+        body: vec![FieldId::new("description")],
+    };
+    let mut app = loaded().await;
+    let kept = std::collections::BTreeMap::from([(kolum_app::layout_key(&issue), layout("Squad"))]);
+    app.on_event(Event::FieldLayouts(kept));
+    press(&mut app, "/ACME-10<CR><CR>");
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("Squad") && !shown.contains("Reporter"), "at once: {shown}");
+
+    let detail =
+        IssueDetail { issue, comments: vec![], activity: vec![], layout: Some(layout("Team now")) };
+    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    press(&mut app, "q<CR>");
+    assert!(screen(&mut app, 140, 40).contains("Team now"), "the latest one is kept");
+}
+
 #[tokio::test]
 async fn the_detail_lists_links_and_configured_custom_fields() {
     let mut settings = settings();

@@ -220,6 +220,9 @@ pub struct App {
     field_prompt: Option<(IssueKey, kolum_domain::EditableField)>,
     /// The sprint field waiting for the board's sprints.
     sprint_for: Option<(IssueKey, kolum_domain::EditableField)>,
+    /// The field layout of each project's issue types, by `layout_key`: an
+    /// issue opens with its type's before its own arrive.
+    layouts: std::collections::BTreeMap<String, kolum_domain::FieldLayout>,
     remote_debounce: std::time::Duration,
     /// The time of the key being handled, for the debounce.
     now: Instant,
@@ -299,6 +302,7 @@ impl App {
             search_due: None,
             field_prompt: None,
             sprint_for: None,
+            layouts: Default::default(),
             remote_debounce: settings.remote_debounce,
             now: Instant::now(),
             ledger: kolum_app::Ledger::default(),
@@ -434,7 +438,13 @@ impl App {
     }
 
     pub fn on_event(&mut self, event: Event) {
+        if let Event::IssueLoaded(detail) = &event
+            && let Some(layout) = &detail.layout
+        {
+            self.layouts.insert(kolum_app::layout_key(&detail.issue), layout.clone());
+        }
         match event {
+            Event::FieldLayouts(kept) => self.layouts.extend(kept),
             Event::Me(user) => {
                 self.board.me = Some(user.id.clone());
                 self.me = Some(user);
@@ -1668,7 +1678,14 @@ impl App {
         };
         let pictures = detail::Pictures { avatar: ready(avatar), shot: ready(shot) };
         match &self.detail {
-            Some(d) => d.draw(frame, main, &theme, &self.ui, me, pictures),
+            Some(d) => {
+                let shown = detail::Shown {
+                    fields: self.ui.detail_fields.as_deref(),
+                    sections: self.ui.detail_sections.as_deref(),
+                    layout: self.layouts.get(&kolum_app::layout_key(&d.issue)),
+                };
+                d.draw(frame, main, &theme, shown, me, pictures)
+            }
             None => {
                 let [head, body] =
                     Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(main);
