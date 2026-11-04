@@ -392,8 +392,22 @@ async fn the_detail_follows_the_providers_layout() {
         let mut issue = FakeProvider::new().issue(&IssueKey::new("ACME-10")).await.unwrap();
         issue.due = Some(time::macros::date!(2026 - 12 - 01));
         let ids = |ids: &[&str]| ids.iter().map(|id| kolum_domain::FieldId::new(*id)).collect();
+        let named = |rows: &[(&str, &str)]| {
+            rows.iter()
+                .map(|(id, name)| (kolum_domain::FieldId::new(*id), name.to_string()))
+                .collect()
+        };
         let layout = kolum_domain::FieldLayout {
-            side: ids(&["due", "customfield_10020", "assignee", "labels", "epic", "priority"]),
+            side: named(&[
+                ("due", "Due date"),
+                ("customfield_10020", "Team"),
+                ("assignee", "Assignee"),
+                ("customfield_10050", "Code Owner"),
+                ("labels", "Labels"),
+                ("epic", "Parent"),
+                ("estimate", "Story Points"),
+                ("priority", "Priority"),
+            ]),
             body: ids(&["customfield_10030", "description"]),
         };
         let detail =
@@ -403,10 +417,21 @@ async fn the_detail_follows_the_providers_layout() {
     };
     let shown = open(settings()).await;
     let at = |label: &str| shown.find(label).unwrap_or_else(|| panic!("{label}: {shown}"));
-    let side = ["Status", "Due date", "Team", "Assignee", "Labels", "Parent", "Priority"];
+    let side = [
+        "Status",
+        "Due date",
+        "Team",
+        "Assignee",
+        "Code Owner",
+        "Labels",
+        "Parent",
+        "Story Points",
+        "Priority",
+    ];
     let places: Vec<usize> = side.iter().map(|l| at(l)).collect();
     assert!(places.is_sorted(), "{side:?} in this order: {shown}");
     assert!(!shown.contains("Reporter") && !shown.contains("Updated"), "only the layout's");
+    assert!(!shown.contains("customfield_"), "an empty field goes by its name too: {shown}");
     assert!(at("── Acceptance criteria") < at("── Description"), "the body's order");
 
     let mut settings = settings();

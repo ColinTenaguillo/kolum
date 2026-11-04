@@ -113,7 +113,7 @@ pub fn field_layout(response: &Value, known: &FieldIds) -> Result<FieldLayout> {
         .as_array()
         .map(Vec::as_slice)
         .unwrap_or_default();
-    let nodes = |kind: &str| -> Vec<(FieldId, bool, String)> {
+    let nodes = |kind: &str| -> Vec<(FieldId, bool, String, String)> {
         let found = containers.iter().find(|c| c["containerType"] == kind);
         let edges = found.and_then(|c| c["fields"]["edges"].as_array());
         edges
@@ -122,26 +122,33 @@ pub fn field_layout(response: &Value, known: &FieldIds) -> Result<FieldLayout> {
             .filter_map(|e| {
                 let node = &e["node"];
                 let id = FieldId::new(node["fieldId"].as_str()?);
-                Some((id, node["hasValue"] == true, node["type"].as_str().unwrap_or("").into()))
+                let text = |key: &str| node[key].as_str().unwrap_or("").to_string();
+                Some((id, node["hasValue"] == true, text("type"), text("name")))
             })
             .collect()
     };
-    let mut side: Vec<FieldId> = vec![];
-    let mut add = |id: &FieldId| {
-        let name = kolum_name(id, known);
-        if !side.contains(&name) {
-            side.push(name);
+    let (primary, secondary) = (nodes("PRIMARY"), nodes("SECONDARY"));
+    // A pinned field is named where the layout lists it.
+    let name_of = |id: &FieldId| {
+        let listed = primary.iter().chain(&secondary).find(|n| &n.0 == id);
+        listed.map_or_else(|| id.to_string(), |n| n.3.clone())
+    };
+    let mut side: Vec<(FieldId, String)> = vec![];
+    let mut add = |id: &FieldId, name: String| {
+        let id = kolum_name(id, known);
+        if !side.iter().any(|(listed, _)| *listed == id) {
+            side.push((id, name));
         }
     };
-    pinned.iter().for_each(&mut add);
-    for (id, filled, kind) in nodes("PRIMARY") {
+    pinned.iter().for_each(|id| add(id, name_of(id)));
+    for (id, filled, kind, name) in &primary {
         // The web hides the old Advanced Roadmaps Parent Link while it is
         // empty, though the layout lists it; seen, not documented.
-        if filled || kind != "com.atlassian.jpo:jpo-custom-field-parent" {
-            add(&id);
+        if *filled || kind != "com.atlassian.jpo:jpo-custom-field-parent" {
+            add(id, name.clone());
         }
     }
-    nodes("SECONDARY").iter().filter(|(_, filled, _)| *filled).for_each(|n| add(&n.0));
+    secondary.iter().filter(|n| n.1).for_each(|n| add(&n.0, n.3.clone()));
     let body = nodes("CONTENT").into_iter().map(|n| n.0).collect();
     Ok(FieldLayout { side, body })
 }

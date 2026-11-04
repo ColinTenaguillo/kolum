@@ -232,8 +232,9 @@ pub struct ActivityEntry {
 /// Which fields the provider's own issue view shows, in its order.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FieldLayout {
-    /// Beside the issue: what the user pinned, then the details.
-    pub side: Vec<FieldId>,
+    /// Beside the issue: what the user pinned, then the details; each with
+    /// the name the provider's view gives it.
+    pub side: Vec<(FieldId, String)>,
     /// Under the title: the rich text fields, the description among them.
     pub body: Vec<FieldId>,
 }

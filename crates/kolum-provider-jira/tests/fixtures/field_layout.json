@@ -1,24 +1,24 @@
 {"data": {"jira": {
   "issueByKey": {"fieldsByContainerTypes": {"containerFields": [
     {"containerType": "CONTENT", "fields": {"edges": [
-      {"node": {"fieldId": "customfield_10080", "type": "com.atlassian.jira.plugin.system.customfieldtypes:textarea", "hasValue": true}},
-      {"node": {"fieldId": "description", "type": "description", "hasValue": false}}
+      {"node": {"fieldId": "customfield_10080", "name": "Bug report", "type": "com.atlassian.jira.plugin.system.customfieldtypes:textarea", "hasValue": true}},
+      {"node": {"fieldId": "description", "name": "Description", "type": "description", "hasValue": false}}
     ]}},
     {"containerType": "PRIMARY", "fields": {"edges": [
-      {"node": {"fieldId": "duedate", "type": "duedate", "hasValue": false}},
-      {"node": {"fieldId": "assignee", "type": "assignee", "hasValue": true}},
-      {"node": {"fieldId": "customfield_10070", "type": "com.atlassian.jira.plugin.system.customfieldtypes:userpicker", "hasValue": false}},
-      {"node": {"fieldId": "labels", "type": "labels", "hasValue": true}},
-      {"node": {"fieldId": "customfield_10099", "type": "com.atlassian.jpo:jpo-custom-field-parent", "hasValue": false}},
-      {"node": {"fieldId": "parent", "type": "parent", "hasValue": true}},
-      {"node": {"fieldId": "customfield_10016", "type": "com.atlassian.jpo:jpo-custom-field-story-points", "hasValue": false}},
-      {"node": {"fieldId": "customfield_10014", "type": "com.pyxis.greenhopper.jira:gh-epic-link", "hasValue": false}},
-      {"node": {"fieldId": "customfield_10020", "type": "com.pyxis.greenhopper.jira:gh-sprint", "hasValue": false}}
+      {"node": {"fieldId": "duedate", "name": "Due date", "type": "duedate", "hasValue": false}},
+      {"node": {"fieldId": "assignee", "name": "Assignee", "type": "assignee", "hasValue": true}},
+      {"node": {"fieldId": "customfield_10070", "name": "Reviewer", "type": "com.atlassian.jira.plugin.system.customfieldtypes:userpicker", "hasValue": false}},
+      {"node": {"fieldId": "labels", "name": "Labels", "type": "labels", "hasValue": true}},
+      {"node": {"fieldId": "customfield_10099", "name": "Parent Link", "type": "com.atlassian.jpo:jpo-custom-field-parent", "hasValue": false}},
+      {"node": {"fieldId": "parent", "name": "Parent", "type": "parent", "hasValue": true}},
+      {"node": {"fieldId": "customfield_10016", "name": "Story Points", "type": "com.atlassian.jpo:jpo-custom-field-story-points", "hasValue": false}},
+      {"node": {"fieldId": "customfield_10014", "name": "Epic Link", "type": "com.pyxis.greenhopper.jira:gh-epic-link", "hasValue": false}},
+      {"node": {"fieldId": "customfield_10020", "name": "Sprint", "type": "com.pyxis.greenhopper.jira:gh-sprint", "hasValue": false}}
     ]}},
     {"containerType": "SECONDARY", "fields": {"edges": [
-      {"node": {"fieldId": "fixVersions", "type": "fixVersions", "hasValue": false}},
-      {"node": {"fieldId": "priority", "type": "priority", "hasValue": true}},
-      {"node": {"fieldId": "reporter", "type": "reporter", "hasValue": true}}
+      {"node": {"fieldId": "fixVersions", "name": "Fix versions", "type": "fixVersions", "hasValue": false}},
+      {"node": {"fieldId": "priority", "name": "Priority", "type": "priority", "hasValue": true}},
+      {"node": {"fieldId": "reporter", "name": "Reporter", "type": "reporter", "hasValue": true}}
     ]}}
   ]}},
   "userPreferences": {"issueViewPinnedFields": "duedate"}

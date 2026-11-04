@@ -388,18 +388,19 @@ const BUILTIN_FIELDS: [&str; 11] = [
 
 /// The `wanted` fields, or the built-in ones then every custom field the
 /// issue fills that is not rich text (that shows under the description).
+/// Each with the label the provider's view gives it, when it has a layout.
 fn field_names(
     issue: &Issue,
     wanted: Option<&[String]>,
     layout: Option<&FieldLayout>,
-) -> Vec<String> {
+) -> Vec<(String, Option<String>)> {
     if let Some(names) = wanted {
-        return names.to_vec();
+        return names.iter().map(|n| (n.clone(), None)).collect();
     }
     // The web shows the status apart, above its fields; here it heads them.
     if let Some(layout) = layout {
-        return std::iter::once("status".to_string())
-            .chain(layout.side.iter().map(|id| id.to_string()))
+        return std::iter::once(("status".to_string(), None))
+            .chain(layout.side.iter().map(|(id, name)| (id.to_string(), Some(name.clone()))))
             .collect();
     }
     let custom = issue.fields.iter().filter(|f| match &f.value {
@@ -408,7 +409,8 @@ fn field_names(
         FieldValue::Options(o) => !o.is_empty(),
         _ => true,
     });
-    BUILTIN_FIELDS.map(String::from).into_iter().chain(custom.map(|f| f.id.to_string())).collect()
+    let builtin = BUILTIN_FIELDS.map(String::from).into_iter();
+    builtin.chain(custom.map(|f| f.id.to_string())).map(|n| (n, None)).collect()
 }
 
 /// A custom field by id (`customfield_10016`) or by name, in any case.
@@ -451,7 +453,7 @@ fn body_sections<'a>(
 /// out, so the column keeps its shape from one issue to the next.
 fn field_lines(
     issue: &Issue,
-    fields: &[String],
+    fields: &[(String, Option<String>)],
     theme: &Theme,
     me: Option<&UserId>,
 ) -> Vec<Line<'static>> {
@@ -468,7 +470,7 @@ fn field_lines(
         None => vec![Span::styled("Unassigned", muted)],
     };
     let mut lines = vec![];
-    for name in fields {
+    for (name, shown_as) in fields {
         let (label, value): (String, Vec<Span<'static>>) = match name.as_str() {
             "status" => ("Status".into(), vec![glyph::status_badge(issue, theme)]),
             "assignee" => ("Assignee".into(), user(&issue.assignee)),
@@ -515,6 +517,7 @@ fn field_lines(
                 None => (other.to_string(), none()),
             },
         };
+        let label = shown_as.clone().unwrap_or(label);
         lines.push(Line::from(Span::styled(label, muted)));
         lines.push(Line::from(value));
         lines.push(Line::default());

@@ -349,8 +349,17 @@ impl IssueReader for FakeProvider {
     async fn field_layout(&self, key: &IssueKey) -> Result<FieldLayout> {
         self.issue(key).await?;
         let ids = |ids: &[&str]| ids.iter().map(|id| FieldId::new(*id)).collect();
+        let named = |rows: &[(&str, &str)]| {
+            rows.iter().map(|(id, name)| (FieldId::new(*id), name.to_string())).collect()
+        };
         Ok(FieldLayout {
-            side: ids(&["assignee", "customfield_10020", "labels", "priority", "reporter"]),
+            side: named(&[
+                ("assignee", "Assignee"),
+                ("customfield_10020", "Team"),
+                ("labels", "Labels"),
+                ("priority", "Priority"),
+                ("reporter", "Reporter"),
+            ]),
             body: ids(&["description", "customfield_10030"]),
         })
     }
