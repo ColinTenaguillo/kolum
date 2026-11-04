@@ -1,4 +1,4 @@
-use kolum_domain::{Board, BoardId, DomainError, Issue, Provider, Result};
+use kolum_domain::{Board, BoardId, DomainError, Issue, Provider, Query, Result};
 use time::OffsetDateTime;
 
 /// A board and its cards, as last loaded.
@@ -20,6 +20,24 @@ impl BoardSnapshot {
                 None => self.issues.push(issue),
             }
         }
+    }
+
+    /// A number alone, `12983`, read as the key of this board's project:
+    /// `ACME-12983`. Only when the board's keys read that way; GitHub's
+    /// `repo#12` do not.
+    pub fn qualify(&self, query: Query) -> Query {
+        let Query::Filter(mut filter) = query else { return query };
+        let number = filter
+            .text
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()));
+        let prefix = self.board.project.as_ref().map(|p| format!("{}-", p.key));
+        let prefix = prefix.filter(|p| self.issues.iter().any(|i| i.key.as_str().starts_with(p)));
+        if let (Some(number), Some(prefix)) = (number, prefix) {
+            filter.text = Some(format!("{prefix}{number}"));
+        }
+        Query::Filter(filter)
     }
 
     /// The cards of each column, left to right. A card whose status is in
@@ -102,6 +120,26 @@ mod tests {
         let names: std::collections::BTreeSet<_> =
             columns[2].iter().map(|i| i.status.name.as_str()).collect();
         assert_eq!(names.into_iter().collect::<Vec<_>>(), ["Blocked", "In Progress"]);
+    }
+
+    #[tokio::test]
+    async fn a_bare_number_is_an_issue_of_the_board_project() {
+        let mut snapshot = load_board(&FakeProvider::new(), None).await.unwrap();
+        let text = |s: &BoardSnapshot, q: &str| match s.qualify(crate::parse_query(q)) {
+            Query::Filter(f) => f.text,
+            Query::Native(n) => Some(format!("native {n}")),
+        };
+        assert_eq!(text(&snapshot, " 12983 "), Some("ACME-12983".into()));
+        assert_eq!(text(&snapshot, "#bug 12"), Some("ACME-12".into()));
+        assert_eq!(text(&snapshot, "login 12"), Some("login 12".into()), "a number among words");
+        assert_eq!(text(&snapshot, "!12"), Some("native 12".into()));
+        let mut no_project = snapshot.clone();
+        no_project.board.project = None;
+        assert_eq!(text(&no_project, "12"), Some("12".into()), "no project");
+        for key in snapshot.issues.iter_mut() {
+            key.key = kolum_domain::IssueKey::new(format!("web#{}", key.key.as_str().len()));
+        }
+        assert_eq!(text(&snapshot, "12"), Some("12".into()), "keys not of the project's form");
     }
 
     #[tokio::test]

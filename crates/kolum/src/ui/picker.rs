@@ -104,8 +104,11 @@ pub trait AnyPicker {
     fn toggle_remote(&mut self) -> Option<bool>;
     fn is_remote(&self) -> bool;
     fn receive(&mut self, issues: Vec<kolum_domain::Issue>);
-    /// A remote search is under way.
+    /// A remote search is under way, or about to go out.
     fn set_loading(&mut self, loading: bool);
+    fn is_loading(&self) -> bool;
+    /// The spinner's next frame, while loading.
+    fn spin(&mut self);
     /// The status words in the bottom border: `[local]`.
     fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme, layout: PickerLayout);
 }
@@ -123,8 +126,11 @@ pub struct Picker<S: PickerSource> {
     pattern: String,
     preview_scroll: u16,
     remote: bool,
-    loading: bool,
+    /// The spinner's frame while a remote search is under way.
+    loading: Option<usize>,
 }
+
+const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 pub type Waker = Arc<dyn Fn() + Send + Sync>;
 
@@ -143,7 +149,7 @@ impl<S: PickerSource> Picker<S> {
             pattern: String::new(),
             preview_scroll: 0,
             remote: false,
-            loading: false,
+            loading: None,
         };
         picker.inject();
         picker
@@ -201,11 +207,30 @@ impl<S: PickerSource> Picker<S> {
         if marked.is_empty() { self.current().cloned().into_iter().collect() } else { marked }
     }
     fn source_label(&self) -> &'static str {
-        match (self.remote, self.loading) {
-            (false, _) => "local",
-            (true, false) => "remote",
-            (true, true) => "remote …",
+        if self.remote { "remote" } else { "local" }
+    }
+
+    /// What is typed, the cursor in it, and the spinner at the far end.
+    fn draw_prompt(&self, frame: &mut Frame, line: Rect, theme: &Theme) {
+        let prompt = Line::from(vec![
+            Span::styled("> ", Style::new().fg(theme.accent)),
+            Span::raw(self.input.text().to_string()),
+        ]);
+        frame.render_widget(Paragraph::new(prompt), line);
+        if let Some(spinner) = self.spinner() {
+            frame.render_widget(
+                Line::styled(spinner, Style::new().fg(theme.accent)).right_aligned(),
+                line,
+            );
         }
+        if self.insert {
+            let x = line.x + 2 + self.input.text().chars().take(self.input.cursor()).count() as u16;
+            frame.set_cursor_position((x.min(line.right().saturating_sub(1)), line.y));
+        }
+    }
+
+    fn spinner(&self) -> Option<String> {
+        self.loading.map(|frame| format!("{} searching…", SPINNER[frame % SPINNER.len()]))
     }
 
     fn row(&mut self, index: u32, theme: &Theme, cols: usize) -> Line<'static> {
@@ -319,7 +344,7 @@ impl<S: PickerSource> AnyPicker for Picker<S> {
     fn toggle_remote(&mut self) -> Option<bool> {
         let remote = self.source.toggle_remote()?;
         self.remote = remote;
-        self.loading = false;
+        self.loading = None;
         self.reinject();
         Some(remote)
     }
@@ -330,12 +355,21 @@ impl<S: PickerSource> AnyPicker for Picker<S> {
 
     fn receive(&mut self, issues: Vec<kolum_domain::Issue>) {
         self.source.receive(issues);
-        self.loading = false;
+        self.loading = None;
         self.reinject();
     }
 
+    /// Already loading keeps its frame: typing does not restart the turn.
     fn set_loading(&mut self, loading: bool) {
-        self.loading = loading;
+        self.loading = if loading { self.loading.or(Some(0)) } else { None };
+    }
+
+    fn is_loading(&self) -> bool {
+        self.loading.is_some()
+    }
+
+    fn spin(&mut self) {
+        self.loading = self.loading.map(|f| f + 1);
     }
 
     fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme, layout: PickerLayout) {
@@ -377,16 +411,7 @@ impl<S: PickerSource> AnyPicker for Picker<S> {
         if inner.height == 0 {
             return;
         }
-        let prompt = Line::from(vec![
-            Span::styled("> ", Style::new().fg(theme.accent)),
-            Span::raw(self.input.text().to_string()),
-        ]);
-        frame.render_widget(Paragraph::new(prompt), Rect { height: 1, ..inner });
-        if self.insert {
-            let x =
-                inner.x + 2 + self.input.text().chars().take(self.input.cursor()).count() as u16;
-            frame.set_cursor_position((x.min(inner.right().saturating_sub(1)), inner.y));
-        }
+        self.draw_prompt(frame, Rect { height: 1, ..inner }, theme);
         let rows = inner.height.saturating_sub(2) as u32;
         let offset = self.selected.saturating_sub(rows.saturating_sub(1));
         let count = self.nucleo.snapshot().matched_item_count();

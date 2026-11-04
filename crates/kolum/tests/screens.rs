@@ -561,13 +561,13 @@ async fn a_remote_search_waits_for_typing_to_pause_and_drops_stale_replies() {
     let due = app.deadline().expect("going remote searches straight away");
     wait_until(&mut app, due);
     assert_eq!(searches(app.take_effects()), [(1, Query::Filter(Filter::default()))]);
-    assert!(screen(&mut app, 150, 40).contains("[remote …]"), "searching");
+    assert!(screen(&mut app, 150, 40).contains("searching…"), "searching");
 
+    let typed = Instant::now();
     press(&mut app, "@me");
-    let due = app.deadline().unwrap();
-    wait_until(&mut app, due - std::time::Duration::from_millis(100));
+    wait_until(&mut app, typed + std::time::Duration::from_millis(150));
     assert!(searches(app.take_effects()).is_empty(), "still typing");
-    wait_until(&mut app, due);
+    wait_until(&mut app, typed + std::time::Duration::from_millis(300));
     let mine = Query::Filter(Filter { assignees: vec![UserSel::Me], ..Filter::default() });
     assert_eq!(searches(app.take_effects()), [(2, mine.clone())]);
 
@@ -591,6 +591,45 @@ async fn a_remote_search_waits_for_typing_to_pause_and_drops_stale_replies() {
     press(&mut app, "<C-Space>");
     assert!(screen(&mut app, 150, 40).contains("[local]"), "and back");
     assert_eq!(app.deadline(), None, "nothing pending once local");
+}
+
+/// From the first key, not once the debounce is over, and turning until
+/// the provider answers.
+#[tokio::test]
+async fn a_remote_search_shows_it_is_searching() {
+    let mut app = loaded().await;
+    press(&mut app, "<Space>F");
+    let due = app.deadline().unwrap();
+    wait_until(&mut app, due);
+    app.take_effects();
+    app.on_event(Event::SearchResults { id: 1, result: Ok(vec![]) });
+    assert!(!screen(&mut app, 150, 40).contains("searching"), "answered");
+
+    press(&mut app, "login");
+    let typed = screen(&mut app, 150, 40);
+    assert!(typed.contains("> login") && typed.contains("⠋ searching…"), "{typed}");
+    let next_frame = app.deadline().unwrap();
+    wait_until(&mut app, next_frame);
+    assert!(screen(&mut app, 150, 40).contains("⠙ searching…"), "it turns");
+
+    while searches(app.take_effects()).is_empty() {
+        let due = app.deadline().unwrap();
+        wait_until(&mut app, due);
+    }
+    app.on_event(Event::SearchResults { id: 2, result: Ok(vec![]) });
+    assert!(!screen(&mut app, 150, 40).contains("searching"), "answered");
+    assert_eq!(app.deadline(), None, "and still once idle");
+}
+
+#[tokio::test]
+async fn a_remote_search_for_a_number_asks_for_that_issue_of_the_board() {
+    use kolum_domain::{Filter, Query};
+    let mut app = loaded().await;
+    let typed = Instant::now();
+    press(&mut app, "<Space>F12983");
+    wait_until(&mut app, typed + std::time::Duration::from_millis(300));
+    let wanted = Query::Filter(Filter { text: Some("ACME-12983".into()), ..Filter::default() });
+    assert_eq!(searches(app.take_effects()), [(1, wanted)]);
 }
 
 #[tokio::test]

@@ -63,6 +63,9 @@ pub enum EditPurpose {
     },
 }
 
+/// How often the picker's spinner turns.
+const SPIN: std::time::Duration = std::time::Duration::from_millis(80);
+
 /// Everything from here down is instructions, not content.
 const MARKER: &str = "<!-- kolum:";
 
@@ -292,9 +295,10 @@ impl App {
     }
 
     /// The next moment something happens without a key: a sequence
-    /// times out, or a debounced search goes out.
+    /// times out, a debounced search goes out, or the spinner turns.
     pub fn deadline(&self) -> Option<Instant> {
-        [self.resolver.deadline(), self.search_due].into_iter().flatten().min()
+        let spin = self.picker.as_ref().filter(|p| p.is_loading()).map(|_| self.now + SPIN);
+        [self.resolver.deadline(), self.search_due, spin].into_iter().flatten().min()
     }
 
     pub fn theme(&self) -> &Theme {
@@ -363,6 +367,9 @@ impl App {
 
     pub fn on_timeout(&mut self, now: Instant) {
         self.now = now;
+        if let Some(p) = &mut self.picker {
+            p.spin();
+        }
         if self.search_due.is_some_and(|due| now >= due) {
             self.search();
         }
@@ -390,6 +397,7 @@ impl App {
                 picker.type_key(key);
                 self.history_pos = None;
                 if picker.is_remote() {
+                    picker.set_loading(true);
                     self.search_due = Some(self.now + self.remote_debounce);
                 }
             }
@@ -1257,7 +1265,10 @@ impl App {
         let Some(p) = self.picker.as_mut().filter(|p| p.is_remote()) else { return };
         self.search_id += 1;
         p.set_loading(true);
-        let query = kolum_app::parse_query(p.query());
+        let mut query = kolum_app::parse_query(p.query());
+        if let Some(snapshot) = &self.board.snapshot {
+            query = snapshot.qualify(query);
+        }
         self.effects.push(Effect::Send(Command::Search { id: self.search_id, query }));
     }
 
@@ -1275,6 +1286,7 @@ impl App {
         if let Some(p) = &mut self.picker {
             p.set_query(&query);
             if p.is_remote() {
+                p.set_loading(true);
                 self.search_due = Some(self.now + self.remote_debounce);
             }
         }
