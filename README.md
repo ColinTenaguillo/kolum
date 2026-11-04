@@ -109,6 +109,7 @@ token_cmd = "gh auth token"         # needs the read:project (and project) scope
 theme = "kanagawa"
 images = "auto"                   # auto, halfblocks, off: avatars in the issue view                # dark light kanagawa catppuccin tokyonight gruvbox
 hide_empty_columns = true
+sync_secs = 30                    # what changed on the board, every 30 s, and 5 s after each change of yours (Jira automations); 0: only on r
 card_fields = ["type", "key", "priority", "labels", "epic", "estimate", "assignee"]
 detail_fields = ["status", "assignee", "reporter", "priority", "sprint", "epic", "labels", "customfield_10016"]  # unset: the fields Jira Cloud's web view shows, in its order, pinned ones first; elsewhere every field the issue fills
 # detail_sections = ["Bug report"]  # rich text fields under the description; unset: the web view's body order, or every one filled

@@ -17,6 +17,9 @@ pub enum Command {
     /// Everything again, ignoring the cache: what `r` does.
     ReloadBoard(Option<BoardId>),
     LoadBoards,
+    /// What changed since the last sync, from the cached board when there
+    /// is one, which is not shown again first.
+    SyncBoard(Option<BoardId>),
     /// The board's running and coming sprints.
     Sprints(kolum_domain::BoardId),
     LoadIssue(IssueKey),
@@ -201,6 +204,10 @@ async fn run(
             fetch_board(provider.as_ref(), cache.as_ref(), id, cached).await
         }
         Command::ReloadBoard(id) => fetch_board(provider.as_ref(), cache.as_ref(), id, None).await,
+        Command::SyncBoard(id) => {
+            let cached = cache.as_ref().and_then(|c| c.load(&cache_key(&id)));
+            fetch_board(provider.as_ref(), cache.as_ref(), id, cached).await
+        }
         Command::Sprints(board) => Event::Sprints(provider.sprints(&board).await),
         Command::LoadBoards => match provider.boards().await {
             Ok(boards) => Event::Boards(boards),
@@ -375,6 +382,27 @@ mod tests {
                 other => panic!("expected a board, got {other:?}"),
             }
         }
+    }
+
+    /// The periodic sync starts from the cache but does not show it again:
+    /// only what came of the sync.
+    #[tokio::test]
+    async fn a_sync_brings_only_what_changed_without_the_cache_first() {
+        use kolum_domain::{IssueUpdate, IssueWriter};
+        let dir = crate::cache::tests::temp_dir("service-sync");
+        let fake = Arc::new(FakeProvider::new());
+        let (service, mut events) = Service::spawn(fake.clone(), Some(Cache::new(&dir)));
+        service.send(Command::LoadBoard(None));
+        next_board(&mut events).await;
+        let key = IssueKey::new("ACME-12");
+        let update = IssueUpdate { title: Some("By an automation".into()), ..Default::default() };
+        fake.update(&key, update).await.unwrap();
+        service.send(Command::SyncBoard(None));
+        let (synced, fresh) = next_board(&mut events).await;
+        assert!(fresh, "straight to the synced board, no cached one before it");
+        let title = synced.issues.iter().find(|i| i.key == key).map(|i| i.title.as_str());
+        assert_eq!(title, Some("By an automation"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]

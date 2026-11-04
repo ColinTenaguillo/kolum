@@ -82,6 +82,10 @@ pub enum FieldEntry {
     Field(kolum_domain::EditableField),
 }
 
+/// How long after a change of yours the board syncs: time for Jira's
+/// automations to run on it.
+const AFTER_WRITE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// How often the picker's spinner turns.
 const SPIN: std::time::Duration = std::time::Duration::from_millis(80);
 
@@ -231,6 +235,10 @@ pub struct App {
     help_filter: String,
     /// The sprint field waiting for the board's sprints.
     sprint_for: Option<(IssueKey, kolum_domain::EditableField)>,
+    /// The board as it was asked for: its cache goes by that.
+    board_asked: Option<kolum_domain::BoardId>,
+    /// When the board next syncs on its own.
+    sync_due: Option<Instant>,
     /// The field layout of each project's issue types, by `layout_key`: an
     /// issue opens with its type's before its own arrive.
     layouts: std::collections::BTreeMap<String, kolum_domain::FieldLayout>,
@@ -306,7 +314,9 @@ impl App {
             prompt: None,
             problems,
             message: None,
-            effects: vec![Effect::Send(Command::LoadBoard(settings.board))],
+            effects: vec![Effect::Send(Command::LoadBoard(settings.board.clone()))],
+            board_asked: settings.board.clone(),
+            sync_due: None,
             waker,
             board_cached: false,
             search_id: 0,
@@ -336,7 +346,29 @@ impl App {
     /// times out, a debounced search goes out, or the spinner turns.
     pub fn deadline(&self) -> Option<Instant> {
         let spin = self.picker.as_ref().filter(|p| p.is_loading()).map(|_| self.now + SPIN);
-        [self.resolver.deadline(), self.search_due, spin].into_iter().flatten().min()
+        [self.resolver.deadline(), self.search_due, spin, self.sync_due].into_iter().flatten().min()
+    }
+
+    fn load_board(&mut self, id: kolum_domain::BoardId) {
+        self.board_asked = Some(id.clone());
+        self.effects.push(Effect::Send(Command::LoadBoard(Some(id))));
+    }
+
+    /// The next sync on its own, `sync_secs` from `now`; none at 0.
+    fn next_sync(&self, now: Instant) -> Option<Instant> {
+        let every = self.ui.sync_secs;
+        (every > 0).then(|| now + std::time::Duration::from_secs(every))
+    }
+
+    /// What changed on the board, unless a change of yours is on its way:
+    /// the sync would show the board without it, until it lands.
+    fn sync_board(&mut self, now: Instant) {
+        if self.ledger.pending() > 0 {
+            self.sync_due = Some(now + AFTER_WRITE);
+            return;
+        }
+        self.effects.push(Effect::Send(Command::SyncBoard(self.board_asked.clone())));
+        self.sync_due = self.next_sync(now);
     }
 
     pub fn theme(&self) -> &Theme {
@@ -415,6 +447,9 @@ impl App {
         if self.search_due.is_some_and(|due| now >= due) {
             self.search();
         }
+        if self.sync_due.is_some_and(|due| now >= due) {
+            self.sync_board(now);
+        }
         let (contexts, text) = self.contexts();
         let layers =
             Layers { tables: contexts.iter().map(|&c| self.keymap.table(c)).collect(), text };
@@ -469,6 +504,9 @@ impl App {
             }
             Event::BoardLoaded { snapshot, fresh } => {
                 self.board_cached = !fresh;
+                if fresh && self.sync_due.is_none() {
+                    self.sync_due = self.next_sync(self.now);
+                }
                 if let Some(d) = &mut self.detail
                     && let Some(fresh) = snapshot.issues.iter().find(|i| i.key == d.issue.key)
                 {
@@ -515,6 +553,9 @@ impl App {
             Event::Sprints(result) => self.open_sprint_picker(result),
             Event::Written { op, key, issue } => {
                 self.ledger.settle(op);
+                // Jira's automations act on it now: sync once they have.
+                let soon = Instant::now() + AFTER_WRITE;
+                self.sync_due = Some(self.sync_due.map_or(soon, |due| due.min(soon)));
                 if let (Some(snapshot), Some(issue)) = (&mut self.board.snapshot, issue) {
                     snapshot.merge(vec![*issue]);
                     self.board.clamp();
@@ -1691,7 +1732,7 @@ impl App {
             Pick::Board(id) => {
                 self.close_picker();
                 self.detail = None;
-                self.effects.push(Effect::Send(Command::LoadBoard(Some(id))));
+                self.load_board(id);
             }
             Pick::EditField { key, entry } => {
                 self.close_picker();
@@ -1781,8 +1822,7 @@ impl App {
             "theme" => self.set_theme(arg),
             "board" if arg.is_empty() => self.dispatch(Action::PickerBoards, None),
             "board" => {
-                let id = kolum_domain::BoardId::new(arg);
-                self.effects.push(Effect::Send(Command::LoadBoard(Some(id))));
+                self.load_board(kolum_domain::BoardId::new(arg));
             }
             "jql" => {
                 self.dispatch(Action::PickerRemote, None);

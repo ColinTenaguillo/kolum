@@ -99,6 +99,9 @@ pub struct UiConfig {
     /// Rich text custom fields shown under the description, by id or by
     /// name. Unset: every one the issue fills.
     pub detail_sections: Option<Vec<String>>,
+    /// Seconds between two syncs of what changed on the board, as Jira's
+    /// automations change it; 0 syncs only on `r`.
+    pub sync_secs: u64,
 }
 
 impl Default for UiConfig {
@@ -112,6 +115,7 @@ impl Default for UiConfig {
             card_fields: vec![Type, Key, Priority, Labels, Epic, Estimate, Assignee],
             detail_fields: None,
             detail_sections: None,
+            sync_secs: 30,
         }
     }
 }

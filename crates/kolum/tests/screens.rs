@@ -18,7 +18,8 @@ fn settings() -> Settings {
         theme_name: "dark".into(),
         themes_dir: None,
         theme_overrides: toml::Table::new(),
-        ui: UiConfig::default(),
+        // No sync on its own: deadlines stay the test's to decide.
+        ui: UiConfig { sync_secs: 0, ..UiConfig::default() },
         picker_layout: PickerLayout::Horizontal,
         problems: vec![],
         board: None,
@@ -1038,6 +1039,45 @@ async fn e_falls_back_to_the_description_and_the_status() {
     let shown = screen(&mut app, 140, 40);
     assert!(shown.contains("Status") && shown.contains("Description"), "{shown}");
     assert!(!shown.contains("Due date"), "only what every provider has");
+}
+
+/// The board keeps up with Jira by itself: what changed, every `sync_secs`;
+/// and 5 s after a change of yours, once Jira automations have run on it.
+/// Never while a change of yours is on its way: the sync would undo it.
+#[tokio::test]
+async fn the_board_syncs_by_itself_and_soon_after_a_change() {
+    use std::time::Duration;
+    // The board as it was asked for: the provider's first here.
+    let sync = Effect::Send(Command::SyncBoard(None));
+    assert_eq!(loaded().await.deadline(), None, "sync_secs = 0: none on its own");
+
+    let mut settings = settings();
+    settings.ui.sync_secs = 30;
+    let start = Instant::now();
+    let mut app = loaded_with(settings).await;
+    let due = app.deadline().expect("the next sync");
+    assert!(due >= start + Duration::from_secs(29), "in 30 s");
+    wait_until(&mut app, due);
+    assert_eq!(app.take_effects(), std::slice::from_ref(&sync));
+
+    press(&mut app, "<Space>A"); // assign the card to me: on its way
+    let (op, key, _) = writes(app.take_effects()).remove(0);
+    let due = app.deadline().unwrap();
+    wait_until(&mut app, due);
+    assert!(!app.take_effects().contains(&sync), "not while the write is on its way");
+    let saved = Instant::now();
+    app.on_event(Event::Written { op, key: IssueKey::new(&key), issue: None });
+    let due = app.deadline().unwrap();
+    assert!(due <= saved + Duration::from_secs(6), "soon after Jira has it");
+    wait_until(&mut app, due);
+    assert!(app.take_effects().contains(&sync));
+
+    press(&mut app, ":board 7<CR>");
+    app.on_event(Event::Written { op: 99, key: IssueKey::new("ACME-5"), issue: None });
+    let due = app.deadline().unwrap();
+    wait_until(&mut app, due);
+    let seven = Effect::Send(Command::SyncBoard(Some(kolum_domain::BoardId::new("7"))));
+    assert!(app.take_effects().contains(&seven), "the board asked for since");
 }
 
 #[tokio::test]
