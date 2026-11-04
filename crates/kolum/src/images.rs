@@ -41,6 +41,8 @@ pub fn known_to_answer(env: impl Fn(&str) -> Option<String>) -> bool {
     set("KITTY_WINDOW_ID")
         || set("WEZTERM_EXECUTABLE")
         || set("GHOSTTY_RESOURCES_DIR")
+        // Upstream answers without a protocol; forks with sixel name it.
+        || set("ALACRITTY_WINDOW_ID")
         || ["kitty", "ghostty", "wezterm", "foot"].iter().any(|t| term.contains(t))
         || ["iTerm.app", "WezTerm", "ghostty"].contains(&program.as_str())
 }
@@ -119,6 +121,8 @@ mod tests {
         assert!(with(&[("TERM", "xterm-ghostty")]));
         assert!(with(&[("TERM_PROGRAM", "iTerm.app")]));
         assert!(with(&[("TERM", "foot")]));
+        // Alacritty keeps TERM as xterm's; a build with sixel says so when asked.
+        assert!(with(&[("TERM", "xterm-256color"), ("ALACRITTY_WINDOW_ID", "94371842")]));
         assert!(!with(&[("TERM", "xterm-256color")]), "unknown: half blocks, no query");
         assert!(!with(&[("TERM_PROGRAM", "Apple_Terminal")]));
         assert!(!with(&[]));
