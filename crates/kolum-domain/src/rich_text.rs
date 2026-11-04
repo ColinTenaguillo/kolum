@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RichText {
     pub blocks: Vec<Block>,
+    /// Read from a richer format with something this one cannot hold (an
+    /// image, a colour, an expand): written back, it would be lost.
+    #[serde(default)]
+    pub lossy: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -326,7 +330,7 @@ mod markdown {
             b.event(event);
         }
         b.flush();
-        RichText { blocks: b.blocks.pop().unwrap_or_default() }
+        RichText { blocks: b.blocks.pop().unwrap_or_default(), lossy: false }
     }
 
     impl Builder {
@@ -654,7 +658,7 @@ mod tests {
                 other => other.clone(),
             }
         }
-        RichText { blocks: rt.blocks.iter().map(blk).collect() }
+        RichText { blocks: rt.blocks.iter().map(blk).collect(), lossy: rt.lossy }
     }
 
     #[test]

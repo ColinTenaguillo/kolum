@@ -9,7 +9,37 @@ use kolum_domain::rich_text::{Block, Inline, Marks, PanelKind, RichText};
 use serde_json::{Value, json};
 
 pub fn to_rich_text(doc: &Value) -> RichText {
-    RichText { blocks: blocks(children(doc)) }
+    RichText { blocks: blocks(children(doc)), lossy: !faithful(doc) }
+}
+
+/// Whether every node and mark has a counterpart in RichText, so that the
+/// text can be written back without losing anything.
+fn faithful(node: &Value) -> bool {
+    const NODES: [&str; 18] = [
+        "doc",
+        "paragraph",
+        "heading",
+        "bulletList",
+        "orderedList",
+        "listItem",
+        "codeBlock",
+        "blockquote",
+        "panel",
+        "rule",
+        "table",
+        "tableRow",
+        "tableHeader",
+        "tableCell",
+        "text",
+        "hardBreak",
+        "mention",
+        "emoji",
+    ];
+    const MARKS: [&str; 5] = ["strong", "em", "code", "strike", "link"];
+    let marks = node.get("marks").and_then(Value::as_array).into_iter().flatten();
+    NODES.contains(&kind(node))
+        && marks.into_iter().all(|m| MARKS.contains(&kind(m)))
+        && children(node).iter().all(faithful)
 }
 
 fn children(node: &Value) -> &[Value] {
@@ -297,8 +327,30 @@ mod tests {
             .collect();
         let rt = RichText::from_markdown(&format!("{panels}```\n```\n\n:tada: in text"));
         assert_eq!(to_rich_text(&from_rich_text(&rt)), rt);
-        let emoji = RichText { blocks: vec![Block::Paragraph(vec![Inline::Emoji("🎉".into())])] };
+        let emoji = RichText {
+            blocks: vec![Block::Paragraph(vec![Inline::Emoji("🎉".into())])],
+            lossy: false,
+        };
         assert_eq!(to_rich_text(&from_rich_text(&emoji)), emoji);
+    }
+
+    #[test]
+    fn what_adf_had_to_flatten_is_flagged() {
+        let kept = RichText::from_markdown(
+            "**hi** [@Ana](mention:u2)\n\n> [!NOTE]\n> n\n\n| a |\n|---|\n| 1 |",
+        );
+        assert!(!to_rich_text(&from_rich_text(&kept)).lossy, "what kolum writes reads back whole");
+        let para = |inline: Value| json!({"type": "doc", "content": [{"type": "paragraph", "content": [inline]}]});
+        let flattened = [
+            json!({"type": "doc", "content": [{"type": "mediaSingle", "content": [{"type": "media"}]}]}),
+            json!({"type": "doc", "content": [{"type": "expand", "attrs": {"title": "More"}}]}),
+            para(json!({"type": "text", "text": "red", "marks": [{"type": "textColor"}]})),
+            para(json!({"type": "status", "attrs": {"text": "done"}})),
+            json!({"type": "doc", "content": [{"type": "paragraph", "marks": [{"type": "alignment"}]}]}),
+        ];
+        for doc in flattened {
+            assert!(to_rich_text(&doc).lossy, "{doc}");
+        }
     }
 
     #[test]

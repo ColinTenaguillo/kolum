@@ -192,7 +192,7 @@ fn wikitext(text: &str) -> RichText {
         .filter(|p| !p.trim().is_empty())
         .map(|p| rich_text::Block::Paragraph(vec![rich_text::Inline::text(p.trim())]))
         .collect();
-    RichText { blocks }
+    RichText { blocks, lossy: false }
 }
 
 fn field_value(value: &Value) -> Option<FieldValue> {
