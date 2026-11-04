@@ -229,14 +229,23 @@ pub struct ActivityEntry {
     pub changes: Vec<FieldChange>,
 }
 
-/// Which fields the provider's own issue view shows, in its order.
+/// Which fields the provider's own issue view shows, in its order: the
+/// same for every issue of a type in a project.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FieldLayout {
-    /// Beside the issue: what the user pinned, then the details; each with
-    /// the name the provider's view gives it.
-    pub side: Vec<(FieldId, String)>,
+    /// Beside the issue: what the user pinned, then the details.
+    pub side: Vec<LayoutField>,
     /// Under the title: the rich text fields, the description among them.
     pub body: Vec<FieldId>,
+}
+
+/// A field beside the issue, with the name the provider's view gives it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayoutField {
+    pub id: FieldId,
+    pub name: String,
+    /// Shown only once the issue holds something in it.
+    pub only_filled: bool,
 }
 
 /// A field kolum may set on an issue, as the provider describes it.

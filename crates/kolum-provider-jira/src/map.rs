@@ -94,8 +94,8 @@ pub fn field_json(
 }
 
 /// The web issue view's layout, from the GraphQL answer to `LAYOUT_QUERY`:
-/// the pinned fields, the details (shown even empty) and the others once
-/// filled beside the issue; the body's fields in their order.
+/// the pinned fields, the details (shown even empty) and the others, shown
+/// once filled, beside the issue; the body's fields in their order.
 /// Fields kolum has a name for go by that name, as `detail_fields` does.
 pub fn field_layout(response: &Value, known: &FieldIds) -> Result<FieldLayout> {
     if let Some(message) = response.pointer("/errors/0/message").and_then(Value::as_str) {
@@ -113,7 +113,7 @@ pub fn field_layout(response: &Value, known: &FieldIds) -> Result<FieldLayout> {
         .as_array()
         .map(Vec::as_slice)
         .unwrap_or_default();
-    let nodes = |kind: &str| -> Vec<(FieldId, bool, String, String)> {
+    let nodes = |kind: &str| -> Vec<(FieldId, String, String)> {
         let found = containers.iter().find(|c| c["containerType"] == kind);
         let edges = found.and_then(|c| c["fields"]["edges"].as_array());
         edges
@@ -123,7 +123,7 @@ pub fn field_layout(response: &Value, known: &FieldIds) -> Result<FieldLayout> {
                 let node = &e["node"];
                 let id = FieldId::new(node["fieldId"].as_str()?);
                 let text = |key: &str| node[key].as_str().unwrap_or("").to_string();
-                Some((id, node["hasValue"] == true, text("type"), text("name")))
+                Some((id, text("type"), text("name")))
             })
             .collect()
     };
@@ -131,24 +131,22 @@ pub fn field_layout(response: &Value, known: &FieldIds) -> Result<FieldLayout> {
     // A pinned field is named where the layout lists it.
     let name_of = |id: &FieldId| {
         let listed = primary.iter().chain(&secondary).find(|n| &n.0 == id);
-        listed.map_or_else(|| id.to_string(), |n| n.3.clone())
+        listed.map_or_else(|| id.to_string(), |n| n.2.clone())
     };
-    let mut side: Vec<(FieldId, String)> = vec![];
-    let mut add = |id: &FieldId, name: String| {
+    let mut side: Vec<LayoutField> = vec![];
+    let mut add = |id: &FieldId, name: String, only_filled: bool| {
         let id = kolum_name(id, known);
-        if !side.iter().any(|(listed, _)| *listed == id) {
-            side.push((id, name));
+        if !side.iter().any(|f| f.id == id) {
+            side.push(LayoutField { id, name, only_filled });
         }
     };
-    pinned.iter().for_each(|id| add(id, name_of(id)));
-    for (id, filled, kind, name) in &primary {
+    pinned.iter().for_each(|id| add(id, name_of(id), false));
+    for (id, kind, name) in &primary {
         // The web hides the old Advanced Roadmaps Parent Link while it is
         // empty, though the layout lists it; seen, not documented.
-        if *filled || kind != "com.atlassian.jpo:jpo-custom-field-parent" {
-            add(id, name.clone());
-        }
+        add(id, name.clone(), kind == "com.atlassian.jpo:jpo-custom-field-parent");
     }
-    secondary.iter().filter(|n| n.1).for_each(|n| add(&n.0, n.3.clone()));
+    secondary.iter().for_each(|(id, _, name)| add(id, name.clone(), true));
     let body = nodes("CONTENT").into_iter().map(|n| n.0).collect();
     Ok(FieldLayout { side, body })
 }

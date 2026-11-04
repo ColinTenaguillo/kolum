@@ -41,7 +41,7 @@ pub struct JiraProvider {
 
 /// The web issue view's field layout for one issue, and the fields its
 /// user pinned in the project: Atlassian's GraphQL, the only place they are.
-const LAYOUT_QUERY: &str = "query KolumFieldLayout($cloudId: ID!, $key: String!, $project: String!) { jira { issueByKey(key: $key, cloudId: $cloudId) { fieldsByContainerTypes(containerTypes: [CONTENT, PRIMARY, SECONDARY]) @optIn(to: \"JiraIssueFieldsByContainerTypes\") { ... on JiraIssueFieldsByContainerTypes { containerFields { containerType fields { edges { node { fieldId name type hasValue } } } } } ... on QueryError { message } } } userPreferences(cloudId: $cloudId) { issueViewPinnedFields(projectKey: $project) } } }";
+const LAYOUT_QUERY: &str = "query KolumFieldLayout($cloudId: ID!, $key: String!, $project: String!) { jira { issueByKey(key: $key, cloudId: $cloudId) { fieldsByContainerTypes(containerTypes: [CONTENT, PRIMARY, SECONDARY]) @optIn(to: \"JiraIssueFieldsByContainerTypes\") { ... on JiraIssueFieldsByContainerTypes { containerFields { containerType fields { edges { node { fieldId name type } } } } } ... on QueryError { message } } } userPreferences(cloudId: $cloudId) { issueViewPinnedFields(projectKey: $project) } } }";
 
 impl JiraProvider {
     pub fn new(settings: JiraSettings) -> Self {

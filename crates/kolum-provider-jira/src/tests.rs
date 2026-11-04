@@ -137,30 +137,38 @@ fn the_editable_fields_say_how_each_is_edited() {
     assert_eq!(fields[0].id, FieldId::new("assignee"));
 }
 
-/// The web's issue view: pinned fields first, the details shown even
-/// empty, the others only once filled; the body's rich text in its order.
+/// The web's issue view, the same for every issue of a type: pinned fields
+/// first, the details shown even empty, the others only once filled; the
+/// body's rich text in its order.
 #[test]
 fn the_field_layout_is_the_web_issue_view() {
     let response: serde_json::Value = serde_json::from_str(fixture!("field_layout.json")).unwrap();
     let layout = map::field_layout(&response, &ctx().fields).unwrap();
     let ids = |v: &[FieldId]| v.iter().map(|f| f.as_str().to_string()).collect::<Vec<_>>();
-    let side: Vec<FieldId> = layout.side.iter().map(|(id, _)| id.clone()).collect();
-    let names: Vec<&str> = layout.side.iter().map(|(_, name)| name.as_str()).collect();
+    let side: Vec<String> = layout
+        .side
+        .iter()
+        .map(|f| format!("{}{}", f.id, if f.only_filled { "?" } else { "" }))
+        .collect();
+    let names: Vec<&str> = layout.side.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names[..4], ["Due date", "Assignee", "Reviewer", "Labels"], "as the web names them");
     // In kolum's names where it has one, so it reads like `detail_fields`;
-    // the old Epic Link says the same as Parent, once is enough.
+    // the old Epic Link says the same as Parent, once is enough. `?`: only
+    // once filled, as the web hides the old Parent Link while it is empty.
     assert_eq!(
-        ids(&side),
+        side,
         [
             "due",
             "assignee",
             "customfield_10070",
             "labels",
+            "customfield_10099?",
             "epic",
             "estimate",
             "sprint",
-            "priority",
-            "reporter"
+            "fixVersions?",
+            "priority?",
+            "reporter?"
         ]
     );
     assert_eq!(ids(&layout.body), ["customfield_10080", "description"]);
@@ -539,7 +547,7 @@ async fn the_provider_reads_an_issue_its_comments_and_history() {
     assert_eq!(history[0].changes[0].to.as_deref(), Some("In Progress"));
     assert_eq!(history.len(), 2);
     let layout = p.field_layout(&key).await.unwrap();
-    assert_eq!(layout.side[0], (FieldId::new("due"), "Due date".to_string()));
+    assert_eq!((layout.side[0].id.as_str(), layout.side[0].name.as_str()), ("due", "Due date"));
     let asked = jira.seen.lock().unwrap().iter().find(|r| r.contains("graphql")).cloned().unwrap();
     assert!(
         asked.contains(r#""cloudId":"cloud-1""#) && asked.contains(r#""project":"ACME""#),

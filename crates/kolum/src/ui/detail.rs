@@ -400,17 +400,47 @@ fn field_names(
     // The web shows the status apart, above its fields; here it heads them.
     if let Some(layout) = layout {
         return std::iter::once(("status".to_string(), None))
-            .chain(layout.side.iter().map(|(id, name)| (id.to_string(), Some(name.clone()))))
+            .chain(
+                layout
+                    .side
+                    .iter()
+                    .filter(|f| !f.only_filled || filled(issue, f.id.as_str()))
+                    .map(|f| (f.id.to_string(), Some(f.name.clone()))),
+            )
             .collect();
     }
-    let custom = issue.fields.iter().filter(|f| match &f.value {
-        FieldValue::RichText(_) => false,
-        FieldValue::Text(t) => !t.is_empty(),
-        FieldValue::Options(o) => !o.is_empty(),
-        _ => true,
-    });
+    let custom = issue
+        .fields
+        .iter()
+        .filter(|f| !matches!(f.value, FieldValue::RichText(_)) && !blank(&f.value));
     let builtin = BUILTIN_FIELDS.map(String::from).into_iter();
     builtin.chain(custom.map(|f| f.id.to_string())).map(|n| (n, None)).collect()
+}
+
+/// Whether the issue holds something in a field: by kolum's name for the
+/// ones it reads into the issue itself, by id or name for the others.
+fn filled(issue: &Issue, field: &str) -> bool {
+    match field {
+        "status" | "created" | "updated" => true,
+        "assignee" => issue.assignee.is_some(),
+        "reporter" => issue.reporter.is_some(),
+        "priority" => issue.priority.is_some(),
+        "labels" => !issue.labels.is_empty(),
+        "due" => issue.due.is_some(),
+        "epic" => issue.parent.is_some(),
+        "estimate" => issue.estimate.is_some(),
+        "sprint" => issue.sprint.is_some(),
+        other => find_field(issue, other).is_some_and(|f| !blank(&f.value)),
+    }
+}
+
+fn blank(value: &FieldValue) -> bool {
+    match value {
+        FieldValue::Text(t) => t.is_empty(),
+        FieldValue::Options(o) => o.is_empty(),
+        FieldValue::RichText(t) => t.is_empty(),
+        _ => false,
+    }
 }
 
 /// A custom field by id (`customfield_10016`) or by name, in any case.

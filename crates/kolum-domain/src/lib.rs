@@ -18,7 +18,7 @@ pub use ids::{BoardId, FieldId, IssueId, IssueKey, StatusId, TransitionId, UserI
 pub use issue::{
     ActivityEntry, Attachment, Comment, CustomField, EditableField, Estimate, FieldChange,
     FieldKind, FieldLayout, FieldValue, Issue, IssueKind, IssueLink, IssueRef, IssueType,
-    IssueUpdate, NewIssue, Priority, Sprint, Status, StatusCategory, Transition, User,
+    IssueUpdate, LayoutField, NewIssue, Priority, Sprint, Status, StatusCategory, Transition, User,
 };
 pub use ports::{
     BoardSource, Capabilities, Capability, IssueReader, IssueSearch, IssueWriter, Page, PageToken,

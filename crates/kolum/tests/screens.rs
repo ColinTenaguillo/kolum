@@ -393,9 +393,12 @@ async fn the_detail_follows_the_providers_layout() {
         issue.due = Some(time::macros::date!(2026 - 12 - 01));
         let ids = |ids: &[&str]| ids.iter().map(|id| kolum_domain::FieldId::new(*id)).collect();
         let named = |rows: &[(&str, &str)]| {
-            rows.iter()
-                .map(|(id, name)| (kolum_domain::FieldId::new(*id), name.to_string()))
-                .collect()
+            let field = |(id, name): &(&str, &str)| kolum_domain::LayoutField {
+                id: kolum_domain::FieldId::new(id.trim_end_matches('?')),
+                name: name.to_string(),
+                only_filled: id.ends_with('?'),
+            };
+            rows.iter().map(field).collect()
         };
         let layout = kolum_domain::FieldLayout {
             side: named(&[
@@ -406,7 +409,8 @@ async fn the_detail_follows_the_providers_layout() {
                 ("labels", "Labels"),
                 ("epic", "Parent"),
                 ("estimate", "Story Points"),
-                ("priority", "Priority"),
+                ("customfield_10060?", "Platforms"),
+                ("priority?", "Priority"),
             ]),
             body: ids(&["customfield_10030", "description"]),
         };
@@ -432,6 +436,7 @@ async fn the_detail_follows_the_providers_layout() {
     assert!(places.is_sorted(), "{side:?} in this order: {shown}");
     assert!(!shown.contains("Reporter") && !shown.contains("Updated"), "only the layout's");
     assert!(!shown.contains("customfield_"), "an empty field goes by its name too: {shown}");
+    assert!(!shown.contains("Platforms"), "shown only once filled, and it is empty");
     assert!(at("── Acceptance criteria") < at("── Description"), "the body's order");
 
     let mut settings = settings();
