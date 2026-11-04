@@ -1270,3 +1270,17 @@ async fn with_swimlanes_a_card_stays_in_its_lane() {
     assert!(app.take_effects().is_empty(), "the next card is in another lane");
     assert!(screen(&mut app, 160, 40).contains("Already at the bottom of its lane"));
 }
+
+#[tokio::test]
+async fn the_command_line_cursor_sits_after_what_was_typed() {
+    let mut app = loaded().await;
+    for (keys, after) in [(":ab", 3), ("<Left>", 2), ("<Esc>/x", 2)] {
+        press(&mut app, keys);
+        let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let last = terminal.backend().buffer().content.chunks(80).last().unwrap();
+        let lead = last.iter().position(|c| c.symbol() == ":" || c.symbol() == "/").unwrap();
+        let cursor = terminal.get_cursor_position().unwrap();
+        assert_eq!((cursor.x, cursor.y), (lead as u16 + after, 9), "after {keys}");
+    }
+}

@@ -31,6 +31,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::time::Instant;
+use text::width;
 
 /// What the event loop does on the app's behalf.
 #[derive(Debug, Clone, PartialEq)]
@@ -1433,12 +1434,11 @@ impl App {
         ];
         if let Some(prompt) = &self.prompt {
             let lead = if prompt.kind == PromptKind::Command { ":" } else { "/" };
-            let x = area.x
-                + 1
-                + mode.len() as u16
-                + 2
-                + prompt.input.text()[..].chars().take(prompt.input.cursor()).count() as u16;
-            left.push(Span::raw(format!("{lead}{}", prompt.input.text())));
+            let text = prompt.input.text();
+            let typed: String = text.chars().take(prompt.input.cursor()).collect();
+            let x =
+                area.x + (Line::from(left.clone()).width() + width(lead) + width(&typed)) as u16;
+            left.push(Span::raw(format!("{lead}{text}")));
             frame.set_cursor_position((x, area.y));
         } else if let Some((text, level)) = &self.message {
             let color = match level {
