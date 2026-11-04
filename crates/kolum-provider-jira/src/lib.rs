@@ -81,6 +81,7 @@ impl JiraProvider {
                     base_url: self.settings.base_url.clone(),
                     fields: map::detect_fields(&fields, &self.settings.fields),
                     names: map::custom_names(&fields),
+                    schemas: map::schemas(&fields),
                 })
             })
             .await
@@ -338,8 +339,18 @@ impl IssueWriter for JiraProvider {
         if let Some(priority) = update.priority {
             fields.insert("priority".into(), json!({ "name": priority.name() }));
         }
-        for (id, text) in &update.rich_fields {
-            fields.insert(id.to_string(), self.rich(text));
+        let ctx = self.ctx().await?;
+        let user_key = match self.settings.flavor {
+            JiraFlavor::Cloud => "accountId",
+            JiraFlavor::DataCenter => "name",
+        };
+        for (id, value) in &update.fields {
+            let schema = ctx
+                .schemas
+                .get(id.as_str())
+                .ok_or_else(|| DomainError::Transport(format!("Jira lists no field {id}")))?;
+            let rich = |t: &RichText| self.rich(t);
+            fields.insert(id.to_string(), map::field_json(schema, value.as_ref(), user_key, &rich));
         }
         if fields.is_empty() {
             return Ok(());

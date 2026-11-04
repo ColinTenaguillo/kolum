@@ -719,7 +719,7 @@ async fn one_field_is_edited_at_a_time() {
     app.on_edited(purpose, Ok(text.replacen("refresh", "rotate", 1)));
     let rotate = RichText::from_markdown("- Tokens rotate before they expire");
     let update = IssueUpdate {
-        rich_fields: vec![(FieldId::new("customfield_10030"), rotate)],
+        fields: vec![(FieldId::new("customfield_10030"), Some(FieldValue::RichText(rotate)))],
         ..Default::default()
     };
     let sent = writes(app.take_effects());
@@ -758,7 +758,7 @@ async fn one_field_is_edited_at_a_time() {
     let Some((_, _, kolum_app::Write::Update(update))) = writes(app.take_effects()).pop() else {
         panic!()
     };
-    assert_eq!((update.title, update.rich_fields), (None, vec![]), "the description alone");
+    assert_eq!((update.title, update.fields), (None, vec![]), "the description alone");
     assert!(update.description.unwrap().plain_text().starts_with("Rewritten"));
 }
 

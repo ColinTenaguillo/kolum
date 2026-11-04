@@ -5,7 +5,7 @@ use crate::adf;
 use crate::dto::*;
 use kolum_domain::*;
 use serde::de::DeserializeOwned;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use time::OffsetDateTime;
 
@@ -26,6 +26,8 @@ pub struct Ctx {
     pub fields: FieldIds,
     /// Custom field names by id, for the detail's right-hand column.
     pub names: BTreeMap<String, String>,
+    /// Every field's schema by id: how it takes a value.
+    pub schemas: BTreeMap<String, FieldSchemaDto>,
 }
 
 const ESTIMATE_NAMES: &[&str] = &["Story Points", "Story point estimate"];
@@ -56,6 +58,43 @@ pub fn detect_fields(fields: &[FieldDto], forced: &FieldIds) -> FieldIds {
         sprint: forced.sprint.clone().or_else(|| by_schema(":gh-sprint")),
         epic_link: forced.epic_link.clone().or_else(|| by_schema(":gh-epic-link")),
     }
+}
+
+/// How Jira takes `value` in a field of this schema: an option as
+/// `{"value"}`, a version or a priority as `{"name"}`, a user by
+/// `user_key`, rich text as `rich` writes it. `None` empties the field.
+pub fn field_json(
+    schema: &FieldSchemaDto,
+    value: Option<&FieldValue>,
+    user_key: &str,
+    rich: &dyn Fn(&RichText) -> Value,
+) -> Value {
+    let one = |kind: &str, v: &str| match kind {
+        "option" => json!({ "value": v }),
+        "priority" | "version" | "component" => json!({ "name": v }),
+        "issuelink" => json!({ "key": v }),
+        _ => json!(v),
+    };
+    let Some(value) = value else {
+        return if schema.kind == "array" { json!([]) } else { Value::Null };
+    };
+    match value {
+        FieldValue::Text(t) => one(&schema.kind, t),
+        FieldValue::Options(all) => {
+            let item = schema.items.as_deref().unwrap_or("string");
+            Value::Array(all.iter().map(|v| one(item, v)).collect())
+        }
+        // A sprint id, a count of points: whole numbers stay whole.
+        FieldValue::Number(n) if n.fract() == 0.0 => json!(*n as i64),
+        FieldValue::Number(n) => json!(n),
+        FieldValue::Date(d) => json!(d.to_string()),
+        FieldValue::User(u) => json!({ user_key: u.id.as_str() }),
+        FieldValue::RichText(t) => rich(t),
+    }
+}
+
+pub fn schemas(fields: &[FieldDto]) -> BTreeMap<String, FieldSchemaDto> {
+    fields.iter().filter_map(|f| Some((f.id.clone(), f.schema.clone()?))).collect()
 }
 
 pub fn custom_names(fields: &[FieldDto]) -> BTreeMap<String, String> {

@@ -599,7 +599,7 @@ impl IssueWriter for GithubProvider {
     /// The title and the body. Labels and priority live elsewhere on
     /// GitHub (label ids, a project field) and are refused for now.
     async fn update(&self, key: &IssueKey, update: IssueUpdate) -> Result<()> {
-        if update.labels.is_some() || update.priority.is_some() || !update.rich_fields.is_empty() {
+        if update.labels.is_some() || update.priority.is_some() || !update.fields.is_empty() {
             return Err(DomainError::Unsupported(Capability::CustomFields));
         }
         if update.title.is_none() && update.description.is_none() {

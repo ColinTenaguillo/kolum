@@ -19,12 +19,86 @@ fn ctx() -> Ctx {
         base_url: "https://acme.atlassian.net".into(),
         fields: map::detect_fields(&fields, &map::FieldIds::default()),
         names: map::custom_names(&fields),
+        schemas: map::schemas(&fields),
     }
 }
 
 fn issues() -> Vec<Issue> {
     let page: OffsetPage = serde_json::from_str(fixture!("board_issues.json")).unwrap();
     page.issues.iter().map(|i| map::issue(i, &ctx()).unwrap()).collect()
+}
+
+/// Each field type takes its value in its own shape; `None` empties it.
+#[test]
+fn a_value_is_written_in_the_shape_its_field_takes() {
+    use serde_json::json;
+    let schema = |kind: &str, items: Option<&str>, custom: Option<&str>| dto::FieldSchemaDto {
+        kind: kind.into(),
+        items: items.map(String::from),
+        custom: custom.map(String::from),
+    };
+    let rich = |t: &RichText| json!({ "adf": t.plain_text() });
+    let ana = User { id: UserId::new("557058:ana"), display_name: "Ana".into(), avatar_url: None };
+    let words = |w: &[&str]| FieldValue::Options(w.iter().map(|s| s.to_string()).collect());
+    let date = time::macros::date!(2026 - 11 - 30);
+    let cases = [
+        (
+            schema("option", None, None),
+            Some(FieldValue::Text("Mobile".into())),
+            json!({"value": "Mobile"}),
+        ),
+        (
+            schema("array", Some("option"), None),
+            Some(words(&["a", "b"])),
+            json!([{"value": "a"}, {"value": "b"}]),
+        ),
+        (schema("array", Some("string"), None), Some(words(&["x"])), json!(["x"])),
+        (
+            schema("array", Some("version"), None),
+            Some(words(&["3.1.0"])),
+            json!([{"name": "3.1.0"}]),
+        ),
+        (schema("array", Some("component"), None), Some(words(&["api"])), json!([{"name": "api"}])),
+        (
+            schema("priority", None, None),
+            Some(FieldValue::Text("High".into())),
+            json!({"name": "High"}),
+        ),
+        (
+            schema("user", None, None),
+            Some(FieldValue::User(ana)),
+            json!({"accountId": "557058:ana"}),
+        ),
+        (schema("number", None, None), Some(FieldValue::Number(3.5)), json!(3.5)),
+        (schema("date", None, None), Some(FieldValue::Date(date)), json!("2026-11-30")),
+        (
+            schema("string", None, None),
+            Some(FieldValue::RichText(RichText::from_markdown("hi"))),
+            json!({"adf": "hi"}),
+        ),
+        (schema("string", None, None), Some(FieldValue::Text("x".into())), json!("x")),
+        (
+            schema("issuelink", None, None),
+            Some(FieldValue::Text("IC-1".into())),
+            json!({"key": "IC-1"}),
+        ),
+        (
+            schema("any", None, Some("com.pyxis.greenhopper.jira:gh-epic-link")),
+            Some(FieldValue::Text("IC-1".into())),
+            json!("IC-1"),
+        ),
+        (
+            schema("array", Some("json"), Some("com.pyxis.greenhopper.jira:gh-sprint")),
+            Some(FieldValue::Number(42.0)),
+            json!(42),
+        ),
+        (schema("array", Some("option"), None), None, json!([])),
+        (schema("option", None, None), None, json!(null)),
+    ];
+    for (schema, value, wanted) in cases {
+        let got = map::field_json(&schema, value.as_ref(), "accountId", &rich);
+        assert_eq!(got, wanted, "{schema:?} {value:?}");
+    }
 }
 
 #[test]
@@ -469,13 +543,19 @@ async fn writes_send_what_jira_expects() {
         priority: Some(Priority::High),
         labels: Some(vec!["a".into()]),
         description: None,
-        rich_fields: vec![(
-            FieldId::new("customfield_10674"),
-            RichText::from_markdown("Seen in CI"),
-        )],
+        fields: vec![
+            (FieldId::new("customfield_10050"), Some(FieldValue::Text("Mobile".into()))),
+            (FieldId::new("customfield_10060"), None),
+        ],
     };
     p.update(&key, update).await.unwrap();
     p.update(&key, IssueUpdate::default()).await.unwrap();
+    let unknown =
+        IssueUpdate { fields: vec![(FieldId::new("customfield_9"), None)], ..Default::default() };
+    assert_eq!(
+        p.update(&key, unknown).await,
+        Err(DomainError::Transport("Jira lists no field customfield_9".into()))
+    );
 
     use serde_json::json;
     let posts = sent(&jira, "POST");
@@ -498,12 +578,12 @@ async fn writes_send_what_jira_expects() {
         parts(&puts[1]),
         ("PUT /rest/api/3/issue/ACME-5/assignee", json!({"accountId": null}))
     );
-    let report = adf::from_rich_text(&RichText::from_markdown("Seen in CI"));
     let fields = json!({"fields": {
         "summary": "New title",
         "priority": {"name": "High"},
         "labels": ["a"],
-        "customfield_10674": report,
+        "customfield_10050": {"value": "Mobile"},
+        "customfield_10060": [],
     }});
     assert_eq!(parts(&puts[2]), ("PUT /rest/api/3/issue/ACME-5", fields));
     assert_eq!(puts.len(), 3, "an empty update sends nothing");

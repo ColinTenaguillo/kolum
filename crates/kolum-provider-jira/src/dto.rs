@@ -193,10 +193,13 @@ pub struct FieldDto {
     pub schema: Option<FieldSchemaDto>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct FieldSchemaDto {
     #[serde(rename = "type")]
     pub kind: String,
+    /// What an array holds: `option`, `string`, `version`, `user`…
+    #[serde(default)]
+    pub items: Option<String>,
     pub custom: Option<String>,
 }
 

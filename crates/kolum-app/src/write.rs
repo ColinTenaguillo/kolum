@@ -218,20 +218,17 @@ mod tests {
         let key = IssueKey::new("ACME-10");
         let text = RichText::from_markdown("- Reviewed by two people");
         let update = IssueUpdate {
-            rich_fields: vec![(FieldId::new("customfield_10030"), text.clone())],
+            fields: vec![
+                (FieldId::new("customfield_10030"), Some(FieldValue::RichText(text.clone()))),
+                (FieldId::new("customfield_10020"), None),
+            ],
             ..Default::default()
         };
         Ledger::default().begin(&mut snapshot, &key, &Change::Update(update));
         let issue = snapshot.issues.iter().find(|i| i.key == key).unwrap();
         let values: Vec<(&str, &FieldValue)> =
             issue.fields.iter().map(|f| (f.id.as_str(), &f.value)).collect();
-        assert_eq!(
-            values,
-            [
-                ("customfield_10020", &FieldValue::Text("Platform".into())),
-                ("customfield_10030", &FieldValue::RichText(text)),
-            ]
-        );
+        assert_eq!(values, [("customfield_10030", &FieldValue::RichText(text))], "Team emptied");
     }
 
     #[tokio::test]
@@ -244,7 +241,7 @@ mod tests {
             labels: Some(vec!["x".into()]),
             priority: Some(kolum_domain::Priority::Lowest),
             description: Some(RichText::from_markdown("d")),
-            rich_fields: vec![],
+            fields: vec![],
         };
         let op = ledger.begin(&mut snapshot, &key, &Change::Update(update));
         ledger.settle(op);

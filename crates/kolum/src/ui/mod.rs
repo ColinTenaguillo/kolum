@@ -1215,7 +1215,8 @@ impl App {
                 kolum_domain::IssueUpdate { description: Some(rich), ..Default::default() }
             }
             EditTarget::Custom(id) => {
-                kolum_domain::IssueUpdate { rich_fields: vec![(id, rich)], ..Default::default() }
+                let value = Some(kolum_domain::FieldValue::RichText(rich));
+                kolum_domain::IssueUpdate { fields: vec![(id, value)], ..Default::default() }
             }
         };
         self.save(key, update);

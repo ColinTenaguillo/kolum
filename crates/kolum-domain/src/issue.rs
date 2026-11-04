@@ -232,8 +232,8 @@ pub struct IssueUpdate {
     pub description: Option<RichText>,
     pub labels: Option<Vec<String>>,
     pub priority: Option<Priority>,
-    /// Rich text custom fields to set, by id.
-    pub rich_fields: Vec<(FieldId, RichText)>,
+    /// Any other field to set, by id; `None` empties it.
+    pub fields: Vec<(FieldId, Option<FieldValue>)>,
 }
 
 impl IssueUpdate {
@@ -252,9 +252,14 @@ impl IssueUpdate {
         if self.priority.is_some() {
             issue.priority = self.priority;
         }
-        for (id, text) in &self.rich_fields {
-            if let Some(field) = issue.fields.iter_mut().find(|f| f.id == *id) {
-                field.value = FieldValue::RichText(text.clone());
+        for (id, value) in &self.fields {
+            match value {
+                Some(value) => {
+                    if let Some(field) = issue.fields.iter_mut().find(|f| f.id == *id) {
+                        field.value = value.clone();
+                    }
+                }
+                None => issue.fields.retain(|f| f.id != *id),
             }
         }
     }

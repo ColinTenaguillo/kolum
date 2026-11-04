@@ -94,7 +94,10 @@ async fn reading_does_not_touch_and_writing_stamps_updated() {
     let criteria = RichText::from_markdown("Exports open in Excel");
     let update = IssueUpdate {
         title: Some("New".into()),
-        rich_fields: vec![(FieldId::new("customfield_10030"), criteria.clone())],
+        fields: vec![(
+            FieldId::new("customfield_10030"),
+            Some(FieldValue::RichText(criteria.clone())),
+        )],
         ..Default::default()
     };
     p.update(&key, update).await.unwrap();
