@@ -158,6 +158,15 @@ impl BoardSource for JiraProvider {
         Ok(map::board(&summary, &config))
     }
 
+    /// shortcut: one page of 50, past which a board has more sprints planned
+    /// than anyone picks from; page like `boards` if that changes.
+    async fn sprints(&self, board: &BoardId) -> Result<Vec<Sprint>> {
+        let query = [("state", "active,future".to_string()), ("maxResults", "50".to_string())];
+        let page: SprintPage =
+            self.client.get(&format!("{AGILE}/board/{board}/sprint"), &query).await?;
+        Ok(page.values.into_iter().map(|s| Sprint { id: s.id.to_string(), name: s.name }).collect())
+    }
+
     async fn board_issues(
         &self,
         id: &BoardId,

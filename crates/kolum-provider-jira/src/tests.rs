@@ -351,6 +351,7 @@ fn route(method: &str, target: &str) -> Option<(&'static str, &'static str)> {
             "/rest/api/3/issue/ACME-5/comment" => fixture!("comments.json"),
             "/rest/api/3/issue/ACME-5/transitions" => fixture!("transitions.json"),
             "/rest/api/3/issue/ACME-5/editmeta" => fixture!("editmeta.json"),
+            "/rest/agile/1.0/board/42/sprint" => fixture!("sprints.json"),
             "/rest/api/3/search/jql" => fixture!("search_jql.json"),
             "/rest/api/3/myself" => fixture!("myself.json"),
             "/rest/api/3/user/search" => fixture!("user_search.json"),
@@ -451,6 +452,14 @@ async fn the_provider_reads_a_board_end_to_end() {
     );
     let board = p.board(&BoardId::new("42")).await.unwrap();
     assert_eq!(board.columns.len(), 4);
+    let sprints = p.sprints(&BoardId::new("42")).await.unwrap();
+    assert_eq!(
+        sprints,
+        [
+            Sprint { id: "14".into(), name: "Sprint 14".into() },
+            Sprint { id: "15".into(), name: "Sprint 15".into() }
+        ]
+    );
     let page = p.board_issues(&BoardId::new("42"), None, None).await.unwrap();
     assert_eq!(page.items.len(), 2);
     assert_eq!(page.next, None, "two of two");
@@ -477,6 +486,7 @@ async fn the_provider_reads_a_board_end_to_end() {
         seen.iter().any(|r| r.contains("jql=updated+%3E%3D+%222026-09-01+09%3A00%22")),
         "{seen:?}"
     );
+    assert!(seen.iter().any(|r| r.contains("/sprint?state=active%2Cfuture")), "{seen:?}");
 }
 
 #[tokio::test]

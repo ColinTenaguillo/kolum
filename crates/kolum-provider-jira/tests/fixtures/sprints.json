@@ -1,0 +1,4 @@
+{"maxResults": 50, "startAt": 0, "isLast": true, "values": [
+  {"id": 14, "state": "active", "name": "Sprint 14", "originBoardId": 42},
+  {"id": 15, "state": "future", "name": "Sprint 15", "originBoardId": 42}
+]}

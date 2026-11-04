@@ -218,6 +218,8 @@ pub struct App {
     search_due: Option<Instant>,
     /// The field the bottom line is typing a value for.
     field_prompt: Option<(IssueKey, kolum_domain::EditableField)>,
+    /// The sprint field waiting for the board's sprints.
+    sprint_for: Option<(IssueKey, kolum_domain::EditableField)>,
     remote_debounce: std::time::Duration,
     /// The time of the key being handled, for the debounce.
     now: Instant,
@@ -296,6 +298,7 @@ impl App {
             search_id: 0,
             search_due: None,
             field_prompt: None,
+            sprint_for: None,
             remote_debounce: settings.remote_debounce,
             now: Instant::now(),
             ledger: kolum_app::Ledger::default(),
@@ -483,6 +486,7 @@ impl App {
             }
             Event::Transitions { key, result } => self.on_transitions(key, result),
             Event::EditableFields { key, result } => self.open_field_picker(key, result),
+            Event::Sprints(result) => self.open_sprint_picker(result),
             Event::Written { op, key, issue } => {
                 self.ledger.settle(op);
                 if let (Some(snapshot), Some(issue)) = (&mut self.board.snapshot, issue) {
@@ -1134,6 +1138,21 @@ impl App {
         self.open_picker(Box::new(Picker::new(source, self.waker.clone())));
     }
 
+    /// The board's sprints for the sprint field `E` picked, and `None` to
+    /// take the issue out of its sprint.
+    fn open_sprint_picker(&mut self, result: kolum_domain::Result<Vec<kolum_domain::Sprint>>) {
+        let Some((key, field)) = self.sprint_for.take() else { return };
+        let sprints = match result {
+            Ok(sprints) => sprints,
+            Err(e) => return self.say(format!("The board's sprints: {e}"), Level::Error),
+        };
+        let mut choices: Vec<Option<kolum_domain::Sprint>> =
+            sprints.into_iter().map(Some).collect();
+        choices.push(None);
+        let source = sources::SprintChoice { key, field, sprints: choices };
+        self.open_picker(Box::new(Picker::new(source, self.waker.clone())));
+    }
+
     /// The editor a field's kind calls for.
     fn edit_field(&mut self, key: IssueKey, entry: FieldEntry) {
         let field = match entry {
@@ -1154,7 +1173,13 @@ impl App {
                 let source = sources::OptionChoice { key, field: field.clone(), options: choices };
                 self.open_picker(Box::new(Picker::new(source, self.waker.clone())));
             }
-            kolum_domain::FieldKind::Sprint => self.unavailable(Action::EditField),
+            kolum_domain::FieldKind::Sprint => {
+                let Some(board) = self.board.snapshot.as_ref().map(|s| s.board.id.clone()) else {
+                    return;
+                };
+                self.effects.push(Effect::Send(Command::Sprints(board)));
+                self.sprint_for = Some((key, field));
+            }
             _ => {
                 let mut input = Input::default();
                 let current = self.full_issue(&key).and_then(|i| current_value(i, &field.id));

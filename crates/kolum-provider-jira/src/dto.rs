@@ -148,6 +148,12 @@ pub struct LinkTypeDto {
     pub outward: String,
 }
 
+/// Agile `/board/{id}/sprint`.
+#[derive(Debug, Deserialize)]
+pub struct SprintPage {
+    pub values: Vec<SprintDto>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SprintDto {
     pub id: u64,

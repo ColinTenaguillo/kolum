@@ -853,7 +853,23 @@ async fn e_edits_every_field_the_issue_lets_set() {
     assert_eq!(updates(&mut app), [IssueUpdate { fields: vec![emptied], ..Default::default() }]);
 
     edit_field(&mut app, "sprint").await;
-    assert!(screen(&mut app, 140, 40).contains("not available yet"));
+    let board = kolum_domain::BoardId::new("1");
+    assert!(app.take_effects().contains(&Effect::Send(Command::Sprints(board.clone()))));
+    let sprints = kolum_domain::BoardSource::sprints(&FakeProvider::new(), &board).await;
+    app.on_event(Event::Sprints(sprints));
+    settle(&mut app);
+    assert!(screen(&mut app, 140, 40).contains("Sprint of ACME-10"));
+    press(&mut app, "15");
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    let sprint = (FieldId::new("customfield_10040"), Some(FieldValue::Number(15.0)));
+    assert_eq!(updates(&mut app), [IssueUpdate { fields: vec![sprint], ..Default::default() }]);
+    let error = kolum_domain::DomainError::Transport("kanban".into());
+    app.on_event(Event::Sprints(Err(error.clone())));
+    assert!(!screen(&mut app, 140, 40).contains("kanban"), "nothing asked for them");
+    edit_field(&mut app, "sprint").await;
+    app.on_event(Event::Sprints(Err(error)));
+    assert!(screen(&mut app, 140, 40).contains("The board's sprints: transport: kanban"));
 
     press(&mut app, "E");
     let key = IssueKey::new("ACME-10");

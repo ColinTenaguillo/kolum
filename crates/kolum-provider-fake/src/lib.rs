@@ -309,6 +309,11 @@ impl BoardSource for FakeProvider {
         }
     }
 
+    async fn sprints(&self, _board: &BoardId) -> Result<Vec<Sprint>> {
+        let sprint = |n: u32| Sprint { id: n.to_string(), name: format!("Sprint {n}") };
+        Ok(vec![sprint(14), sprint(15)])
+    }
+
     async fn board_issues(
         &self,
         id: &BoardId,

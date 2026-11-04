@@ -317,6 +317,42 @@ impl PickerSource for FieldChoice {
     }
 }
 
+/// The board's sprints for a sprint field; `None` takes the issue out.
+pub struct SprintChoice {
+    pub key: kolum_domain::IssueKey,
+    pub field: kolum_domain::EditableField,
+    pub sprints: Vec<Option<kolum_domain::Sprint>>,
+}
+
+impl PickerSource for SprintChoice {
+    type Item = Option<kolum_domain::Sprint>;
+
+    fn title(&self) -> String {
+        format!("{} of {}", self.field.name, self.key)
+    }
+
+    fn candidates(&self, _query: &str) -> Vec<Self::Item> {
+        self.sprints.clone()
+    }
+
+    fn haystack(&self, sprint: &Self::Item) -> String {
+        sprint.as_ref().map_or("None".into(), |s| s.name.clone())
+    }
+
+    /// Jira takes a sprint by its number.
+    fn act(&self, sprints: &[Self::Item], action: Action) -> Option<Pick> {
+        use kolum_domain::FieldValue;
+        (action == Action::Confirm).then(|| Pick::SetField {
+            key: self.key.clone(),
+            field: self.field.clone(),
+            value: sprints[0].as_ref().map(|s| match s.id.parse() {
+                Ok(n) => FieldValue::Number(n),
+                Err(_) => FieldValue::Text(s.id.clone()),
+            }),
+        })
+    }
+}
+
 /// The values a choice field allows, and `None` to empty it when it may
 /// be empty. Tab marks several for a field that takes many.
 pub struct OptionChoice {

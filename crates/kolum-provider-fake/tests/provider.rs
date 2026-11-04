@@ -269,3 +269,10 @@ async fn the_fake_says_which_fields_can_be_set() {
         fields.iter().any(|f| f.kind == FieldKind::RichText && f.name == "Acceptance criteria")
     );
 }
+
+#[tokio::test]
+async fn the_fake_board_has_a_sprint_running_and_one_to_come() {
+    let sprints = FakeProvider::new().sprints(&BoardId::new("1")).await.unwrap();
+    let names: Vec<&str> = sprints.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Sprint 14", "Sprint 15"]);
+}

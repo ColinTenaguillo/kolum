@@ -17,6 +17,8 @@ pub enum Command {
     /// Everything again, ignoring the cache: what `r` does.
     ReloadBoard(Option<BoardId>),
     LoadBoards,
+    /// The board's running and coming sprints.
+    Sprints(kolum_domain::BoardId),
     LoadIssue(IssueKey),
     /// A search for the picker. A new one cancels the one before: only the
     /// latest query's results matter.
@@ -57,6 +59,7 @@ pub enum Event {
         fresh: bool,
     },
     Boards(Vec<BoardSummary>),
+    Sprints(Result<Vec<kolum_domain::Sprint>, DomainError>),
     IssueLoaded(Box<IssueDetail>),
     /// For the search with this id; stale ones were cancelled.
     SearchResults {
@@ -181,6 +184,7 @@ async fn run(
             fetch_board(provider.as_ref(), cache.as_ref(), id, cached).await
         }
         Command::ReloadBoard(id) => fetch_board(provider.as_ref(), cache.as_ref(), id, None).await,
+        Command::Sprints(board) => Event::Sprints(provider.sprints(&board).await),
         Command::LoadBoards => match provider.boards().await {
             Ok(boards) => Event::Boards(boards),
             Err(error) => Event::Failed { what: "listing the boards".into(), error },

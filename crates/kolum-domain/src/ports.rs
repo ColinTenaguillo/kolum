@@ -6,7 +6,7 @@ use crate::board::{Board, BoardSummary};
 use crate::error::Result;
 use crate::ids::{BoardId, IssueKey, TransitionId, UserId};
 use crate::issue::{
-    ActivityEntry, Comment, EditableField, Issue, IssueUpdate, NewIssue, Transition, User,
+    ActivityEntry, Comment, EditableField, Issue, IssueUpdate, NewIssue, Sprint, Transition, User,
 };
 use crate::query::Query;
 use crate::rich_text::RichText;
@@ -77,6 +77,11 @@ pub trait BoardSource: Send + Sync {
         since: Option<OffsetDateTime>,
         page: Option<PageToken>,
     ) -> Result<Page<Issue>>;
+
+    /// The board's running and coming sprints, to put an issue in one.
+    async fn sprints(&self, _board: &BoardId) -> Result<Vec<Sprint>> {
+        Err(crate::DomainError::Unsupported(Capability::Sprints))
+    }
 }
 
 #[async_trait]
