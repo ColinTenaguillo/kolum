@@ -42,7 +42,7 @@ pub fn lines(keymap: &Keymap, theme: &Theme, filter: &str) -> Vec<Line<'static>>
         out.push(Line::from(vec![
             Span::styled(
                 context.title(),
-                Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+                Style::new().fg(theme.fg).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             ),
             Span::styled(format!("  [keys.{}]", context.name()), muted),
         ]));

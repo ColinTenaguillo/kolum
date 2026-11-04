@@ -77,34 +77,45 @@ impl PickerSource for IssueSource {
     }
 
     fn preview(&self, issue: &Issue, theme: &Theme, cols: u16) -> Option<Text<'static>> {
+        // The issue view's header, small: the key and the title on a band
+        // of the selection, then the status pill and who has it.
         let muted = Style::new().fg(theme.muted);
+        let band = |mut spans: Vec<Span<'static>>| {
+            let used: usize = spans.iter().map(|s| super::text::width(&s.content)).sum();
+            spans.push(Span::raw(" ".repeat((cols as usize).saturating_sub(used))));
+            Line::from(spans).style(Style::new().bg(theme.selection))
+        };
         let mut head = vec![
-            Span::styled(issue.key.to_string(), Style::new().add_modifier(Modifier::BOLD)),
-            Span::raw("  "),
+            Span::styled(format!(" {}", issue.key), muted),
+            Span::styled(" · ", muted),
             glyph::kind_span(issue, theme),
-            Span::raw(format!(" {}", issue.kind.name)),
+            Span::styled(format!(" {}", issue.kind.name), muted),
         ];
         if let Some(p) = issue.priority {
             head.extend([
-                Span::raw("  "),
+                Span::styled(" · ", muted),
                 glyph::priority_span(p, theme),
-                Span::raw(format!(" {}", p.name())),
+                Span::styled(format!(" {}", p.name()), muted),
             ]);
         }
+        let title = super::text::truncate(&issue.title, (cols as usize).saturating_sub(2));
         let assignee =
             issue.assignee.as_ref().map_or("Unassigned".into(), |u| u.display_name.clone());
+        let mut status = vec![Span::raw(" ")];
+        status.extend(glyph::status_badge(issue, theme));
+        status.extend([
+            Span::styled(" ⋅ ", muted),
+            Span::styled(assignee, Style::new().add_modifier(Modifier::BOLD)),
+        ]);
         let mut lines = vec![
-            Line::from(head),
-            Line::from(Span::styled(
-                issue.title.clone(),
-                Style::new().add_modifier(Modifier::BOLD),
-            )),
-            Line::from(
-                [vec![Span::styled("Status    ", muted)], glyph::status_badge(issue, theme).into()]
-                    .concat(),
-            ),
-            Line::from(vec![Span::styled("Assignee  ", muted), Span::raw(assignee)]),
-            Line::from(Span::styled("─".repeat(cols as usize), Style::new().fg(theme.border))),
+            band(head),
+            band(vec![
+                Span::raw(" "),
+                Span::styled(title, Style::new().fg(theme.fg).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::default(),
+            Line::from(status),
+            Line::default(),
         ];
         lines.extend(rich::lines(&issue.description, theme, cols));
         Some(Text::from(lines))

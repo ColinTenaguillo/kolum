@@ -271,11 +271,9 @@ impl DetailView {
             }));
         }
         lines.push(Line::default());
-        lines.push(self.tabs(theme));
-        lines.push(Line::from(Span::styled(
-            "─".repeat(cols as usize),
-            Style::new().fg(theme.border),
-        )));
+        let (tabs, lit) = self.tabs(theme);
+        lines.push(Line::from(tabs));
+        lines.push(glyph::rule("─", cols as usize, lit, theme));
         match &self.loaded {
             None => lines.push(Line::from(Span::styled("Loading…", Style::new().fg(theme.muted)))),
             Some(detail) => lines.extend(activity(detail, self.tab, theme, cols)),
@@ -283,7 +281,7 @@ impl DetailView {
         lines
     }
 
-    fn tabs(&self, theme: &Theme) -> Line<'static> {
+    fn tabs(&self, theme: &Theme) -> (Vec<Span<'static>>, std::ops::Range<usize>) {
         let comments = self.loaded.as_ref().map_or(0, |d| d.comments.len());
         let names = [
             format!("{} Comments ({comments})", glyph::icon::COMMENTS),
@@ -291,7 +289,7 @@ impl DetailView {
             "All".into(),
         ];
         let active = Tab::ORDER.iter().position(|&t| t == self.tab).unwrap_or(0);
-        Line::from(glyph::tabs(&names, active, theme))
+        glyph::tabs(&names, active, theme)
     }
 }
 

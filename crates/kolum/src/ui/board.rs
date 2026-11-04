@@ -340,17 +340,15 @@ impl BoardView {
             None => format!(" {count} "),
         };
         let count_style = Style::new().fg(if over { theme.error } else { theme.muted });
-        // gh-dash's table: a header, the focused one styled as its active
-        // tab, over a rule; no box, a gap between columns.
+        // gh-dash's table: a header over a rule; no box, a gap between
+        // columns.
         let area = Rect { width: area.width.saturating_sub(1), ..area };
-        let head_style = if focused {
-            Style::new().fg(theme.fg).bg(theme.selection).add_modifier(Modifier::BOLD)
-        } else {
-            Style::new().fg(theme.muted).add_modifier(Modifier::BOLD)
-        };
+        let head_style = Style::new()
+            .fg(if focused { theme.accent } else { theme.muted })
+            .add_modifier(Modifier::BOLD);
         let head = Line::from(vec![
             Span::styled(format!(" {} ", name.to_uppercase()), head_style),
-            Span::styled(count_text, count_style.bg(head_style.bg.unwrap_or(theme.bg))),
+            Span::styled(count_text, count_style),
         ]);
         frame.render_widget(Paragraph::new(head), Rect { height: 1, ..area });
         let rule = Style::new().fg(if focused { theme.border_focus } else { theme.border });

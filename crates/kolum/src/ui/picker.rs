@@ -5,6 +5,7 @@
 //! Matching runs on nucleo's threads. The screen asks for whatever the
 //! latest snapshot holds, so a keystroke never waits on a sort.
 
+use super::glyph;
 use super::input::Input;
 use super::text::truncate;
 use crate::config::PickerLayout;
@@ -16,7 +17,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -224,7 +225,7 @@ impl<S: PickerSource> Picker<S> {
     /// What is typed, the cursor in it, and the spinner at the far end.
     fn draw_prompt(&self, frame: &mut Frame, line: Rect, theme: &Theme) {
         let prompt = Line::from(vec![
-            Span::styled("> ", Style::new().fg(theme.accent)),
+            Span::styled(format!("{} ", glyph::icon::SEARCH), Style::new().fg(theme.accent)),
             Span::raw(self.input.text().to_string()),
         ]);
         frame.render_widget(Paragraph::new(prompt), line);
@@ -264,7 +265,7 @@ impl<S: PickerSource> Picker<S> {
         };
         let lead = match (selected, marked) {
             (_, true) => Span::styled("+ ", base.fg(theme.accent)),
-            (true, false) => Span::styled("▶ ", base.fg(theme.accent)),
+            (true, false) => Span::styled("┃ ", base.fg(theme.border_focus)),
             _ => Span::styled("  ", base),
         };
         let mut spans = vec![lead];
@@ -403,20 +404,15 @@ impl<S: PickerSource> AnyPicker for Picker<S> {
             }
             PickerLayout::NoPreview => (area, None),
         };
-        let border = Style::new().fg(theme.border_focus);
         let snapshot = self.nucleo.snapshot();
         let counter = format!(" {}/{} ", snapshot.matched_item_count(), snapshot.item_count());
         let mode = if self.insert { "" } else { " NORMAL " };
-        let list = Block::bordered()
-            .border_type(BorderType::Rounded)
-            .border_style(border)
-            .title(Span::styled(
-                format!(" {} ", self.source.title()),
-                Style::new().fg(theme.accent),
-            ))
-            .title_bottom(Line::from(counter).left_aligned())
-            .title_bottom(Line::from(format!("{mode}[{}] ", self.source_label())).right_aligned())
-            .style(Style::new().bg(theme.bg).fg(theme.fg));
+        let muted = Style::new().fg(theme.muted);
+        let list = glyph::panel(&self.source.title(), true, theme)
+            .title_bottom(Line::styled(counter, muted).left_aligned())
+            .title_bottom(
+                Line::styled(format!("{mode}[{}] ", self.source_label()), muted).right_aligned(),
+            );
         let inner = list.inner(list_area);
         frame.render_widget(list, list_area);
         if inner.height == 0 {
@@ -433,11 +429,7 @@ impl<S: PickerSource> AnyPicker for Picker<S> {
         frame.render_widget(Paragraph::new(lines), results);
 
         if let Some(area) = preview_area {
-            let block = Block::bordered()
-                .border_type(BorderType::Rounded)
-                .border_style(Style::new().fg(theme.border))
-                .title(" Preview ")
-                .style(Style::new().bg(theme.bg).fg(theme.fg));
+            let block = glyph::panel("Preview", false, theme);
             let inner = block.inner(area);
             let text = self.current().and_then(|i| self.source.preview(i, theme, inner.width));
             let preview = Paragraph::new(text.unwrap_or_default())

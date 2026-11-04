@@ -28,7 +28,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -1510,18 +1510,14 @@ impl App {
         let Some(v) = &self.viewer else { return };
         let file = &v.pictures[v.at];
         let title = format!(
-            " {} · {} · {}/{} ",
+            "{} · {} · {}/{}",
             file.name,
             detail::size(file.size),
             v.at + 1,
             v.pictures.len()
         );
-        let block = Block::bordered()
-            .border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(theme.border_focus))
-            .title(Span::styled(title, Style::new().fg(theme.accent)))
-            .title_bottom(Line::from(" h/l · o browser · yu URL · q back ").right_aligned())
-            .style(Style::new().bg(theme.bg).fg(theme.fg));
+        let block = popup(&title, theme)
+            .title_bottom(Line::from(" h/l · o browser · yu URL · q back ").right_aligned());
         let inner = block.inner(area);
         let url = file.url.clone();
         frame.render_widget(Clear, area);
@@ -1872,10 +1868,10 @@ impl App {
                     Constraint::Min(0),
                 ])
                 .areas(main);
-                frame.render_widget(Paragraph::new(self.board_header(&theme)), head);
+                let (header, lit) = self.board_header(&theme);
+                frame.render_widget(Paragraph::new(header), head);
                 frame.render_widget(Paragraph::new(logo(&theme)).right_aligned(), head);
-                let thick = "━".repeat(rule.width as usize);
-                frame.render_widget(Span::styled(thick, Style::new().fg(theme.border)), rule);
+                frame.render_widget(glyph::rule("━", rule.width as usize, lit, &theme), rule);
                 let ctx = DrawCtx { theme: &theme, fields: &self.ui.card_fields, me };
                 self.board.draw(frame, body, &ctx);
             }
@@ -1924,8 +1920,10 @@ impl App {
 
     /// gh-dash's tab row: the board and its size, then the swimlanes as
     /// tabs `s` steps through, then what narrows or delays it.
-    fn board_header(&self, theme: &Theme) -> Line<'static> {
+    /// Also the cells of the active tab, for the rule under it.
+    fn board_header(&self, theme: &Theme) -> (Line<'static>, std::ops::Range<usize>) {
         let mut spans = vec![];
+        let mut lit = 0..0;
         if let Some(s) = &self.board.snapshot {
             spans.push(Span::styled(
                 format!(" {} ", s.board.name),
@@ -1939,7 +1937,11 @@ impl App {
             let lanes =
                 [Swimlanes::None, Swimlanes::Epic, Swimlanes::Assignee, Swimlanes::Priority];
             let active = lanes.iter().position(|&l| l == self.board.swimlanes).unwrap_or(0);
-            spans.extend(glyph::tabs(&["No lanes", "Epic", "Assignee", "Priority"], active, theme));
+            let at = Line::from(spans.clone()).width();
+            let (tabs, tab) =
+                glyph::tabs(&["No lanes", "Epic", "Assignee", "Priority"], active, theme);
+            spans.extend(tabs);
+            lit = at + tab.start..at + tab.end;
             spans.push(Span::styled("│", Style::new().fg(theme.border)));
             if self.board_cached {
                 spans.push(Span::styled("  cached, syncing…", Style::new().fg(theme.warn)));
@@ -1951,7 +1953,7 @@ impl App {
                 Style::new().fg(theme.match_highlight),
             ));
         }
-        Line::from(spans)
+        (Line::from(spans), lit)
     }
 
     /// The status line's badge.
@@ -2037,10 +2039,7 @@ impl App {
         let scroll = prompt.chosen.map_or(0, |i| (i + 1).saturating_sub(rows)) as u16;
         let x = lead_x.saturating_sub(1).min(area.right().saturating_sub(width));
         let rect = Rect { x, y: area.bottom() - height, width, height };
-        let block = Block::bordered()
-            .border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(theme.border))
-            .style(Style::new().bg(theme.bg).fg(theme.fg));
+        let block = glyph::panel("", false, theme);
         frame.render_widget(Clear, rect);
         frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), rect);
     }
@@ -2153,11 +2152,7 @@ fn logo(theme: &Theme) -> Line<'static> {
 }
 
 fn popup(title: &str, theme: &Theme) -> Block<'static> {
-    Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme.border_focus))
-        .title(Span::styled(format!(" {title} "), Style::new().fg(theme.accent)))
-        .style(Style::new().bg(theme.bg).fg(theme.fg))
+    glyph::panel(title, true, theme)
 }
 
 fn centered(area: Rect, width_pct: u16, height_pct: u16) -> Rect {

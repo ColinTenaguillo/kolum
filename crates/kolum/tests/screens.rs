@@ -151,11 +151,11 @@ async fn the_picker_has_a_normal_mode_and_resumes() {
     press(&mut app, "<Esc>j");
     let shown = screen(&mut app, 150, 40);
     assert!(shown.contains("NORMAL"), "Esc leaves insert mode, and j moves instead of typing");
-    assert!(shown.contains("> sso "), "{shown}");
+    assert!(shown.contains("\u{f002} sso "), "{shown}");
     press(&mut app, "q");
-    assert!(!screen(&mut app, 150, 40).contains("> sso"), "q closes it in normal mode");
+    assert!(!screen(&mut app, 150, 40).contains("\u{f002} sso"), "q closes it in normal mode");
     press(&mut app, "<Space>'");
-    assert!(screen(&mut app, 150, 40).contains("> sso"), "<leader>' reopens it as it was");
+    assert!(screen(&mut app, 150, 40).contains("\u{f002} sso"), "<leader>' reopens it as it was");
 }
 
 #[tokio::test]
@@ -565,13 +565,16 @@ async fn the_picker_remembers_searches() {
         press(&mut app, "<CR>q");
     }
     press(&mut app, "<Space>f<Up>");
-    assert!(screen(&mut app, 150, 40).contains("> webhook"), "the latest first");
+    assert!(screen(&mut app, 150, 40).contains("\u{f002} webhook"), "the latest first");
     press(&mut app, "<Up><Up>");
-    assert!(screen(&mut app, 150, 40).contains("> stripe"), "and no further than the oldest");
+    assert!(
+        screen(&mut app, 150, 40).contains("\u{f002} stripe"),
+        "and no further than the oldest"
+    );
     press(&mut app, "<Down>");
-    assert!(screen(&mut app, 150, 40).contains("> webhook"));
+    assert!(screen(&mut app, 150, 40).contains("\u{f002} webhook"));
     press(&mut app, "<Down>");
-    assert!(screen(&mut app, 150, 40).contains("> \u{20}"), "past the newest: empty again");
+    assert!(screen(&mut app, 150, 40).contains("\u{f002} \u{20}"), "past the newest: empty again");
 }
 
 #[tokio::test]
@@ -640,7 +643,7 @@ async fn the_command_line_reports_what_it_cannot_do() {
     press(&mut app, ":jql project = X<CR>");
     let shown = screen(&mut app, 100, 20);
     assert!(
-        shown.contains("> !project = X") && shown.contains("[remote"),
+        shown.contains("\u{f002} !project = X") && shown.contains("[remote"),
         ":jql opens a remote search: {shown}"
     );
     press(&mut app, "<Esc><Esc>");
@@ -812,7 +815,7 @@ async fn a_remote_search_shows_it_is_searching() {
 
     press(&mut app, "login");
     let typed = screen(&mut app, 150, 40);
-    assert!(typed.contains("> login") && typed.contains("⠋ searching…"), "{typed}");
+    assert!(typed.contains("\u{f002} login") && typed.contains("⠋ searching…"), "{typed}");
     let next_frame = app.deadline().unwrap();
     wait_until(&mut app, next_frame);
     assert!(screen(&mut app, 150, 40).contains("⠙ searching…"), "it turns");
