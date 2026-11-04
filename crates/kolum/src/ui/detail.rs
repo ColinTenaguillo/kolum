@@ -111,7 +111,8 @@ impl DetailView {
         };
         let sections = ui.detail_sections.as_deref();
         let mut content = self.content(theme, left.width.saturating_sub(2), sections);
-        let field_lines = field_lines(issue, &ui.detail_fields, theme, me);
+        let names = field_names(issue, ui.detail_fields.as_deref());
+        let field_lines = field_lines(issue, &names, theme, me);
         if side {
             let right = self.draw_avatar(frame, right, theme, pictures.avatar);
             let right = self.draw_shot(frame, right, theme, pictures.shot);
@@ -368,6 +369,27 @@ fn activity(detail: &IssueDetail, tab: Tab, theme: &Theme, cols: u16) -> Vec<Lin
         out.extend(lines);
     }
     out
+}
+
+/// The fields of the right-hand column, in the order kolum shows them by default.
+const BUILTIN_FIELDS: [&str; 11] = [
+    "status", "assignee", "reporter", "priority", "sprint", "epic", "labels", "estimate", "due",
+    "created", "updated",
+];
+
+/// The `wanted` fields, or the built-in ones then every custom field the
+/// issue fills that is not rich text (that shows under the description).
+fn field_names(issue: &Issue, wanted: Option<&[String]>) -> Vec<String> {
+    if let Some(names) = wanted {
+        return names.to_vec();
+    }
+    let custom = issue.fields.iter().filter(|f| match &f.value {
+        FieldValue::RichText(_) => false,
+        FieldValue::Text(t) => !t.is_empty(),
+        FieldValue::Options(o) => !o.is_empty(),
+        _ => true,
+    });
+    BUILTIN_FIELDS.map(String::from).into_iter().chain(custom.map(|f| f.id.to_string())).collect()
 }
 
 /// A custom field by id (`customfield_10016`) or by name, in any case.

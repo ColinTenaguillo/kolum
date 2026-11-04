@@ -365,11 +365,26 @@ async fn a_board_sync_keeps_the_fields_only_the_detail_loaded() {
     assert!(screen(&mut app, 140, 40).contains("Tokens refresh before they expire"));
 }
 
+/// Unset, the right-hand column shows every field: the built-in ones, then
+/// each custom field the issue fills that is not rich text.
+#[tokio::test]
+async fn the_detail_shows_every_field_unless_the_config_lists_some() {
+    let mut app = loaded().await;
+    press(&mut app, "/ACME-10<CR><CR>");
+    let shown = screen(&mut app, 140, 60);
+    for label in ["Status", "Reporter", "Updated", "Team"] {
+        assert!(shown.contains(label), "{label}: {shown}");
+    }
+    assert!(shown.contains("Platform"));
+    let right: String = shown.lines().map(|l| l.chars().skip(95).collect::<String>()).collect();
+    assert!(!right.contains("Acceptance"), "rich text stays in the middle: {right}");
+}
+
 #[tokio::test]
 async fn the_detail_lists_links_and_configured_custom_fields() {
     let mut settings = settings();
     settings.ui.detail_fields =
-        vec!["status".into(), "customfield_10020".into(), "Story points".into()];
+        Some(vec!["status".into(), "customfield_10020".into(), "Story points".into()]);
     let mut app = loaded_with(settings).await;
     press(&mut app, "ll<CR>");
     press(&mut app, ":q<CR>");
@@ -377,7 +392,7 @@ async fn the_detail_lists_links_and_configured_custom_fields() {
 
     let mut settings = self::settings();
     settings.ui.detail_fields =
-        vec!["status".into(), "customfield_10020".into(), "Story points".into()];
+        Some(vec!["status".into(), "customfield_10020".into(), "Story points".into()]);
     let mut app = loaded_with(settings).await;
     press(&mut app, "/ACME-10<CR><CR>");
     let shown = screen(&mut app, 140, 40);

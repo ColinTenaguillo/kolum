@@ -93,8 +93,9 @@ pub struct UiConfig {
     pub swimlanes: Swimlanes,
     pub card_fields: Vec<CardField>,
     /// The right-hand column of an issue, top to bottom: built-in names, or
-    /// a custom field by id (`customfield_10016`) or by name.
-    pub detail_fields: Vec<String>,
+    /// a custom field by id (`customfield_10016`) or by name. Unset: the
+    /// built-in ones, then every other custom field the issue fills.
+    pub detail_fields: Option<Vec<String>>,
     /// Rich text custom fields shown under the description, by id or by
     /// name. Unset: every one the issue fills.
     pub detail_sections: Option<Vec<String>>,
@@ -109,12 +110,7 @@ impl Default for UiConfig {
             hide_empty_columns: false,
             swimlanes: Swimlanes::None,
             card_fields: vec![Type, Key, Priority, Labels, Epic, Estimate, Assignee],
-            detail_fields: [
-                "status", "assignee", "reporter", "priority", "sprint", "epic", "labels",
-                "estimate", "due", "created", "updated",
-            ]
-            .map(String::from)
-            .to_vec(),
+            detail_fields: None,
             detail_sections: None,
         }
     }
@@ -264,7 +260,7 @@ mod tests {
         assert_eq!(work.settings["board"].as_integer(), Some(42));
         assert_eq!(config.ui.theme, "kanagawa");
         assert!(config.ui.hide_empty_columns);
-        assert_eq!(config.ui.detail_fields.len(), 3);
+        assert_eq!(config.ui.detail_fields.as_ref().map(Vec::len), Some(3));
         assert_eq!(config.theme.overrides["accent"].as_str(), Some("#7e9cd8"));
         assert_eq!(config.keys.timeoutlen_ms, Some(600));
         assert!(config.keys.sections.contains_key("board"));
