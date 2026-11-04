@@ -4,7 +4,7 @@ expression: "screen(&mut app, 120, 50)"
 ---
 " Acme Web board Kanban                                                                                                  "
 "┌ BACKLOG  9 ────────────────┐┌ TO DO  9 ──────────────────┐┌ IN PROGRESS  9/4 ──────────┐┌ IN REVIEW  5/3 ────────────┐"
-"│┏━━━━━━━━━━╭ Keys  (j/k to scroll, q to close) ───────────────────────────────────────────────────────────╮──────────╮│"
+"│┏━━━━━━━━━━╭ Keys  (/ to search, j/k to scroll, q to close) ──────────────────────────────────────────────╮──────────╮│"
 "│┃■ ACME-9  │leader <Space>   timeoutlen 600 ms                                                            │         ↑││"
 "│┃Enforce SS│                                                                                              │onsumer   ││"
 "│┃organisati│Everywhere  [keys.global]                                                                     │          ││"

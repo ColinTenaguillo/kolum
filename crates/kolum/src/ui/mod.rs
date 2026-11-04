@@ -227,6 +227,8 @@ pub struct App {
     field_prompt: Option<(IssueKey, kolum_domain::EditableField)>,
     /// `gi`'s pictures, over the issue.
     viewer: Option<Viewer>,
+    /// The help page's `/` filter.
+    help_filter: String,
     /// The sprint field waiting for the board's sprints.
     sprint_for: Option<(IssueKey, kolum_domain::EditableField)>,
     /// The field layout of each project's issue types, by `layout_key`: an
@@ -312,6 +314,7 @@ impl App {
             field_prompt: None,
             sprint_for: None,
             viewer: None,
+            help_filter: String::new(),
             layouts: Default::default(),
             remote_debounce: settings.remote_debounce,
             now: Instant::now(),
@@ -353,12 +356,13 @@ impl App {
     fn focus(&self) -> Focus {
         if !self.problems.is_empty() {
             Focus::Problems
+        } else if self.prompt.is_some() {
+            // Over the help page too: `/` there filters it.
+            Focus::Prompt
         } else if self.help.is_some() {
             Focus::Help
         } else if self.picker.is_some() {
             Focus::Picker
-        } else if self.prompt.is_some() {
-            Focus::Prompt
         } else if self.viewer.is_some() {
             Focus::Viewer
         } else if self.detail.is_some() {
@@ -444,8 +448,8 @@ impl App {
         {
             prompt.retype();
             if prompt.kind == PromptKind::Filter {
-                self.board.filter = prompt.input.text().to_string();
-                self.board.clamp();
+                let text = prompt.input.text().to_string();
+                self.set_filter(text);
             }
         }
     }
@@ -633,8 +637,7 @@ impl App {
             Focus::Prompt => {
                 self.undo_theme_preview();
                 if self.prompt.take().is_some_and(|p| p.kind == PromptKind::Filter) {
-                    self.board.filter.clear();
-                    self.board.clamp();
+                    self.set_filter(String::new());
                 }
             }
             Focus::Viewer => self.viewer = None,
@@ -853,7 +856,30 @@ impl App {
         }
     }
 
+    /// The `/` line filters the help page when it is open, the board otherwise.
+    fn set_filter(&mut self, text: String) {
+        if self.help.is_some() {
+            self.help_filter = text;
+            self.help = Some(0);
+        } else {
+            self.board.filter = text;
+            self.board.clamp();
+        }
+    }
+
     fn help_action(&mut self, action: Action, n: i64) {
+        match action {
+            Action::Filter => {
+                let mut input = Input::default();
+                input.set(&self.help_filter);
+                self.prompt = Some(Prompt::new(PromptKind::Filter, input, vec![]));
+                return;
+            }
+            // Clears the filter first, then closes the page.
+            Action::ClearFilter if self.help_filter.is_empty() => return self.help = None,
+            Action::ClearFilter => return self.set_filter(String::new()),
+            _ => {}
+        }
         let half = i64::from(self.help_page.get() / 2).max(1);
         let delta = match action {
             Action::Down => n,
@@ -864,7 +890,7 @@ impl App {
             Action::Bottom => i64::from(u16::MAX),
             _ => return,
         };
-        let max = help::lines(&self.keymap, &self.theme)
+        let max = help::lines(&self.keymap, &self.theme, &self.help_filter)
             .len()
             .saturating_sub(self.help_page.get() as usize);
         let at = self.help.unwrap_or(0) as i64 + delta;
@@ -1809,9 +1835,13 @@ impl App {
         }
         if let Some(scroll) = self.help {
             let area = centered(main, 80, 90);
-            let block = popup("Keys  (j/k to scroll, q to close)", &theme);
+            let title = match self.help_filter.as_str() {
+                "" => "Keys  (/ to search, j/k to scroll, q to close)".to_string(),
+                filter => format!("Keys matching “{filter}”  (Esc to clear)"),
+            };
+            let block = popup(&title, &theme);
             self.help_page.set(block.inner(area).height);
-            let lines = help::lines(&self.keymap, &theme);
+            let lines = help::lines(&self.keymap, &theme, &self.help_filter);
             frame.render_widget(Clear, area);
             frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), area);
         }

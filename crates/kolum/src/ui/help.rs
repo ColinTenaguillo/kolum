@@ -19,7 +19,10 @@ const ORDER: [Context; 9] = [
     Context::Help,
 ];
 
-pub fn lines(keymap: &Keymap, theme: &Theme) -> Vec<Line<'static>> {
+/// With `filter`, only the keys whose line holds every word of it, in any
+/// case, and the sections that keep some.
+pub fn lines(keymap: &Keymap, theme: &Theme, filter: &str) -> Vec<Line<'static>> {
+    let words: Vec<String> = filter.to_lowercase().split_whitespace().map(String::from).collect();
     let muted = Style::new().fg(theme.muted);
     let mut out = vec![Line::from(vec![
         Span::styled("leader ", muted),
@@ -27,7 +30,11 @@ pub fn lines(keymap: &Keymap, theme: &Theme) -> Vec<Line<'static>> {
         Span::styled(format!("   timeoutlen {} ms", keymap.timeout.as_millis()), muted),
     ])];
     for context in ORDER {
-        let rows = keymap.help_rows(context);
+        let mut rows = keymap.help_rows(context);
+        rows.retain(|(keys, action)| {
+            let line = format!("{keys} {} {}", action.description(), action.name()).to_lowercase();
+            words.iter().all(|w| line.contains(w.as_str()))
+        });
         if rows.is_empty() {
             continue;
         }

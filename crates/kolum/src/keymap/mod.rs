@@ -161,6 +161,8 @@ const DEFAULTS: &[(Context, &str, Action)] = &[
     (C::Detail, "o", A::OpenBrowser),
     (C::Detail, "yy", A::CopyKey),
     (C::Detail, "yu", A::CopyUrl),
+    (C::Help, "/", A::Filter),
+    (C::Help, "<Esc>", A::ClearFilter),
     (C::Help, "j", A::Down),
     (C::Help, "k", A::Up),
     (C::Help, "gg", A::Top),

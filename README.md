@@ -31,7 +31,8 @@ cargo run --release -- --demo
 ```
 
 `--demo` opens a board of 40 realistic issues from an in-memory provider,
-with no account. Press `?` for every key.
+with no account. Press `?` for every key, then `/` to keep only those
+whose line holds what you type.
 
 Run without a profile, kolum asks a few questions (Jira URL, e-mail, how to get
 the token, the board) and writes the profile to `config.toml`; a token kept in

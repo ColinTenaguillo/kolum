@@ -194,6 +194,25 @@ async fn the_help_page() {
     insta::assert_snapshot!(screen(&mut app, 120, 50));
 }
 
+/// `/` on the help page keeps the keys whose line has every word typed;
+/// Esc clears the filter, then closes the page.
+#[tokio::test]
+async fn the_help_page_filters_as_you_type() {
+    let mut app = loaded().await;
+    press(&mut app, "?/open parent");
+    let shown = screen(&mut app, 150, 50);
+    assert!(shown.contains("Open the parent issue"), "{shown}");
+    assert!(!shown.contains("Change the status"), "the rest is hidden");
+    assert!(!shown.contains("[keys.picker]"), "and the sections left empty");
+    press(&mut app, "<CR>");
+    assert!(!screen(&mut app, 150, 50).contains("Change the status"), "kept after Enter");
+    press(&mut app, "<Esc>");
+    assert!(screen(&mut app, 150, 50).contains("Change the status"), "Esc clears it");
+    press(&mut app, "<Esc>");
+    assert!(!screen(&mut app, 150, 50).contains("[keys.board]"), "then closes the page");
+    assert!(!app.quit);
+}
+
 #[tokio::test]
 async fn the_help_page_follows_a_rebinding() {
     let mut settings = settings();
@@ -578,7 +597,7 @@ async fn the_command_palette_runs_what_it_lists() {
     press(&mut app, "<Space>pshow the keys");
     settle(&mut app);
     press(&mut app, "<CR>");
-    assert!(screen(&mut app, 120, 40).contains("Keys  (j/k"), "it ran `help`");
+    assert!(screen(&mut app, 120, 40).contains("Keys  (/ to search"), "it ran `help`");
 }
 
 #[tokio::test]
