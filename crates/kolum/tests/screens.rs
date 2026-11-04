@@ -1389,6 +1389,45 @@ async fn the_detail_shows_the_assignees_avatar() {
     screen(&mut app, 140, 40); // a broken picture is no picture, not a crash
 }
 
+/// `gi` shows the issue's pictures full screen, one at a time; the keys
+/// mean what they mean elsewhere: h/l the one before or after, o the
+/// browser, yu the URL, q back to the issue.
+#[tokio::test]
+async fn gi_views_the_pictures_full_screen() {
+    let mut settings = settings();
+    settings.images = Some(ratatui_image::picker::Picker::halfblocks());
+    let mut app = loaded_with(settings).await;
+    press(&mut app, "ll<CR>"); // ACME-5: a screenshot and a log
+    app.take_effects();
+    press(&mut app, "gi");
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("session-expired.png · 47 KB · 1/1"), "{shown}");
+    assert!(!shown.contains("callback.log"), "a log is not a picture");
+    let waiting = screen(&mut app, 140, 40);
+    let bytes = FakeProvider::new().image("fake://shot/5").await;
+    app.on_event(Event::Image { url: "fake://shot/5".into(), result: bytes });
+    assert_ne!(screen(&mut app, 140, 40), waiting, "the picture is drawn");
+    press(&mut app, "l");
+    assert!(screen(&mut app, 140, 40).contains("1/1"), "nothing after the last");
+    press(&mut app, "o");
+    assert_eq!(app.take_effects(), [Effect::Open("fake://shot/5".into())]);
+    press(&mut app, "yu");
+    assert_eq!(app.take_effects(), [Effect::Copy("fake://shot/5".into())]);
+    press(&mut app, "q");
+    let back = screen(&mut app, 140, 40);
+    assert!(back.contains("callback.log"), "back on the issue: {back}");
+
+    press(&mut app, "qj<CR>gi");
+    assert!(screen(&mut app, 140, 40).contains("No pictures in ACME-"), "an issue without any");
+}
+
+#[tokio::test]
+async fn without_pictures_gi_says_so() {
+    let mut app = loaded().await;
+    press(&mut app, "ll<CR>gi");
+    assert!(screen(&mut app, 140, 40).contains("Pictures are off in this terminal"));
+}
+
 #[tokio::test]
 async fn without_pictures_no_avatar_is_asked_for() {
     let mut app = loaded().await;

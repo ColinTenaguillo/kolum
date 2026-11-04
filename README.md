@@ -60,6 +60,7 @@ The defaults follow vim. Counts work on motions (`3j`, `5G`), sequences wait
 | `Space a` `Space A` | assign · assign to me |
 | `Space u` | show the cards of one or several people: `Tab` marks, `Enter` applies (`Everyone` clears) |
 | `i` · `e` | comment · edit the title and description, in `$EDITOR` as Markdown |
+| `gi` (issue view) | the issue's pictures full screen, in the terminal's image protocol: `h`/`l` the one before or after, `o` in the browser, `yu` its URL, `q` back |
 | `E` (issue view) | pick any field the issue lets you set and edit it its own way: rich text in `$EDITOR` (warning when Jira holds what Markdown cannot keep), a choice or a person in a picker (Tab marks several), a number, a date, labels or a key on the bottom line; the status through its transitions. Emptying a required field is refused |
 | `yy` `yu` `o` | copy the key, copy the URL, open in the browser |
 | `v` | visual mode: a range of cards in a column for one action (`t` `H` `L` `Space a` `yy` `C`) |

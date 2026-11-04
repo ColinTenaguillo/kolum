@@ -32,10 +32,12 @@ pub enum Context {
     /// A range of cards on the board, for one grouped action. Board
     /// bindings apply too: these are only the ones it changes.
     Visual,
+    /// An issue's pictures, full screen.
+    Viewer,
 }
 
 impl Context {
-    pub const ALL: [Context; 8] = [
+    pub const ALL: [Context; 9] = [
         Context::Global,
         Context::Board,
         Context::Detail,
@@ -44,6 +46,7 @@ impl Context {
         Context::PickerInsert,
         Context::Command,
         Context::Visual,
+        Context::Viewer,
     ];
 
     /// The section name under `[keys]`, and the heading on the help page.
@@ -57,6 +60,7 @@ impl Context {
             Context::PickerInsert => ("picker_insert", "Picker, typing"),
             Context::Command => ("command", "Command line"),
             Context::Visual => ("visual", "Visual (a range of cards)"),
+            Context::Viewer => ("viewer", "Pictures"),
         }
     }
 
@@ -146,6 +150,11 @@ const DEFAULTS: &[(Context, &str, Action)] = &[
     (C::Detail, "<leader>A", A::AssignMe),
     (C::Detail, "e", A::Edit),
     (C::Detail, "E", A::EditField),
+    (C::Detail, "gi", A::ViewPictures),
+    (C::Viewer, "h", A::Left),
+    (C::Viewer, "l", A::Right),
+    (C::Viewer, "o", A::OpenBrowser),
+    (C::Viewer, "yu", A::CopyUrl),
     (C::Detail, "i", A::Comment),
     (C::Detail, "o", A::OpenBrowser),
     (C::Detail, "yy", A::CopyKey),
@@ -430,7 +439,7 @@ mod tests {
                 "[keys.board] \"<c-d>\": the same key as \"<C-d>\", which is kept",
                 "[keys.board] \"<Foo>\": `<Foo>` is not a key",
                 "[keys.board] \"x\": unknown action `move_card_rigth`",
-                "[keys.boards]: no such context (one of global, board, detail, help, picker, picker_insert, command, visual)",
+                "[keys.boards]: no such context (one of global, board, detail, help, picker, picker_insert, command, visual, viewer)",
                 "[keys.picker_insert] \"j\": would type a character here; give it a modifier",
                 "[keys.picker_insert] \"<C-j>\": expected an action name in quotes",
             ]

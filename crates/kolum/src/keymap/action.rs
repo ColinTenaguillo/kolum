@@ -52,6 +52,7 @@ actions! {
     Clone "clone" "Clone the issue",
     Edit "edit" "Edit in $EDITOR",
     EditField "edit_field" "Edit one field in $EDITOR",
+    ViewPictures "view_pictures" "The issue's pictures, full screen",
     Comment "comment" "Add a comment",
     OpenBrowser "open_browser" "Open in the browser",
     CopyKey "copy_key" "Copy the key",

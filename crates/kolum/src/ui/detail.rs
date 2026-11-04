@@ -25,7 +25,7 @@ pub struct Pictures<'a> {
 const SHOT_ROWS: u16 = 10;
 
 /// `48 KB`, `1.8 MB`: a size the way a file browser says it.
-fn size(bytes: u64) -> String {
+pub fn size(bytes: u64) -> String {
     match bytes {
         b if b < 1024 => format!("{b} B"),
         b if b < 1024 * 1024 => format!("{} KB", b / 1024),

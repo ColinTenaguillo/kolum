@@ -68,6 +68,12 @@ pub enum EditPurpose {
     },
 }
 
+/// An issue's pictures, and the one on screen.
+struct Viewer {
+    pictures: Vec<kolum_domain::Attachment>,
+    at: usize,
+}
+
 /// A row of `E`'s picker.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FieldEntry {
@@ -160,6 +166,7 @@ enum Focus {
     Help,
     Picker,
     Prompt,
+    Viewer,
     Detail,
     Board,
 }
@@ -218,6 +225,8 @@ pub struct App {
     search_due: Option<Instant>,
     /// The field the bottom line is typing a value for.
     field_prompt: Option<(IssueKey, kolum_domain::EditableField)>,
+    /// `gi`'s pictures, over the issue.
+    viewer: Option<Viewer>,
     /// The sprint field waiting for the board's sprints.
     sprint_for: Option<(IssueKey, kolum_domain::EditableField)>,
     /// The field layout of each project's issue types, by `layout_key`: an
@@ -302,6 +311,7 @@ impl App {
             search_due: None,
             field_prompt: None,
             sprint_for: None,
+            viewer: None,
             layouts: Default::default(),
             remote_debounce: settings.remote_debounce,
             now: Instant::now(),
@@ -349,6 +359,8 @@ impl App {
             Focus::Picker
         } else if self.prompt.is_some() {
             Focus::Prompt
+        } else if self.viewer.is_some() {
+            Focus::Viewer
         } else if self.detail.is_some() {
             Focus::Detail
         } else {
@@ -366,6 +378,7 @@ impl App {
             }
             Focus::Picker => (vec![Context::Picker], false),
             Focus::Prompt => (vec![Context::Command], true),
+            Focus::Viewer => (vec![Context::Viewer, Context::Global], false),
             Focus::Detail => (vec![Context::Detail, Context::Global], false),
             Focus::Board if self.board.visual.is_some() => {
                 (vec![Context::Visual, Context::Board, Context::Global], false)
@@ -605,6 +618,7 @@ impl App {
                 Focus::Help => self.help_action(action, n),
                 Focus::Picker => self.picker_action(action, n),
                 Focus::Prompt => self.prompt_action(action),
+                Focus::Viewer => self.viewer_action(action, n),
                 Focus::Detail => self.detail_action(action, count),
                 Focus::Board => self.board_action(action, count),
             },
@@ -624,6 +638,7 @@ impl App {
                     self.board.clamp();
                 }
             }
+            Focus::Viewer => self.viewer = None,
             Focus::Detail => self.detail = None,
             Focus::Board => self.quit = true,
         }
@@ -822,6 +837,7 @@ impl App {
                 let issue = d.issue.clone();
                 self.issue_effect(action, &issue);
             }
+            Action::ViewPictures => self.open_viewer(),
             _ => {
                 let keys = vec![d.issue.key.clone()];
                 self.issue_action(action, keys);
@@ -1363,15 +1379,91 @@ impl App {
     /// Asks for the open issue's pictures, once per URL, when pictures can
     /// be drawn here.
     fn want_avatar(&mut self) {
-        if self.images.is_none() {
-            return;
-        }
         for url in self.pictures().into_iter().flatten() {
-            if !self.avatars.contains_key(&url) {
-                self.avatars.insert(url.clone(), Avatar::Loading);
-                self.effects.push(Effect::Send(Command::Image(url)));
-            }
+            self.want_picture(url);
         }
+    }
+
+    /// Fetched once, when this terminal can draw pictures at all.
+    fn want_picture(&mut self, url: String) {
+        if self.images.is_some() && !self.avatars.contains_key(&url) {
+            self.avatars.insert(url.clone(), Avatar::Loading);
+            self.effects.push(Effect::Send(Command::Image(url)));
+        }
+    }
+
+    /// `gi`: the open issue's pictures, full screen, from the first.
+    fn open_viewer(&mut self) {
+        let Some(d) = &self.detail else { return };
+        if self.images.is_none() {
+            return self.say("Pictures are off in this terminal", Level::Warn);
+        }
+        let pictures: Vec<_> =
+            d.issue.attachments.iter().filter(|a| a.is_image()).cloned().collect();
+        if pictures.is_empty() {
+            return self.say(format!("No pictures in {}", d.issue.key), Level::Info);
+        }
+        let url = pictures[0].url.clone();
+        self.viewer = Some(Viewer { pictures, at: 0 });
+        self.want_picture(url);
+    }
+
+    /// The keys mean what they do elsewhere, for the picture shown.
+    fn viewer_action(&mut self, action: Action, n: i64) {
+        let Some(v) = &mut self.viewer else { return };
+        let delta = match action {
+            Action::Left => -n,
+            Action::Right => n,
+            Action::OpenBrowser => {
+                let url = v.pictures[v.at].url.clone();
+                return self.effects.push(Effect::Open(url));
+            }
+            Action::CopyUrl => {
+                let url = v.pictures[v.at].url.clone();
+                self.say(format!("Copied {url}"), Level::Info);
+                return self.effects.push(Effect::Copy(url));
+            }
+            _ => return,
+        };
+        v.at = (v.at as i64 + delta).clamp(0, v.pictures.len() as i64 - 1) as usize;
+        let url = v.pictures[v.at].url.clone();
+        self.want_picture(url);
+    }
+
+    /// The picture `gi` shows, scaled to the screen, under its name.
+    fn draw_viewer(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let Some(v) = &self.viewer else { return };
+        let file = &v.pictures[v.at];
+        let title = format!(
+            " {} · {} · {}/{} ",
+            file.name,
+            detail::size(file.size),
+            v.at + 1,
+            v.pictures.len()
+        );
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(theme.border_focus))
+            .title(Span::styled(title, Style::new().fg(theme.accent)))
+            .title_bottom(Line::from(" h/l · o browser · yu URL · q back ").right_aligned())
+            .style(Style::new().bg(theme.bg).fg(theme.fg));
+        let inner = block.inner(area);
+        let url = file.url.clone();
+        frame.render_widget(Clear, area);
+        frame.render_widget(block, area);
+        let note = match self.avatars.get_mut(&url) {
+            Some(Avatar::Ready(protocol)) => {
+                let image =
+                    ratatui_image::StatefulImage::<ratatui_image::protocol::StatefulProtocol>::new(
+                    )
+                    .resize(ratatui_image::Resize::Scale(None));
+                return frame.render_stateful_widget(image, inner, protocol.as_mut());
+            }
+            Some(Avatar::Failed) => "This picture could not be drawn",
+            _ => "Loading…",
+        };
+        let line = Line::styled(note, Style::new().fg(theme.muted)).centered();
+        frame.render_widget(line, Rect { y: inner.y + inner.height / 2, height: 1, ..inner });
     }
 
     /// Opens at once from the board's copy; an issue not on the board (a
@@ -1694,6 +1786,7 @@ impl App {
                 self.board.draw(frame, body, &ctx);
             }
         }
+        self.draw_viewer(frame, main, &theme);
         if let Some(p) = &mut self.picker {
             p.draw(frame, centered(main, 90, 85), &theme, self.picker_layout);
         }
