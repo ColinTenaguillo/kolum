@@ -232,3 +232,18 @@ async fn the_sso_bug_carries_a_screenshot_and_a_log() {
     assert!(p.image(&bug.attachments[1].url).await.is_err(), "a log is no picture");
     assert!(p.issue(&IssueKey::new("ACME-6")).await.unwrap().attachments.is_empty());
 }
+
+#[tokio::test]
+async fn ranking_moves_an_issue_next_to_another() {
+    let p = FakeProvider::new();
+    let order = |issues: Vec<Issue>| issues.iter().map(|i| i.key.to_string()).collect::<Vec<_>>();
+    let before = order(all_board_issues(&p).await);
+    assert_eq!(&before[..3], ["ACME-5", "ACME-6", "ACME-7"]);
+    p.rank(&IssueKey::new("ACME-5"), &Rank::After(IssueKey::new("ACME-7"))).await.unwrap();
+    let after = order(all_board_issues(&p).await);
+    assert_eq!(&after[..3], ["ACME-6", "ACME-7", "ACME-5"]);
+    p.rank(&IssueKey::new("ACME-5"), &Rank::Before(IssueKey::new("ACME-6"))).await.unwrap();
+    assert_eq!(order(all_board_issues(&p).await), before, "and back");
+    assert!(p.rank(&IssueKey::new("ACME-5"), &Rank::After(IssueKey::new("NOPE-1"))).await.is_err());
+    assert!(p.capabilities().supports(Capability::Rank));
+}

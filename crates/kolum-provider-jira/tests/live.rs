@@ -167,6 +167,20 @@ async fn writes_and_puts_back() {
     );
     eprintln!("assignee: round trip done");
 
+    // A place in the board's order, and back. Jira's reads show a new rank
+    // a few seconds after it took it: the order is waited for.
+    let order = |issues: Vec<Issue>| issues.into_iter().map(|i| i.key).collect::<Vec<_>>();
+    let before = order(all_issues(&p, &id).await);
+    if let [first, second, ..] = &before[..] {
+        let mut expected = before.clone();
+        expected.swap(0, 1);
+        p.rank(first, &Rank::After(second.clone())).await.unwrap();
+        assert!(order_becomes(&p, &id, &expected).await, "{first} after {second}");
+        p.rank(first, &Rank::Before(second.clone())).await.unwrap();
+        assert!(order_becomes(&p, &id, &before).await, "and back");
+        eprintln!("rank: {first} after {second}, and back");
+    }
+
     // The title, and back.
     let probe = format!("{} (kolum test)", issue.title);
     p.update(&key, IssueUpdate { title: Some(probe.clone()), ..Default::default() }).await.unwrap();
@@ -176,4 +190,16 @@ async fn writes_and_puts_back() {
         .unwrap();
     assert_eq!(p.issue(&key).await.unwrap().title, issue.title);
     eprintln!("title: round trip done");
+}
+
+/// Whether the board's order becomes `expected` within ten seconds.
+async fn order_becomes(p: &JiraProvider, board: &BoardId, expected: &[IssueKey]) -> bool {
+    for _ in 0..20 {
+        let now: Vec<IssueKey> = all_issues(p, board).await.into_iter().map(|i| i.key).collect();
+        if now == expected {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    false
 }

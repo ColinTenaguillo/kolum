@@ -37,6 +37,15 @@ pub enum Capability {
     Write,
     /// Avatars can be fetched.
     Images,
+    /// Cards can be put in order within a column.
+    Rank,
+}
+
+/// Where a card goes in its column's order, relative to another card.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Rank {
+    Before(IssueKey),
+    After(IssueKey),
 }
 
 /// What a provider can do. The UI hides the rest instead of offering it
@@ -91,6 +100,11 @@ pub trait IssueWriter: Send + Sync {
     async fn update(&self, key: &IssueKey, update: IssueUpdate) -> Result<()>;
     async fn create(&self, issue: NewIssue) -> Result<Issue>;
     async fn clone_issue(&self, key: &IssueKey) -> Result<Issue>;
+
+    /// Moves the issue in the board's order, next to another.
+    async fn rank(&self, _key: &IssueKey, _rank: &Rank) -> Result<()> {
+        Err(crate::DomainError::Unsupported(Capability::Rank))
+    }
 }
 
 #[async_trait]

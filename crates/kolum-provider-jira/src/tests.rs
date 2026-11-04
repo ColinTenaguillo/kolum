@@ -216,6 +216,7 @@ fn route(method: &str, target: &str) -> Option<(&'static str, &'static str)> {
         ("POST", "/rest/api/3/issue/ACME-5/transitions") => return Some(("204 No Content", "")),
         ("PUT", "/rest/api/3/issue/ACME-5/assignee") => return Some(("204 No Content", "")),
         ("PUT", "/rest/api/3/issue/ACME-5") => return Some(("204 No Content", "")),
+        ("PUT", "/rest/agile/1.0/issue/rank") => return Some(("204 No Content", "")),
         ("POST", "/rest/api/3/issue/ACME-5/comment") => {
             return Some(("201 Created", fixture!("comment_created.json")));
         }
@@ -517,4 +518,38 @@ async fn avatars_are_fetched_with_credentials_only_from_jira_itself() {
     assert!(jira.seen.lock().unwrap()[0].ends_with("[Basic dGVzdA==]"));
     assert!(elsewhere.seen.lock().unwrap()[0].ends_with("[]"), "no credentials to another site");
     assert!(matches!(p.image(&format!("{}/nope", jira.url)).await, Err(DomainError::NotFound(_))));
+}
+
+#[tokio::test]
+async fn ranking_puts_the_issue_before_or_after_another() {
+    use serde_json::json;
+    let jira = fake_jira(None).await;
+    let p = provider(&jira);
+    p.rank(&IssueKey::new("ACME-5"), &Rank::After(IssueKey::new("ACME-6"))).await.unwrap();
+    p.rank(&IssueKey::new("ACME-5"), &Rank::Before(IssueKey::new("ACME-6"))).await.unwrap();
+    let puts = sent(&jira, "PUT");
+    assert_eq!(
+        parts(&puts[0]),
+        (
+            "PUT /rest/agile/1.0/issue/rank",
+            json!({"issues": ["ACME-5"], "rankAfterIssue": "ACME-6"})
+        )
+    );
+    assert_eq!(
+        parts(&puts[1]),
+        (
+            "PUT /rest/agile/1.0/issue/rank",
+            json!({"issues": ["ACME-5"], "rankBeforeIssue": "ACME-6"})
+        )
+    );
+}
+
+#[test]
+fn a_207_with_a_refused_issue_is_a_failure() {
+    use serde_json::json;
+    let refused = json!({"entries": [{"issueId": 10005, "issueKey": "ACME-5", "status": 400, "errors": ["Rank is not configured"]}]});
+    assert_eq!(rank_errors(&refused), Some("Rank is not configured".into()));
+    let fine = json!({"entries": [{"issueId": 10005, "issueKey": "ACME-5", "status": 200}]});
+    assert_eq!(rank_errors(&fine), None);
+    assert_eq!(rank_errors(&serde_json::Value::Null), None, "a 204");
 }

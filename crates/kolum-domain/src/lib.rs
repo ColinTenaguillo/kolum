@@ -22,7 +22,7 @@ pub use issue::{
 };
 pub use ports::{
     BoardSource, Capabilities, Capability, IssueReader, IssueSearch, IssueWriter, Page, PageToken,
-    Provider, UserDirectory,
+    Provider, Rank, UserDirectory,
 };
 pub use query::{Filter, Query, UserSel};
 pub use rich_text::RichText;

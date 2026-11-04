@@ -257,6 +257,7 @@ async fn send_write(
         Write::Assign(user) => provider.assign(key, user.as_ref()).await,
         Write::Comment(body) => provider.comment(key, body).await.map(|_| ()),
         Write::Update(update) => provider.update(key, update).await,
+        Write::Rank(rank) => provider.rank(key, &rank).await,
     }
 }
 

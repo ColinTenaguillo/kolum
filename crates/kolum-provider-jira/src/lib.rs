@@ -110,6 +110,19 @@ impl JiraProvider {
     }
 }
 
+/// The reasons in a 207 answer to a rank, if any issue was refused.
+pub fn rank_errors(answer: &serde_json::Value) -> Option<String> {
+    let refused: Vec<String> = answer["entries"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|e| e["status"].as_u64().is_some_and(|s| s >= 300))
+        .flat_map(|e| e["errors"].as_array().cloned().unwrap_or_default())
+        .filter_map(|m| m.as_str().map(String::from))
+        .collect();
+    (!refused.is_empty()).then(|| refused.join("; "))
+}
+
 fn offset_page(page: &OffsetPage) -> Option<PageToken> {
     let next = page.start_at + page.issues.len() as u64;
     (!page.issues.is_empty() && next < page.total).then(|| PageToken(next.to_string()))
@@ -330,6 +343,24 @@ impl IssueWriter for JiraProvider {
         self.issue(&IssueKey::new(key)).await
     }
 
+    /// Jira's own rank, the board's order. It answers 207 when it refuses
+    /// an issue, with the reason inside: that is a failure, not a success.
+    async fn rank(&self, key: &IssueKey, rank: &Rank) -> Result<()> {
+        let body = match rank {
+            Rank::Before(other) => {
+                json!({ "issues": [key.as_str()], "rankBeforeIssue": other.as_str() })
+            }
+            Rank::After(other) => {
+                json!({ "issues": [key.as_str()], "rankAfterIssue": other.as_str() })
+            }
+        };
+        let answer = self.client.send(Method::PUT, &format!("{AGILE}/issue/rank"), &body).await?;
+        match rank_errors(&answer) {
+            Some(why) => Err(DomainError::Conflict(why)),
+            None => Ok(()),
+        }
+    }
+
     async fn clone_issue(&self, key: &IssueKey) -> Result<Issue> {
         let source = self.issue(key).await?;
         let project = key.as_str().split('-').next().unwrap_or_default().to_string();
@@ -386,6 +417,7 @@ impl Provider for JiraProvider {
             Activity,
             Write,
             Images,
+            Rank,
         ])
     }
 }

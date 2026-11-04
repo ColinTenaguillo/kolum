@@ -583,6 +583,8 @@ impl App {
                 }
             }
             Action::PickerUsers => self.open_people_picker(),
+            Action::MoveCardDown => self.rank_card(n),
+            Action::MoveCardUp => self.rank_card(-n),
             Action::MoveCardLeft => self.move_card(-n),
             Action::MoveCardRight => self.move_card(n),
             _ => {
@@ -817,6 +819,31 @@ impl App {
             Some(_) => {}
             None => self.say("No column that way", Level::Info),
         }
+    }
+
+    /// `J` and `K`: next to the card `delta` places away, in the provider's
+    /// order, shown at once.
+    fn rank_card(&mut self, delta: i64) {
+        self.board.visual = None;
+        let Some(key) = self.board.selected().map(|i| i.key.clone()) else { return };
+        let other = match self.board.neighbour(delta) {
+            Ok(other) => other,
+            Err(why) => return self.say(why, Level::Info),
+        };
+        if !self.can_write() {
+            return;
+        }
+        let rank = if delta > 0 {
+            kolum_domain::Rank::After(other)
+        } else {
+            kolum_domain::Rank::Before(other)
+        };
+        if let Some(op) = self.optimistic(&key, kolum_app::Change::Rank(rank.clone())) {
+            let write = kolum_app::Write::Rank(rank);
+            self.effects.push(Effect::Send(Command::Write { op, key: key.clone(), write }));
+        }
+        let way = if delta > 0 { "down" } else { "up" };
+        self.say(format!("{key} moved {way}"), Level::Info);
     }
 
     fn ask_transitions(&mut self, keys: Vec<IssueKey>, column: Option<usize>) {

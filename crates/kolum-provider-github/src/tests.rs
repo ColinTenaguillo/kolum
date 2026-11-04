@@ -341,3 +341,28 @@ async fn avatars_are_fetched_without_the_token() {
     let missing = fake_github(404, Some("")).await;
     assert!(matches!(provider(&missing).image(&missing.url).await, Err(DomainError::NotFound(_))));
 }
+
+#[tokio::test]
+async fn ranking_places_the_item_after_another_in_the_projects_order() {
+    let gh = fake_github(200, None).await;
+    let (p, _) = loaded(&gh).await; // items aaa111 (#42), bbb222 (#43), ccc333 (draft)
+    let (issue, pr, draft) =
+        (IssueKey::new("kolum#42"), IssueKey::new("kolum#43"), IssueKey::new("draft-ccc333"));
+    p.rank(&issue, &Rank::After(pr.clone())).await.unwrap();
+    p.rank(&draft, &Rank::Before(pr.clone())).await.unwrap();
+    p.rank(&pr, &Rank::Before(issue.clone())).await.unwrap();
+    p.rank(&issue, &Rank::Before(pr.clone())).await.unwrap();
+    let seen = gh.seen.lock().unwrap();
+    let moves: Vec<Value> = seen
+        .iter()
+        .filter(|r| r["query"].as_str().unwrap().contains("updateProjectV2ItemPosition"))
+        .map(|r| r["variables"].clone())
+        .collect();
+    assert_eq!(
+        moves[0],
+        json!({ "project": "PVT_1", "item": "PVTI_aaa111", "after": "PVTI_bbb222" })
+    );
+    assert_eq!(moves[1]["after"], "PVTI_aaa111", "before #43 is after the one before it");
+    assert_eq!(moves[2]["after"], Value::Null, "before the first is first");
+    assert_eq!(moves[3]["after"], Value::Null, "before #43, skipping itself: first");
+}

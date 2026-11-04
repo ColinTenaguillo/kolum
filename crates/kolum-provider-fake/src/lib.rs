@@ -456,6 +456,23 @@ impl IssueWriter for FakeProvider {
         Ok(issue)
     }
 
+    /// The board's order is the order of the list: the issue is taken out
+    /// and put back next to the other.
+    async fn rank(&self, key: &IssueKey, rank: &Rank) -> Result<()> {
+        let mut state = self.state();
+        let (Rank::Before(other) | Rank::After(other)) = rank;
+        let from = state.issues.iter().position(|i| &i.key == key);
+        let from = from.ok_or_else(|| DomainError::NotFound(key.to_string()))?;
+        if !state.issues.iter().any(|i| &i.key == other) {
+            return Err(DomainError::NotFound(other.to_string()));
+        }
+        let issue = state.issues.remove(from);
+        let at = state.issues.iter().position(|i| &i.key == other).unwrap_or(0);
+        let at = if matches!(rank, Rank::After(_)) { at + 1 } else { at };
+        state.issues.insert(at, issue);
+        Ok(())
+    }
+
     async fn clone_issue(&self, key: &IssueKey) -> Result<Issue> {
         let source = self.issue(key).await?;
         let new = NewIssue {
@@ -509,6 +526,7 @@ impl Provider for FakeProvider {
             Activity,
             Write,
             Images,
+            Rank,
         ])
     }
 }

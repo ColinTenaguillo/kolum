@@ -208,6 +208,41 @@ impl BoardView {
         }
     }
 
+    /// The card `delta` places below (or above) the highlighted one in its
+    /// column, as far as that goes without leaving its swimlane. `Err`
+    /// says why there is none: the edge of the column, or of the lane.
+    pub fn neighbour(&self, delta: i64) -> Result<IssueKey, &'static str> {
+        let cards = self.cards();
+        let column = cards.get(self.column).ok_or("No card here")?;
+        let from = self.cursor_row();
+        let here = column.get(from).ok_or("No card here")?;
+        let lane_of = |i: &Issue| lane(self.swimlanes, i).map(|(key, _)| key);
+        let mut to = from;
+        for _ in 0..delta.unsigned_abs() {
+            let next = if delta > 0 { to + 1 } else { to.wrapping_sub(1) };
+            match column.get(next) {
+                Some(card) if lane_of(card) == lane_of(here) => to = next,
+                Some(_) if to == from => {
+                    return Err(if delta > 0 {
+                        "Already at the bottom of its lane"
+                    } else {
+                        "Already at the top of its lane"
+                    });
+                }
+                Some(_) => break,
+                None if to == from => {
+                    return Err(if delta > 0 {
+                        "Already at the bottom"
+                    } else {
+                        "Already at the top"
+                    });
+                }
+                None => break,
+            }
+        }
+        Ok(column[to].key.clone())
+    }
+
     pub fn cursor_row(&self) -> usize {
         self.cursor.get(self.column).copied().unwrap_or(0)
     }

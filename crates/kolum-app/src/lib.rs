@@ -12,4 +12,4 @@ pub use board::{BoardSnapshot, load_board, sync_board};
 pub use cache::Cache;
 pub use query::parse_query;
 pub use service::{Command, Event, IssueDetail, Service};
-pub use write::{Change, Ledger, Write, apply, transitions_into};
+pub use write::{Change, Ledger, Write, apply, move_issue, transitions_into};

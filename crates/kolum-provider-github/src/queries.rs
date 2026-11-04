@@ -94,3 +94,7 @@ pub const UPDATE_DRAFT: &str = r#"mutation($id: ID!, $title: String, $body: Stri
 
 pub const ADD_DRAFT: &str = r#"mutation($project: ID!, $title: String!, $body: String) {
   addProjectV2DraftIssue(input: { projectId: $project, title: $title, body: $body }) { projectItem { id } } }"#;
+
+/// `afterId` null puts the item first.
+pub const MOVE_ITEM: &str = r#"mutation($project: ID!, $item: ID!, $after: ID) {
+  updateProjectV2ItemPosition(input: { projectId: $project, itemId: $item, afterId: $after }) { clientMutationId } }"#;

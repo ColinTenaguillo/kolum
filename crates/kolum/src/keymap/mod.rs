@@ -110,6 +110,8 @@ const DEFAULTS: &[(Context, &str, Action)] = &[
     (C::Board, "<C-u>", A::HalfPageUp),
     (C::Board, "H", A::MoveCardLeft),
     (C::Board, "L", A::MoveCardRight),
+    (C::Board, "J", A::MoveCardDown),
+    (C::Board, "K", A::MoveCardUp),
     (C::Board, "<CR>", A::OpenDetail),
     (C::Board, "gd", A::OpenDetail),
     (C::Board, "/", A::Filter),

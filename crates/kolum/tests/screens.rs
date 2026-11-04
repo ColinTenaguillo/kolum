@@ -1203,3 +1203,70 @@ async fn a_card_has_its_epic_under_the_title_and_its_labels_under_the_epic() {
         "labels stay on the last line"
     );
 }
+
+fn column_order(app: &mut App, column: usize) -> Vec<String> {
+    let shown = screen(app, 160, 120);
+    shown
+        .lines()
+        .filter_map(|l| {
+            let cell: String = l.chars().skip(column * 32).take(32).collect();
+            cell.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                .find(|w| w.starts_with("ACME-"))
+                .map(String::from)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn shift_j_and_k_move_a_card_within_its_column() {
+    use kolum_domain::{IssueKey as K, Rank};
+    let mut app = loaded().await;
+    press(&mut app, "ll"); // In Progress: ACME-5, 10, 11, 13…
+    app.take_effects();
+    let start = column_order(&mut app, 2);
+    assert_eq!(&start[..3], ["ACME-5", "ACME-10", "ACME-11"]);
+
+    press(&mut app, "J");
+    assert_eq!(&column_order(&mut app, 2)[..3], ["ACME-10", "ACME-5", "ACME-11"], "moved at once");
+    assert_eq!(selected(&app), "ACME-5", "the highlight follows it");
+    let sent = writes(app.take_effects());
+    assert_eq!(sent[0].2, kolum_app::Write::Rank(Rank::After(K::new("ACME-10"))));
+
+    press(&mut app, "K");
+    assert_eq!(column_order(&mut app, 2), start);
+    assert_eq!(
+        writes(app.take_effects())[0].2,
+        kolum_app::Write::Rank(Rank::Before(K::new("ACME-10")))
+    );
+
+    press(&mut app, "2J");
+    assert_eq!(
+        &column_order(&mut app, 2)[..3],
+        ["ACME-10", "ACME-11", "ACME-5"],
+        "a count jumps that many"
+    );
+    let op = writes(app.take_effects())[0].0;
+    app.on_event(Event::WriteFailed {
+        op,
+        key: K::new("ACME-5"),
+        error: kolum_domain::DomainError::Conflict("Rank is not configured".into()),
+    });
+    assert_eq!(column_order(&mut app, 2), start, "a refusal puts the order back");
+    assert!(screen(&mut app, 160, 40).contains("Rank is not configured; undone"));
+
+    press(&mut app, "ggK");
+    assert!(app.take_effects().is_empty());
+    assert!(screen(&mut app, 160, 40).contains("Already at the top"));
+}
+
+#[tokio::test]
+async fn with_swimlanes_a_card_stays_in_its_lane() {
+    let mut app = loaded().await;
+    press(&mut app, "lls"); // In Progress by epic: Billing revamp (ACME-13) first
+    press(&mut app, "gg");
+    assert_eq!(selected(&app), "ACME-13");
+    app.take_effects();
+    press(&mut app, "J");
+    assert!(app.take_effects().is_empty(), "the next card is in another lane");
+    assert!(screen(&mut app, 160, 40).contains("Already at the bottom of its lane"));
+}

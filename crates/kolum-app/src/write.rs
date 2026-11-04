@@ -4,7 +4,8 @@
 
 use crate::board::BoardSnapshot;
 use kolum_domain::{
-    Board, Issue, IssueKey, IssueUpdate, RichText, Status, Transition, TransitionId, User, UserId,
+    Board, Issue, IssueKey, IssueUpdate, Rank, RichText, Status, Transition, TransitionId, User,
+    UserId,
 };
 use std::collections::BTreeMap;
 
@@ -27,6 +28,7 @@ pub enum Write {
     Assign(Option<UserId>),
     Comment(RichText),
     Update(IssueUpdate),
+    Rank(Rank),
 }
 
 /// How a write shows on screen before the provider has answered.
@@ -35,10 +37,15 @@ pub enum Change {
     Status(Status),
     Assignee(Option<User>),
     Update(IssueUpdate),
+    /// A place in the board's order.
+    Rank(Rank),
 }
 
+/// What a change does to one issue. A rank moves it in the board's list
+/// instead: see [`move_issue`].
 pub fn apply(issue: &mut Issue, change: &Change) {
     match change {
+        Change::Rank(_) => {}
         Change::Status(status) => issue.status = status.clone(),
         Change::Assignee(user) => issue.assignee = user.clone(),
         Change::Update(u) => {
@@ -58,13 +65,34 @@ pub fn apply(issue: &mut Issue, change: &Change) {
     }
 }
 
+/// Takes the issue out of the list and puts it back next to the other.
+/// False, and nothing moved, when either is not there.
+pub fn move_issue(issues: &mut Vec<Issue>, key: &IssueKey, rank: &Rank) -> bool {
+    let (Rank::Before(other) | Rank::After(other)) = rank;
+    let Some(from) = issues.iter().position(|i| &i.key == key) else { return false };
+    if key == other || !issues.iter().any(|i| &i.key == other) {
+        return false;
+    }
+    let issue = issues.remove(from);
+    let at = issues.iter().position(|i| &i.key == other).unwrap_or(0);
+    issues.insert(if matches!(rank, Rank::After(_)) { at + 1 } else { at }, issue);
+    true
+}
+
+/// What a write changed, to put it back.
+#[derive(Debug)]
+enum Before {
+    Issue(Box<Issue>),
+    Order(Vec<IssueKey>),
+}
+
 /// The writes in flight, each with the issue as it was before. When two
 /// touch the same issue and the first fails, the issue goes back to before
 /// both; the reply to the second then brings the provider's truth.
 #[derive(Debug, Default)]
 pub struct Ledger {
     next: u64,
-    before: BTreeMap<u64, Issue>,
+    before: BTreeMap<u64, Before>,
 }
 
 impl Ledger {
@@ -73,13 +101,17 @@ impl Ledger {
     /// but the write still goes out, under a fresh id.
     pub fn begin(&mut self, snapshot: &mut BoardSnapshot, key: &IssueKey, change: &Change) -> u64 {
         self.next += 1;
-        if let Some(issue) = snapshot.issues.iter_mut().find(|i| &i.key == key) {
-            self.before.insert(self.next, issue.clone());
+        if let Change::Rank(rank) = change {
+            let order = snapshot.issues.iter().map(|i| i.key.clone()).collect();
+            if move_issue(&mut snapshot.issues, key, rank) {
+                self.before.insert(self.next, Before::Order(order));
+            }
+        } else if let Some(issue) = snapshot.issues.iter_mut().find(|i| &i.key == key) {
+            self.before.insert(self.next, Before::Issue(Box::new(issue.clone())));
             apply(issue, change);
         }
         self.next
     }
-
     /// The provider took it: forget the old state.
     pub fn settle(&mut self, op: u64) {
         self.before.remove(&op);
@@ -87,14 +119,24 @@ impl Ledger {
 
     /// The provider refused it: put the issue back as it was.
     pub fn rollback(&mut self, snapshot: &mut BoardSnapshot, op: u64) -> Option<IssueKey> {
-        let old = self.before.remove(&op)?;
-        let key = old.key.clone();
-        if let Some(issue) = snapshot.issues.iter_mut().find(|i| i.key == key) {
-            *issue = old;
+        match self.before.remove(&op)? {
+            Before::Issue(old) => {
+                let key = old.key.clone();
+                if let Some(issue) = snapshot.issues.iter_mut().find(|i| i.key == key) {
+                    *issue = *old;
+                }
+                Some(key)
+            }
+            // The old order, every issue it knew back in its place; one that
+            // arrived since stays at the end.
+            Before::Order(order) => {
+                let place =
+                    |i: &Issue| order.iter().position(|k| *k == i.key).unwrap_or(usize::MAX);
+                snapshot.issues.sort_by_key(place);
+                order.first().cloned()
+            }
         }
-        Some(key)
     }
-
     pub fn pending(&self) -> usize {
         self.before.len()
     }
@@ -142,6 +184,44 @@ mod tests {
         ledger.settle(second);
         assert_eq!(ledger.pending(), 0);
         assert_eq!(ledger.rollback(&mut snapshot, op), None, "undone once");
+    }
+
+    #[tokio::test]
+    async fn a_rank_moves_the_card_at_once_and_a_refusal_puts_the_order_back() {
+        let mut snapshot = load_board(&FakeProvider::new(), None).await.unwrap();
+        let original = snapshot.clone();
+        let order = |s: &BoardSnapshot| {
+            s.issues.iter().take(3).map(|i| i.key.to_string()).collect::<Vec<_>>()
+        };
+        let mut ledger = Ledger::default();
+        let op = ledger.begin(
+            &mut snapshot,
+            &IssueKey::new("ACME-5"),
+            &Change::Rank(Rank::After(IssueKey::new("ACME-7"))),
+        );
+        assert_eq!(order(&snapshot), ["ACME-6", "ACME-7", "ACME-5"]);
+        assert!(ledger.rollback(&mut snapshot, op).is_some());
+        assert_eq!(snapshot, original);
+        assert!(
+            !move_issue(
+                &mut snapshot.issues,
+                &IssueKey::new("ACME-5"),
+                &Rank::After(IssueKey::new("ACME-5"))
+            ),
+            "next to itself"
+        );
+        assert!(!move_issue(
+            &mut snapshot.issues,
+            &IssueKey::new("ACME-5"),
+            &Rank::Before(IssueKey::new("NOPE"))
+        ));
+        let nothing = ledger.begin(
+            &mut snapshot,
+            &IssueKey::new("NOPE"),
+            &Change::Rank(Rank::Before(IssueKey::new("ACME-5"))),
+        );
+        assert_eq!(ledger.rollback(&mut snapshot, nothing), None, "nothing moved, nothing to undo");
+        assert_eq!(snapshot, original);
     }
 
     #[tokio::test]

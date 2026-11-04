@@ -44,6 +44,10 @@ pub struct GithubProvider {
     settings: GithubSettings,
     project: OnceCell<ProjectInfo>,
     known: Mutex<HashMap<IssueKey, Known>>,
+    /// The project's items in its order, from the last full read of the
+    /// board: GitHub places an item after another, so "before X" is "after
+    /// the one before X".
+    order: Mutex<Vec<String>>,
 }
 
 fn transport(e: impl std::fmt::Display) -> DomainError {
@@ -268,6 +272,7 @@ impl GithubProvider {
             settings,
             project: OnceCell::new(),
             known: Mutex::new(HashMap::new()),
+            order: Mutex::new(vec![]),
         }
     }
 
@@ -387,6 +392,7 @@ impl BoardSource for GithubProvider {
         since: Option<OffsetDateTime>,
         page: Option<PageToken>,
     ) -> Result<Page<Issue>> {
+        let first = page.is_none();
         let data = self
             .graphql(&queries::items(), json!({ "id": id.as_str(), "after": page.map(|p| p.0) }))
             .await?;
@@ -398,6 +404,13 @@ impl BoardSource for GithubProvider {
             .filter_map(|n| item_of(n, &self.settings.status_field))
             .collect();
         self.remember(&known);
+        if since.is_none() {
+            let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
+            if first {
+                order.clear();
+            }
+            order.extend(known.iter().filter_map(|k| k.item.clone()));
+        }
         let next = (items["pageInfo"]["hasNextPage"] == true)
             .then(|| items["pageInfo"]["endCursor"].as_str().map(|c| PageToken(c.into())))
             .flatten();
@@ -618,6 +631,34 @@ impl IssueWriter for GithubProvider {
         Ok(known.issue)
     }
 
+    async fn rank(&self, key: &IssueKey, rank: &Rank) -> Result<()> {
+        let p = self.project().await?;
+        let item = self
+            .known(key)?
+            .item
+            .ok_or_else(|| DomainError::NotFound(format!("{key} is not in the project")))?;
+        let (Rank::Before(other) | Rank::After(other)) = rank;
+        let other = self
+            .known(other)?
+            .item
+            .ok_or_else(|| DomainError::NotFound(format!("{other} is not in the project")))?;
+        let after = match rank {
+            Rank::After(_) => Some(other),
+            Rank::Before(_) => {
+                let order = self.order.lock().unwrap_or_else(|e| e.into_inner());
+                let at = order
+                    .iter()
+                    .position(|i| *i == other)
+                    .ok_or_else(|| DomainError::NotFound(other.clone()))?;
+                // The one before it, skipping the item being moved; none
+                // puts it first.
+                order[..at].iter().rev().find(|i| **i != item).cloned()
+            }
+        };
+        let vars = json!({ "project": p.id, "item": item, "after": after });
+        self.graphql(queries::MOVE_ITEM, vars).await.map(drop)
+    }
+
     async fn clone_issue(&self, key: &IssueKey) -> Result<Issue> {
         let source = self.known(key)?.issue;
         let new = NewIssue {
@@ -669,6 +710,7 @@ impl Provider for GithubProvider {
             Comments,
             Write,
             Images,
+            Rank,
         ])
     }
 }
