@@ -41,6 +41,7 @@ actions! {
     MoveCardDown "move_card_down" "Move the card down its column",
     MoveCardUp "move_card_up" "Move the card up its column",
     OpenDetail "open_detail" "Open the issue",
+    OpenParent "open_parent" "Open the parent issue",
     Filter "filter" "Filter as you type: words, @me, #bug, l:…",
     NextMatch "next_match" "Next card matching the filter",
     PrevMatch "prev_match" "Previous card matching the filter",

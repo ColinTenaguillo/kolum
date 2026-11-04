@@ -472,9 +472,8 @@ impl App {
                 }
                 self.board.set_snapshot(snapshot);
             }
-            Event::IssueLoaded(detail)
-                if self.detail.is_none() && self.opening.as_ref() == Some(&detail.issue.key) =>
-            {
+            // In place of the open issue, if any: `gp` waits on the parent there.
+            Event::IssueLoaded(detail) if self.opening.as_ref() == Some(&detail.issue.key) => {
                 self.opening = None;
                 let mut view = DetailView::new(detail.issue.clone());
                 view.loaded = Some(*detail);
@@ -694,6 +693,11 @@ impl App {
                     self.issue_effect(action, &issue);
                 }
             }
+            Action::OpenParent => {
+                if let Some(issue) = b.selected().cloned() {
+                    self.open_parent(&issue);
+                }
+            }
             Action::Create => {
                 if self.can_write() {
                     self.create();
@@ -838,6 +842,10 @@ impl App {
                 self.issue_effect(action, &issue);
             }
             Action::ViewPictures => self.open_viewer(),
+            Action::OpenParent => {
+                let issue = d.issue.clone();
+                self.open_parent(&issue);
+            }
             _ => {
                 let keys = vec![d.issue.key.clone()];
                 self.issue_action(action, keys);
@@ -1474,6 +1482,7 @@ impl App {
         match issue {
             Some(issue) => {
                 self.detail = Some(DetailView::new(issue.clone()));
+                self.opening = None;
                 self.want_avatar();
             }
             None => {
@@ -1483,6 +1492,14 @@ impl App {
         }
         self.effects.push(Effect::Send(Command::LoadIssue(key)));
     }
+    /// `gp`: the issue's parent, an epic most often.
+    fn open_parent(&mut self, issue: &kolum_domain::Issue) {
+        match &issue.parent {
+            Some(parent) => self.open_detail(parent.key.clone()),
+            None => self.say(format!("{} has no parent", issue.key), Level::Info),
+        }
+    }
+
     fn open_picker(&mut self, picker: Box<dyn AnyPicker>) {
         self.close_picker();
         self.picker = Some(picker);

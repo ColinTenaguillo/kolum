@@ -1421,6 +1421,54 @@ async fn gi_views_the_pictures_full_screen() {
     assert!(screen(&mut app, 140, 40).contains("No pictures in ACME-"), "an issue without any");
 }
 
+/// `gp` opens the parent, from the issue or from its card; an epic is not
+/// on the board, so it opens once read, in place of the issue.
+#[tokio::test]
+async fn gp_opens_the_parent() {
+    use kolum_domain::IssueReader;
+    let fake = FakeProvider::new();
+    let parent = fake.issue(&IssueKey::new("ACME-5")).await.unwrap().parent.unwrap().key;
+    let mut app = loaded().await;
+    press(&mut app, "ll<CR>"); // ACME-5
+    app.take_effects();
+    press(&mut app, "gp");
+    assert!(app.take_effects().contains(&Effect::Send(Command::LoadIssue(parent.clone()))));
+    assert!(screen(&mut app, 140, 40).contains(&format!("Opening {parent}")));
+    let issue = fake.issue(&parent).await.unwrap();
+    let title = issue.title.clone();
+    app.on_event(Event::IssueLoaded(Box::new(IssueDetail {
+        issue,
+        comments: vec![],
+        activity: vec![],
+        layout: None,
+    })));
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains(&title) && shown.contains(&format!("› {parent}")), "{shown}");
+
+    press(&mut app, "q");
+    app.take_effects();
+    press(&mut app, "gp");
+    let asked = app.take_effects();
+    assert!(
+        asked.contains(&Effect::Send(Command::LoadIssue(parent.clone()))),
+        "from the card: {asked:?}"
+    );
+    press(&mut app, "<CR>"); // ACME-5 again, before the parent arrives
+    let issue = fake.issue(&parent).await.unwrap();
+    let late = IssueDetail { issue, comments: vec![], activity: vec![], layout: None };
+    app.on_event(Event::IssueLoaded(Box::new(late)));
+    assert!(
+        screen(&mut app, 140, 40).contains("› ACME-5"),
+        "opened since: the parent waits no more"
+    );
+
+    let board = load_board(&fake, None).await.unwrap();
+    let orphan = board.issues.iter().find(|i| i.parent.is_none()).unwrap().key.clone();
+    app.on_event(Event::BoardLoaded { snapshot: board, fresh: true });
+    press(&mut app, &format!("q/{orphan}<CR>gp"));
+    assert!(screen(&mut app, 140, 40).contains(&format!("{orphan} has no parent")));
+}
+
 #[tokio::test]
 async fn without_pictures_gi_says_so() {
     let mut app = loaded().await;

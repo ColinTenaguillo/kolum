@@ -48,6 +48,7 @@ The defaults follow vim. Counts work on motions (`3j`, `5G`), sequences wait
 | `gg` `G` · `0` `$` | first or last card · first or last column |
 | `Ctrl-d` `Ctrl-u` | half a page |
 | `Enter` `gd` | open the issue |
+| `gp` | open its parent (the epic), from the card or the issue |
 | `/` then `n` `N` | filter the board as you type, step through matches; `/@me`, `/@ana #bug`, `/l:backend login` take the picker's prefixes |
 | `Space f` | find an issue: fuzzy, with `@me` `@name` `#bug` `s:review` `l:backend` `e:PROJ-10` `sp:14` |
 | `Space F` | search the provider (`Ctrl-Space` switches in the picker); `!` starts raw JQL; a key (`IC-12983`) or a number alone (`12983`, in the board's project) finds that issue |
