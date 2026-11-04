@@ -690,7 +690,7 @@ async fn empty_columns_can_be_hidden() {
 async fn half_pages_move_by_what_is_on_screen() {
     let mut app = loaded().await;
     press(&mut app, "ll");
-    screen(&mut app, 150, 40); // 5 cards a column fit: a half page is 2
+    screen(&mut app, 150, 36); // 5 cards a column fit: a half page is 2
     press(&mut app, "<C-d>");
     assert_eq!(selected(&app), "ACME-11");
     press(&mut app, "<C-u>");
@@ -1791,21 +1791,20 @@ async fn a_card_has_its_epic_under_the_title_and_its_labels_under_the_epic() {
     let row = |text: &str| {
         lines.iter().position(|l| l.contains(text)).unwrap_or_else(|| panic!("{text} in {shown}"))
     };
-    // ACME-9, the first card of the Backlog.
-    let key = row("■ ACME-9");
-    assert_eq!(row("Enforce SSO per"), key + 1, "the title under the key");
-    assert_eq!(row("organisation"), key + 2, "on two lines");
-    assert_eq!(row("┃◆ Single sign-on"), key + 3, "then the epic, whole");
+    // ACME-9, the first card of the Backlog, under the cursor.
+    let title = row("┃Enforce SSO per");
+    assert_eq!(row("┃organisation"), title + 1, "on two lines");
+    assert_eq!(row("┃◆ Single sign-on"), title + 2, "then the epic, whole");
+    assert!(lines[title + 3].contains("┃ auth   "), "then the labels: {shown}");
     assert!(
-        lines[key + 4].contains("┃ auth ") && lines[key + 4].contains("5 --┃"),
-        "then the labels, estimate and assignee"
+        lines[title + 4].contains("┃■ ACME-9 ↓ ") && lines[title + 4].contains("5 --│"),
+        "then the type, key, priority, estimate and assignee: {shown}"
     );
     // A card with no epic keeps its lines where they are.
-    let ten = row("● ACME-10");
-    assert!(
-        lines[ten + 4].contains(" backend ") && lines[ten + 4].contains("3 DP"),
-        "labels stay on the last line"
-    );
+    let ten = row("▍● ACME-10");
+    assert_eq!(row("▍Search API returns"), ten - 4, "an empty epic line between");
+    assert!(lines[ten - 1].contains("▍ backend   api "), "{shown}");
+    assert!(lines[ten].contains("3 DP"), "{shown}");
 }
 
 fn column_order(app: &mut App, column: usize) -> Vec<String> {
@@ -1935,4 +1934,43 @@ async fn the_command_line_proposals() {
     let mut app = loaded().await;
     press(&mut app, ":<Tab><Tab>");
     insta::assert_snapshot!(screen(&mut app, 100, 14));
+}
+
+#[tokio::test]
+async fn a_card_stripe_has_the_colour_of_its_priority() {
+    let mut app = loaded().await;
+    let mut terminal = Terminal::new(TestBackend::new(150, 40)).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let stripe_of = |key: &str| {
+        for y in 0..buffer.area.height {
+            let row: Vec<&str> = (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect();
+            if let Some(x) = (0..row.len()).find(|&x| row[x..].concat().starts_with(key)) {
+                // The key line reads `▍● KEY`: the stripe is three cells before it.
+                return buffer[(x as u16 - 3, y)].fg;
+            }
+        }
+        panic!("{key} on the board")
+    };
+    let theme = kolum::theme::Theme::builtin("dark").unwrap();
+    use kolum_domain::Priority;
+    assert_eq!(stripe_of("ACME-7 "), theme.priority(Priority::Medium), "a story, medium");
+    assert_eq!(stripe_of("ACME-10 "), theme.priority(Priority::High), "a bug, high");
+    assert_eq!(stripe_of("ACME-26 "), theme.priority(Priority::Lowest), "a task, lowest");
+}
+
+#[tokio::test]
+async fn a_card_without_labels_has_no_labels_line() {
+    use kolum::config::CardField::*;
+    let mut settings = settings();
+    settings.ui.card_fields = vec![Type, Key, Priority, Epic, Estimate, Assignee];
+    let mut app = loaded_with(settings).await;
+    let shown = screen(&mut app, 150, 40);
+    let lines: Vec<&str> = shown.lines().collect();
+    let row = |text: &str| {
+        lines.iter().position(|l| l.contains(text)).unwrap_or_else(|| panic!("{text} in {shown}"))
+    };
+    let title = row("┃Enforce SSO per");
+    assert!(lines[title + 3].contains("┃■ ACME-9 ↓ "), "the key line under the epic: {shown}");
+    assert_eq!(row("▍Usage-based pricing"), title + 5, "after one blank line: {shown}");
 }

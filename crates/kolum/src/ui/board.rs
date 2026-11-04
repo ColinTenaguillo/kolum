@@ -14,9 +14,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 use std::cell::Cell;
 
-/// Border, key line, two lines of title, the epic, the labels with the
-/// estimate and assignee, border.
-const CARD_HEIGHT: u16 = 7;
+/// The tallest card: two lines of title, the epic, the labels, the key
+/// line, and a blank one. A card with no labels has no labels line.
+const CARD_HEIGHT: u16 = 6;
 const MIN_COLUMN_WIDTH: u16 = 28;
 
 #[derive(Debug, Default)]
@@ -251,7 +251,7 @@ impl BoardView {
     }
 
     /// A column's cards as drawn: a heading where a new lane starts.
-    fn items(&self, cards: &[&Issue]) -> Vec<Item> {
+    fn items(&self, cards: &[&Issue], ctx: &DrawCtx, cols: usize) -> Vec<Item> {
         let mut items = vec![];
         let mut current: Option<String> = None;
         for (row, issue) in cards.iter().enumerate() {
@@ -261,7 +261,8 @@ impl BoardView {
                 items.push(Item::Lane(label.clone()));
                 current = Some(label);
             }
-            items.push(Item::Card(row));
+            let height = CARD_HEIGHT - u16::from(labels(issue, ctx, cols).spans.is_empty());
+            items.push(Item::Card(row, height));
         }
         items
     }
@@ -343,7 +344,7 @@ impl BoardView {
             .fg(if focused { theme.accent } else { theme.fg })
             .add_modifier(Modifier::BOLD);
         let block = Block::bordered()
-            .border_type(BorderType::Plain)
+            .border_type(BorderType::Rounded)
             .border_style(Style::new().fg(if focused { theme.border_focus } else { theme.border }))
             .title(Line::from(vec![
                 Span::styled(format!(" {} ", name.to_uppercase()), title_style),
@@ -351,10 +352,10 @@ impl BoardView {
             ]));
         let inner = block.inner(area);
         frame.render_widget(block, area);
-        // Whole cards only: a card cut in half reads as a different card.
+        // Counted at the tallest, so a half page never skips past the screen.
         self.page.set((inner.height / CARD_HEIGHT).max(1) as usize);
         let cursor = self.cursor.get(c).copied().unwrap_or(0);
-        let items = self.items(cards);
+        let items = self.items(cards, ctx, (inner.width as usize).saturating_sub(1));
         let start = first_shown(&items, cursor, inner.height);
         let range = self.range().filter(|_| focused);
         let mut y = inner.y;
@@ -375,7 +376,7 @@ impl BoardView {
                     ));
                     frame.render_widget(Paragraph::new(line), rect);
                 }
-                &Item::Card(row) => {
+                &Item::Card(row, _) => {
                     let marked = range.is_some_and(|(a, b)| (a..=b).contains(&row));
                     card(frame, rect, cards[row], focused && row == cursor, marked, ctx);
                     last_card = Some(row);
@@ -400,14 +401,15 @@ impl BoardView {
 /// One row of a column: a card, or the heading of the swimlane after it.
 enum Item {
     Lane(String),
-    Card(usize),
+    /// Its row, and its height.
+    Card(usize, u16),
 }
 
 impl Item {
     fn height(&self) -> u16 {
         match self {
             Item::Lane(_) => 1,
-            Item::Card(_) => CARD_HEIGHT,
+            &Item::Card(_, height) => height,
         }
     }
 }
@@ -415,7 +417,7 @@ impl Item {
 /// The first row to draw so that `cursor`'s card is on screen: as far
 /// down as needed and no further, the lane heading above it included.
 fn first_shown(items: &[Item], cursor: usize, height: u16) -> usize {
-    let Some(at) = items.iter().position(|i| matches!(i, Item::Card(r) if *r == cursor)) else {
+    let Some(at) = items.iter().position(|i| matches!(i, Item::Card(r, _) if *r == cursor)) else {
         return 0;
     };
     let mut used = 0;
@@ -463,51 +465,38 @@ pub struct DrawCtx<'a> {
 
 fn card(frame: &mut Frame, area: Rect, issue: &Issue, selected: bool, marked: bool, ctx: &DrawCtx) {
     let theme = ctx.theme;
-    let show = |f: CardField| ctx.fields.contains(&f);
-    let block = Block::bordered()
-        .border_type(if selected { BorderType::Thick } else { BorderType::Rounded })
-        .border_style(Style::new().fg(if selected || marked {
-            theme.border_focus
-        } else {
-            theme.border
-        }))
-        .style(if selected || marked {
-            Style::new().bg(theme.selection)
-        } else {
-            Style::default()
-        });
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let cols = inner.width as usize;
-
-    let mut head = vec![];
-    if show(CardField::Type) {
-        head.extend([glyph::kind_span(issue, theme), Span::raw(" ")]);
-    }
-    if show(CardField::Key) {
-        head.push(Span::styled(issue.key.to_string(), Style::new().fg(theme.muted)));
-    }
-    let mut lines = vec![right_aligned(head, priority(issue, ctx), cols)];
+    // The stripe says the priority; the cursor's is thicker, as its border was.
+    let stripe = Span::styled(
+        if selected { "┃" } else { "▍" },
+        Style::new().fg(match issue.priority {
+            _ if selected => theme.border_focus,
+            Some(p) if ctx.fields.contains(&CardField::Priority) => theme.priority(p),
+            _ => theme.border,
+        }),
+    );
+    let cols = (area.width as usize).saturating_sub(1);
     let title_style = Style::new().fg(theme.fg).add_modifier(Modifier::BOLD);
     let mut title = wrap(&issue.title, cols, 2);
     title.resize(2, String::new());
-    lines.extend(title.into_iter().map(|t| Line::from(Span::styled(t, title_style))));
-    lines.push(epic(issue, ctx, cols));
-    lines.push(meta(issue, ctx, cols));
-    frame.render_widget(Paragraph::new(lines), inner);
-}
-
-fn priority(issue: &Issue, ctx: &DrawCtx) -> Vec<Span<'static>> {
-    match issue.priority {
-        Some(p) if ctx.fields.contains(&CardField::Priority) => {
-            vec![glyph::priority_span(p, ctx.theme)]
-        }
-        _ => vec![],
+    let mut lines: Vec<Line> = title
+        .into_iter()
+        .map(|t| Line::from(vec![stripe.clone(), Span::styled(t, title_style)]))
+        .collect();
+    let labels = Some(labels(issue, ctx, cols)).filter(|l| !l.spans.is_empty());
+    for mut line in
+        [Some(epic(issue, ctx, cols)), labels, Some(meta(issue, ctx, cols))].into_iter().flatten()
+    {
+        line.spans.insert(0, stripe.clone());
+        lines.push(line);
     }
+    let style =
+        if selected || marked { Style::new().bg(theme.selection) } else { Style::default() };
+    frame.render_widget(
+        Paragraph::new(lines).style(style),
+        Rect { height: area.height - 1, ..area },
+    );
 }
 
-/// Labels, epic and estimate on the left, the assignee on the right; the
-/// left side gives way when the line is too short for both.
 /// The epic on a line of its own, under the title. Empty when there is
 /// none, so every card's lines stay where the eye expects them.
 fn epic(issue: &Issue, ctx: &DrawCtx, cols: usize) -> Line<'static> {
@@ -520,9 +509,45 @@ fn epic(issue: &Issue, ctx: &DrawCtx, cols: usize) -> Line<'static> {
     }
 }
 
-/// The labels on the left, the estimate and the assignee on the right;
-/// labels that do not fit are left off rather than cut.
+/// The labels on a line of their own, under the epic; those that do not
+/// fit are left off rather than cut.
+fn labels(issue: &Issue, ctx: &DrawCtx, cols: usize) -> Line<'static> {
+    let mut spans = vec![];
+    let mut used = 0;
+    if ctx.fields.contains(&CardField::Labels) {
+        for badge in issue.labels.iter().map(|l| glyph::label_badge(l, ctx.theme)) {
+            let w = width(&badge.content);
+            if used + w <= cols {
+                used += w + 1;
+                spans.extend([badge, Span::raw(" ")]);
+            }
+        }
+    }
+    Line::from(spans)
+}
+
+/// The type, key and priority on the left, the estimate and the assignee
+/// on the right.
 fn meta(issue: &Issue, ctx: &DrawCtx, cols: usize) -> Line<'static> {
+    let theme = ctx.theme;
+    let show = |f: CardField| ctx.fields.contains(&f);
+    let mut left = vec![];
+    if show(CardField::Type) {
+        left.extend([glyph::kind_span(issue, theme), Span::raw(" ")]);
+    }
+    if show(CardField::Key) {
+        left.push(Span::styled(format!("{} ", issue.key), Style::new().fg(theme.muted)));
+    }
+    if show(CardField::Priority)
+        && let Some(p) = issue.priority
+    {
+        left.push(glyph::priority_span(p, theme));
+    }
+    right_aligned(left, estimate_and_assignee(issue, ctx), cols)
+}
+
+/// The right end of a card's key line.
+fn estimate_and_assignee(issue: &Issue, ctx: &DrawCtx) -> Vec<Span<'static>> {
     let theme = ctx.theme;
     let show = |f: CardField| ctx.fields.contains(&f);
     let mut right = vec![];
@@ -546,20 +571,9 @@ fn meta(issue: &Issue, ctx: &DrawCtx, cols: usize) -> Line<'static> {
             right.push(Span::styled("★", Style::new().fg(theme.warn)));
         }
     }
-    let room = cols.saturating_sub(right.iter().map(|s| width(&s.content)).sum::<usize>() + 1);
-    let mut left: Vec<Span<'static>> = vec![];
-    let mut used = 0;
-    if show(CardField::Labels) {
-        for badge in issue.labels.iter().map(|l| glyph::label_badge(l, theme)) {
-            let w = width(&badge.content);
-            if used + w <= room {
-                used += w + 1;
-                left.extend([badge, Span::raw(" ")]);
-            }
-        }
-    }
-    right_aligned(left, right, cols)
+    right
 }
+
 fn right_aligned(
     mut left: Vec<Span<'static>>,
     right: Vec<Span<'static>>,
