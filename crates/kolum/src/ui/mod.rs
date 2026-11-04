@@ -61,6 +61,18 @@ pub enum EditPurpose {
         project: String,
         kind: kolum_domain::IssueType,
     },
+    /// One rich text field, alone.
+    Field {
+        key: IssueKey,
+        target: EditTarget,
+    },
+}
+
+/// A rich text field `E` edits on its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditTarget {
+    Description,
+    Custom(kolum_domain::FieldId),
 }
 
 /// How often the picker's spinner turns.
@@ -482,6 +494,10 @@ impl App {
                     self.board.clamp();
                 }
                 self.sync_detail(&key);
+                // The detail keeps fields the board lacks: read them back.
+                if self.open_issue() == Some(&key) {
+                    self.effects.push(Effect::Send(Command::LoadIssue(key.clone())));
+                }
                 self.say(format!("{key}: {error}; undone"), Level::Error);
             }
             Event::Image { url, result } => {
@@ -834,6 +850,7 @@ impl App {
                 | Action::AssignMe
                 | Action::Comment
                 | Action::Edit
+                | Action::EditField
                 | Action::Clone
         );
         if keys.is_empty() || (writes && !self.can_write()) {
@@ -848,6 +865,7 @@ impl App {
             },
             Action::Comment => self.edit(EditPurpose::Comment(keys[0].clone())),
             Action::Edit => self.edit(EditPurpose::Describe(keys[0].clone())),
+            Action::EditField => self.open_field_picker(keys[0].clone()),
             Action::Clone => {
                 self.effects.push(Effect::Send(Command::Clone(keys[0].clone())));
                 self.say(format!("Cloning {}…", keys[0]), Level::Info);
@@ -1015,6 +1033,12 @@ impl App {
         self.board.clamp();
         self.board.select(key);
         self.sync_detail(key);
+        // The board's copy may lack a field only the detail has.
+        if let Some(d) = &mut self.detail
+            && &d.issue.key == key
+        {
+            kolum_app::apply(&mut d.issue, &change);
+        }
         Some(op)
     }
 
@@ -1058,7 +1082,46 @@ impl App {
         self.effects.push(Effect::Edit { purpose: EditPurpose::Create { project, kind }, text });
     }
 
+    /// The rich text fields of the issue, from the detail's copy when it
+    /// is open: only it has them all.
+    fn open_field_picker(&mut self, key: IssueKey) {
+        let Some(issue) = self.full_issue(&key) else { return };
+        let mut fields =
+            vec![(EditTarget::Description, "Description".into(), issue.description.clone())];
+        fields.extend(issue.fields.iter().filter_map(|f| match &f.value {
+            kolum_domain::FieldValue::RichText(text) => {
+                Some((EditTarget::Custom(f.id.clone()), f.name.clone(), text.clone()))
+            }
+            _ => None,
+        }));
+        let source = sources::FieldChoice { key, fields };
+        self.open_picker(Box::new(Picker::new(source, self.waker.clone())));
+    }
+
+    /// The detail's copy of the issue when it is the open one: the board's
+    /// lacks the fields Jira sends for one issue only.
+    fn full_issue(&self, key: &IssueKey) -> Option<&kolum_domain::Issue> {
+        let open = self.detail.as_ref().map(|d| &d.issue).filter(|i| &i.key == key);
+        open.or_else(|| self.issue(key))
+    }
+
     fn edit(&mut self, purpose: EditPurpose) {
+        if let EditPurpose::Field { key, target } = &purpose {
+            let Some(issue) = self.full_issue(key) else { return };
+            let Some((name, rich)) = field_text(issue, target) else { return };
+            let flattened = if rich.lossy {
+                "Jira holds things here that Markdown cannot keep (images, colours, expands): saving rewrites the field without them. "
+            } else {
+                ""
+            };
+            let text = format!(
+                "{}\n\n{MARKER} {name} of {}, in Markdown above this line. {flattened}Empty or unchanged leaves it as it is. -->\n",
+                rich.to_markdown().trim(),
+                issue.key
+            );
+            self.effects.push(Effect::Edit { purpose, text });
+            return;
+        }
         let (EditPurpose::Comment(key) | EditPurpose::Describe(key)) = &purpose else { return };
         let Some(issue) = self.issue(key) else { return };
         let text = match &purpose {
@@ -1066,7 +1129,7 @@ impl App {
                 "\n\n{MARKER} a comment on {}: {}. Markdown above this line; leave it empty to cancel. -->\n",
                 issue.key, issue.title
             ),
-            EditPurpose::Create { .. } => return,
+            EditPurpose::Create { .. } | EditPurpose::Field { .. } => return,
             EditPurpose::Describe(_) => format!(
                 "# {}\n\n{}\n{MARKER} {}: the first `# ` line is the title, the rest the description, in Markdown. -->\n",
                 issue.title,
@@ -1112,19 +1175,50 @@ impl App {
                 self.effects.push(Effect::Send(Command::Create(new)));
                 self.say("Creating…", Level::Info);
             }
-            EditPurpose::Describe(key) => {
-                let Some(issue) = self.issue(&key) else { return };
-                let update = description_update(issue, &text);
-                if update == kolum_domain::IssueUpdate::default() {
-                    return self.say("No change", Level::Info);
-                }
-                if let Some(op) = self.optimistic(&key, kolum_app::Change::Update(update.clone())) {
-                    let write = kolum_app::Write::Update(update);
-                    self.effects.push(Effect::Send(Command::Write { op, key: key.clone(), write }));
-                    self.say(format!("Saving {key}…"), Level::Info);
-                }
-            }
+            EditPurpose::Field { key, target } => self.save_field(key, target, &text),
+            EditPurpose::Describe(key) => self.save_description(key, &text),
         }
+    }
+
+    /// An edit shown at once and sent; undone if the provider refuses it.
+    fn save(&mut self, key: IssueKey, update: kolum_domain::IssueUpdate) {
+        if let Some(op) = self.optimistic(&key, kolum_app::Change::Update(update.clone())) {
+            let write = kolum_app::Write::Update(update);
+            self.effects.push(Effect::Send(Command::Write { op, key: key.clone(), write }));
+            self.say(format!("Saving {key}…"), Level::Info);
+        }
+    }
+
+    /// The title and the description back from `$EDITOR`.
+    fn save_description(&mut self, key: IssueKey, text: &str) {
+        let Some(issue) = self.issue(&key) else { return };
+        let update = description_update(issue, text);
+        if update == kolum_domain::IssueUpdate::default() {
+            return self.say("No change", Level::Info);
+        }
+        self.save(key, update);
+    }
+
+    /// One rich text field back from `$EDITOR`: empty or unchanged leaves it.
+    fn save_field(&mut self, key: IssueKey, target: EditTarget, text: &str) {
+        if text.is_empty() {
+            return self.say("Nothing written: the field stays as it is", Level::Info);
+        }
+        let Some(issue) = self.full_issue(&key) else { return };
+        let Some((_, rich)) = field_text(issue, &target) else { return };
+        if text == rich.to_markdown().trim() {
+            return self.say("No change", Level::Info);
+        }
+        let rich = kolum_domain::RichText::from_markdown(text);
+        let update = match target {
+            EditTarget::Description => {
+                kolum_domain::IssueUpdate { description: Some(rich), ..Default::default() }
+            }
+            EditTarget::Custom(id) => {
+                kolum_domain::IssueUpdate { rich_fields: vec![(id, rich)], ..Default::default() }
+            }
+        };
+        self.save(key, update);
     }
 
     /// The pictures of the open issue: its assignee's avatar, and its
@@ -1333,6 +1427,10 @@ impl App {
                 self.close_picker();
                 self.detail = None;
                 self.effects.push(Effect::Send(Command::LoadBoard(Some(id))));
+            }
+            Pick::EditField { key, target } => {
+                self.close_picker();
+                self.edit(EditPurpose::Field { key, target });
             }
             Pick::Run(action) => {
                 self.close_picker();
@@ -1626,6 +1724,22 @@ impl App {
 /// `# Title` then Markdown, against the issue as it is: only what moved is
 /// sent. The description is compared as Markdown, so a rich text that does
 /// not survive the round trip exactly is not rewritten for nothing.
+/// The name and the text of a rich text field of the issue.
+fn field_text<'a>(
+    issue: &'a kolum_domain::Issue,
+    target: &EditTarget,
+) -> Option<(String, &'a kolum_domain::RichText)> {
+    match target {
+        EditTarget::Description => Some(("Description".into(), &issue.description)),
+        EditTarget::Custom(id) => {
+            issue.fields.iter().find(|f| &f.id == id).and_then(|f| match &f.value {
+                kolum_domain::FieldValue::RichText(text) => Some((f.name.clone(), text)),
+                _ => None,
+            })
+        }
+    }
+}
+
 /// The board's copy of the open issue, keeping the fields only the detail
 /// loaded: Jira sends rich text fields for one issue, not for a board.
 fn refresh_detail(shown: &mut kolum_domain::Issue, fresh: &kolum_domain::Issue) {

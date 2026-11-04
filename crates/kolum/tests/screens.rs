@@ -678,6 +678,75 @@ async fn a_remote_search_for_a_number_asks_for_that_issue_of_the_board() {
     assert_eq!(searches(app.take_effects()), [(1, wanted)]);
 }
 
+/// `E` picks one rich text field; only that one goes to `$EDITOR` and back.
+#[tokio::test]
+async fn one_field_is_edited_at_a_time() {
+    use kolum_domain::{FieldId, FieldValue, IssueUpdate, RichText};
+    let mut app = loaded().await;
+    press(&mut app, "/ACME-10<CR><CR>");
+    app.take_effects();
+    press(&mut app, "E");
+    settle(&mut app);
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("Edit ACME-10"), "{shown}");
+    assert!(shown.contains("Description") && shown.contains("Acceptance criteria"));
+    press(&mut app, "accept");
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else { panic!() };
+    assert!(text.starts_with("- Tokens refresh before they expire\n"), "{text}");
+    assert!(!text.contains("cannot keep"), "nothing flattened here");
+
+    app.on_edited(purpose.clone(), Ok(text.clone()));
+    assert!(screen(&mut app, 140, 40).contains("No change"));
+    app.on_edited(purpose.clone(), Ok(String::new()));
+    assert!(screen(&mut app, 140, 40).contains("Nothing written"));
+    app.on_edited(purpose, Ok(text.replacen("refresh", "rotate", 1)));
+    let rotate = RichText::from_markdown("- Tokens rotate before they expire");
+    let update = IssueUpdate {
+        rich_fields: vec![(FieldId::new("customfield_10030"), rotate)],
+        ..Default::default()
+    };
+    let sent = writes(app.take_effects());
+    let op = sent[0].0;
+    let sent: Vec<_> = sent.into_iter().map(|(_, k, w)| (k, w)).collect();
+    assert_eq!(sent, [("ACME-10".to_string(), kolum_app::Write::Update(update))]);
+    assert!(screen(&mut app, 140, 40).contains("Tokens rotate before they expire"), "at once");
+    let key = IssueKey::new("ACME-10");
+    let error = kolum_domain::DomainError::Conflict("stale".into());
+    app.on_event(Event::WriteFailed { op, key: key.clone(), error });
+    assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(key))], "read back");
+
+    // A field Jira had to flatten says so before it is overwritten.
+    let mut issue = FakeProvider::new().issue(&IssueKey::new("ACME-10")).await.unwrap();
+    for field in &mut issue.fields {
+        if let FieldValue::RichText(text) = &mut field.value {
+            text.lossy = true;
+        }
+    }
+    app.on_event(Event::IssueLoaded(Box::new(IssueDetail {
+        issue,
+        comments: vec![],
+        activity: vec![],
+    })));
+    press(&mut app, "Eaccept");
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    let Some(Effect::Edit { text, .. }) = app.take_effects().pop() else { panic!() };
+    assert!(text.contains("Markdown cannot keep"), "{text}");
+
+    press(&mut app, "Edescription");
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else { panic!() };
+    app.on_edited(purpose, Ok(format!("Rewritten\n{text}")));
+    let Some((_, _, kolum_app::Write::Update(update))) = writes(app.take_effects()).pop() else {
+        panic!()
+    };
+    assert_eq!((update.title, update.rich_fields), (None, vec![]), "the description alone");
+    assert!(update.description.unwrap().plain_text().starts_with("Rewritten"));
+}
+
 #[tokio::test]
 async fn the_boards_picker_opens_another_board() {
     let mut app = loaded().await;

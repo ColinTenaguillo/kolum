@@ -145,6 +145,7 @@ const DEFAULTS: &[(Context, &str, Action)] = &[
     (C::Detail, "<leader>a", A::Assign),
     (C::Detail, "<leader>A", A::AssignMe),
     (C::Detail, "e", A::Edit),
+    (C::Detail, "E", A::EditField),
     (C::Detail, "i", A::Comment),
     (C::Detail, "o", A::OpenBrowser),
     (C::Detail, "yy", A::CopyKey),

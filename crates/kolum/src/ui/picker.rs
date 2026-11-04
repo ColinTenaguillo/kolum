@@ -41,6 +41,11 @@ pub enum Pick {
         keys: Vec<kolum_domain::IssueKey>,
         user: Option<kolum_domain::User>,
     },
+    /// Edit this one field of the issue in `$EDITOR`.
+    EditField {
+        key: kolum_domain::IssueKey,
+        target: super::EditTarget,
+    },
     /// Run an action as if its key were pressed (the command palette).
     Run(Action),
     /// The action means something here, but not yet.

@@ -60,6 +60,7 @@ The defaults follow vim. Counts work on motions (`3j`, `5G`), sequences wait
 | `Space a` `Space A` | assign · assign to me |
 | `Space u` | show the cards of one or several people: `Tab` marks, `Enter` applies (`Everyone` clears) |
 | `i` · `e` | comment · edit the title and description, in `$EDITOR` as Markdown |
+| `E` (issue view) | pick one rich text field (the description, a bug report…) and edit it alone in `$EDITOR`; it warns when Jira holds what Markdown cannot keep |
 | `yy` `yu` `o` | copy the key, copy the URL, open in the browser |
 | `v` | visual mode: a range of cards in a column for one action (`t` `H` `L` `Space a` `yy` `C`) |
 | `s` · `ze` | cycle swimlanes (epic, assignee, priority, none) · hide or show empty columns; both remembered |

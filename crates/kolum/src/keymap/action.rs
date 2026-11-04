@@ -51,6 +51,7 @@ actions! {
     Create "create" "Create an issue",
     Clone "clone" "Clone the issue",
     Edit "edit" "Edit in $EDITOR",
+    EditField "edit_field" "Edit one field in $EDITOR",
     Comment "comment" "Add a comment",
     OpenBrowser "open_browser" "Open in the browser",
     CopyKey "copy_key" "Copy the key",

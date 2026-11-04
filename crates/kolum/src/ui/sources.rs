@@ -265,6 +265,43 @@ impl PickerSource for UserChoice {
     }
 }
 
+/// The rich text fields of an issue, its description first: the one
+/// picked goes to `$EDITOR` alone.
+pub struct FieldChoice {
+    pub key: kolum_domain::IssueKey,
+    pub fields: Vec<(super::EditTarget, String, kolum_domain::RichText)>,
+}
+
+impl PickerSource for FieldChoice {
+    type Item = (super::EditTarget, String, kolum_domain::RichText);
+
+    fn title(&self) -> String {
+        titled("Edit", std::slice::from_ref(&self.key))
+    }
+
+    fn candidates(&self, _query: &str) -> Vec<Self::Item> {
+        self.fields.clone()
+    }
+
+    fn haystack(&self, (_, name, _): &Self::Item) -> String {
+        name.clone()
+    }
+
+    fn preview(
+        &self,
+        (_, _, text): &Self::Item,
+        theme: &Theme,
+        cols: u16,
+    ) -> Option<Text<'static>> {
+        Some(Text::from(rich::lines(text, theme, cols)))
+    }
+
+    fn act(&self, fields: &[Self::Item], action: Action) -> Option<Pick> {
+        (action == Action::Confirm)
+            .then(|| Pick::EditField { key: self.key.clone(), target: fields[0].0.clone() })
+    }
+}
+
 /// "Move ACME-1, ACME-2": what a picker does, to which issues.
 fn titled(verb: &str, keys: &[kolum_domain::IssueKey]) -> String {
     let keys: Vec<&str> = keys.iter().map(|k| k.as_str()).collect();
