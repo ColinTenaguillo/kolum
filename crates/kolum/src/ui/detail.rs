@@ -3,9 +3,10 @@
 //! go under the content.
 
 use super::{glyph, rich};
+use crate::config::UiConfig;
 use crate::theme::Theme;
 use kolum_app::IssueDetail;
-use kolum_domain::{FieldValue, Issue, IssueRef, UserId};
+use kolum_domain::{CustomField, FieldValue, Issue, IssueRef, RichText, UserId};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -93,7 +94,7 @@ impl DetailView {
         frame: &mut Frame,
         area: Rect,
         theme: &Theme,
-        fields: &[String],
+        ui: &UiConfig,
         me: Option<&UserId>,
         pictures: Pictures,
     ) {
@@ -108,8 +109,9 @@ impl DetailView {
         } else {
             [body, Rect::default()]
         };
-        let mut content = self.content(theme, left.width.saturating_sub(2));
-        let field_lines = field_lines(issue, fields, theme, me);
+        let sections = ui.detail_sections.as_deref();
+        let mut content = self.content(theme, left.width.saturating_sub(2), sections);
+        let field_lines = field_lines(issue, &ui.detail_fields, theme, me);
         if side {
             let right = self.draw_avatar(frame, right, theme, pictures.avatar);
             let right = self.draw_shot(frame, right, theme, pictures.shot);
@@ -203,19 +205,27 @@ impl DetailView {
         rest
     }
 
-    fn content(&self, theme: &Theme, cols: u16) -> Vec<Line<'static>> {
+    fn content(&self, theme: &Theme, cols: u16, sections: Option<&[String]>) -> Vec<Line<'static>> {
         let issue = &self.issue;
+        // `── Title ─────`: a rule across the pane, so sections stand apart.
         let section = |t: &str| {
-            Line::from(Span::styled(
-                t.to_string(),
-                Style::new().fg(theme.fg).add_modifier(Modifier::BOLD),
-            ))
+            let rule = Style::new().fg(theme.border);
+            let rest = (cols as usize).saturating_sub(super::text::width(t) + 4);
+            Line::from(vec![
+                Span::styled("── ", rule),
+                Span::styled(t.to_string(), Style::new().fg(theme.fg).add_modifier(Modifier::BOLD)),
+                Span::styled(format!(" {}", "─".repeat(rest)), rule),
+            ])
         };
-        let mut lines = vec![];
+        let mut lines = vec![section("Description")];
         if issue.description.is_empty() {
             lines.push(Line::from(Span::styled("No description", Style::new().fg(theme.muted))));
         } else {
             lines.extend(rich::lines(&issue.description, theme, cols));
+        }
+        for (name, text) in rich_sections(issue, sections) {
+            lines.extend([Line::default(), section(name)]);
+            lines.extend(rich::lines(text, theme, cols));
         }
         if !issue.subtasks.is_empty() {
             lines.extend([Line::default(), section("Child issues")]);
@@ -360,6 +370,24 @@ fn activity(detail: &IssueDetail, tab: Tab, theme: &Theme, cols: u16) -> Vec<Lin
     out
 }
 
+/// A custom field by id (`customfield_10016`) or by name, in any case.
+fn find_field<'a>(issue: &'a Issue, name: &str) -> Option<&'a CustomField> {
+    issue.fields.iter().find(|f| f.id.as_str() == name || f.name.eq_ignore_ascii_case(name))
+}
+
+/// The rich text custom fields the issue fills: the `wanted` ones in
+/// their order, or every one when the config lists none.
+fn rich_sections<'a>(issue: &'a Issue, wanted: Option<&[String]>) -> Vec<(&'a str, &'a RichText)> {
+    let rich = |f: &'a CustomField| match &f.value {
+        FieldValue::RichText(text) if !text.is_empty() => Some((f.name.as_str(), text)),
+        _ => None,
+    };
+    match wanted {
+        None => issue.fields.iter().filter_map(rich).collect(),
+        Some(names) => names.iter().filter_map(|n| find_field(issue, n)).filter_map(rich).collect(),
+    }
+}
+
 /// The right-hand column, in the order the config lists the fields. A
 /// field the issue has no value for is shown as such rather than left
 /// out, so the column keeps its shape from one issue to the next.
@@ -424,11 +452,7 @@ fn field_lines(
             }
             "created" => ("Created".into(), vec![Span::raw(glyph::datetime(issue.created))]),
             "updated" => ("Updated".into(), vec![Span::raw(glyph::datetime(issue.updated))]),
-            other => match issue
-                .fields
-                .iter()
-                .find(|f| f.id.as_str() == other || f.name.eq_ignore_ascii_case(other))
-            {
+            other => match find_field(issue, other) {
                 Some(f) => (f.name.clone(), vec![Span::raw(field_value(&f.value))]),
                 None => (other.to_string(), none()),
             },

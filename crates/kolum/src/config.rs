@@ -95,6 +95,9 @@ pub struct UiConfig {
     /// The right-hand column of an issue, top to bottom: built-in names, or
     /// a custom field by id (`customfield_10016`) or by name.
     pub detail_fields: Vec<String>,
+    /// Rich text custom fields shown under the description, by id or by
+    /// name. Unset: every one the issue fills.
+    pub detail_sections: Option<Vec<String>>,
 }
 
 impl Default for UiConfig {
@@ -112,6 +115,7 @@ impl Default for UiConfig {
             ]
             .map(String::from)
             .to_vec(),
+            detail_sections: None,
         }
     }
 }

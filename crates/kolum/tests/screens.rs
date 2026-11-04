@@ -319,6 +319,32 @@ async fn the_detail_scrolls_and_switches_tabs() {
     assert!(!screen(&mut app, 120, 60).contains("Status: ∅"), "back on Comments");
 }
 
+/// Rich text kept in custom fields, as Jira's bug templates do, shows
+/// under the description: every field that has some, or the ones listed.
+#[tokio::test]
+async fn the_detail_shows_rich_custom_fields_under_the_description() {
+    let open = |app: &mut App| {
+        press(app, "/ACME-10<CR><CR>");
+        screen(app, 140, 40)
+    };
+    let shown = open(&mut loaded().await);
+    assert!(shown.contains("── Description ────"), "a rule heads each section: {shown}");
+    assert!(shown.contains("── Acceptance criteria ────"));
+    assert!(shown.contains("Tokens refresh before they expire"));
+    let mut app = loaded().await;
+    press(&mut app, "/ACME-11<CR><CR>");
+    let empty = screen(&mut app, 140, 40);
+    assert!(empty.contains("ACME-11") && !empty.contains("Acceptance"), "an empty one is left out");
+
+    let mut settings = settings();
+    settings.ui.detail_sections = Some(vec![]);
+    let none = open(&mut loaded_with(settings).await);
+    assert!(!none.contains("Acceptance criteria"), "only the ones listed");
+    let mut settings = self::settings();
+    settings.ui.detail_sections = Some(vec!["customfield_10030".into()]);
+    assert!(open(&mut loaded_with(settings).await).contains("Tokens refresh"), "by id");
+}
+
 #[tokio::test]
 async fn the_detail_lists_links_and_configured_custom_fields() {
     let mut settings = settings();

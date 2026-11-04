@@ -163,13 +163,26 @@ fn issue(row: &data::Row) -> Issue {
         updated: created + Duration::hours(3 * i64::from(row.n % 9)),
         due: (row.priority == Priority::Highest).then(|| (created + Duration::days(10)).date()),
         description: RichText::from_markdown(row.description),
-        fields: vec![CustomField {
-            id: FieldId::new("customfield_10020"),
-            name: "Team".into(),
-            value: FieldValue::Text(
-                if row.labels.contains(&"mobile") { "Mobile" } else { "Platform" }.into(),
-            ),
-        }],
+        fields: vec![
+            CustomField {
+                id: FieldId::new("customfield_10020"),
+                name: "Team".into(),
+                value: FieldValue::Text(
+                    if row.labels.contains(&"mobile") { "Mobile" } else { "Platform" }.into(),
+                ),
+            },
+            // Rich text outside the description, as Jira's bug templates
+            // keep it; empty on most issues, like an unused template.
+            CustomField {
+                id: FieldId::new("customfield_10030"),
+                name: "Acceptance criteria".into(),
+                value: FieldValue::RichText(RichText::from_markdown(if row.n == 10 {
+                    "- Tokens refresh before they expire"
+                } else {
+                    ""
+                })),
+            },
+        ],
         url: Some(format!("https://demo.kolum.invalid/browse/{}", key(row.n))),
         attachments: attachments(row.n),
     }

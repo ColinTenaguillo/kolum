@@ -1443,7 +1443,7 @@ impl App {
         };
         let pictures = detail::Pictures { avatar: ready(avatar), shot: ready(shot) };
         match &self.detail {
-            Some(d) => d.draw(frame, main, &theme, &self.ui.detail_fields, me, pictures),
+            Some(d) => d.draw(frame, main, &theme, &self.ui, me, pictures),
             None => {
                 let [head, body] =
                     Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(main);
