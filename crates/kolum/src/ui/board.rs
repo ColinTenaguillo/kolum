@@ -34,6 +34,9 @@ pub struct BoardView {
     pub me: Option<UserId>,
     /// Cards per column on screen at the last draw, for half-page moves.
     page: Cell<usize>,
+    /// The first visible column on screen at the last draw: the columns
+    /// slide only when the highlight would leave the screen.
+    first: Cell<usize>,
     /// Visual mode: where the range started, in the current column.
     pub visual: Option<usize>,
 }
@@ -301,8 +304,11 @@ impl BoardView {
         let fit = (area.width / MIN_COLUMN_WIDTH).max(1) as usize;
         let shown = visible.len().min(fit);
         let pos = visible.iter().position(|&c| c == self.column).unwrap_or(0);
-        // Scroll sideways only as far as it takes to show the selection.
-        let first = (pos + 1).saturating_sub(shown);
+        // Scroll sideways like a list: only as far as it takes to show the
+        // selection, and never past the last column.
+        let lowest = (pos + 1).saturating_sub(shown);
+        let first = self.first.get().max(lowest).min(pos).min(visible.len().saturating_sub(shown));
+        self.first.set(first);
         let width = area.width / shown.max(1) as u16;
         for (slot, &c) in visible.iter().skip(first).take(shown).enumerate() {
             let x = area.x + slot as u16 * width;

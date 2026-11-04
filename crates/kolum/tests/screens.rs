@@ -992,6 +992,30 @@ fn writes(effects: Vec<Effect>) -> Vec<(u64, String, kolum_app::Write)> {
         .collect()
 }
 
+/// Sideways the board scrolls like a list: from the right edge, going
+/// left moves the highlight first; the columns slide only once it would
+/// leave the screen.
+#[tokio::test]
+async fn the_columns_slide_only_when_the_highlight_leaves_the_screen() {
+    let mut app = loaded().await;
+    let columns = ["BACKLOG", "TO DO", "IN PROGRESS", "IN REVIEW", "DONE"];
+    let mut shown = |keys: &str| {
+        if !keys.is_empty() {
+            press(&mut app, keys);
+        }
+        let top: String = screen(&mut app, 90, 40).lines().take(3).collect();
+        columns.into_iter().filter(|c| top.contains(c)).collect::<Vec<_>>()
+    };
+    assert_eq!(shown(""), ["BACKLOG", "TO DO", "IN PROGRESS"], "three fit");
+    let right = ["IN PROGRESS", "IN REVIEW", "DONE"];
+    assert_eq!(shown("$"), right);
+    assert_eq!(shown("h"), right, "the highlight moves, not the columns");
+    assert_eq!(shown("h"), right, "still on screen");
+    assert_eq!(shown("h"), ["TO DO", "IN PROGRESS", "IN REVIEW"], "past the left edge");
+    assert_eq!(shown("ll"), ["TO DO", "IN PROGRESS", "IN REVIEW"]);
+    assert_eq!(shown("l"), right, "past the right edge");
+}
+
 fn column_of(app: &mut App, key: &str) -> usize {
     // The board draws columns left to right; find which one holds the key.
     let shown = screen(app, 150, 60);
