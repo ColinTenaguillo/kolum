@@ -72,6 +72,10 @@ impl Priority {
     pub const ALL: [Priority; 5] =
         [Priority::Highest, Priority::High, Priority::Medium, Priority::Low, Priority::Lowest];
 
+    pub fn from_name(name: &str) -> Option<Priority> {
+        Priority::ALL.into_iter().find(|p| p.name().eq_ignore_ascii_case(name))
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Priority::Highest => "Highest",
@@ -226,7 +230,7 @@ pub struct ActivityEntry {
 }
 
 /// A field kolum may set on an issue, as the provider describes it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EditableField {
     pub id: FieldId,
     pub name: String,
@@ -236,7 +240,7 @@ pub struct EditableField {
 }
 
 /// How a field is edited, and so what value it takes.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FieldKind {
     /// Markdown, in `$EDITOR`.
     RichText,
@@ -256,6 +260,46 @@ pub enum FieldKind {
     },
     /// One of the board's sprints.
     Sprint,
+}
+
+impl FieldKind {
+    /// What a line typed for a field of this kind sets it to. Empty
+    /// empties the field.
+    pub fn parse(&self, text: &str) -> std::result::Result<Option<FieldValue>, String> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(match self {
+            FieldKind::Number => {
+                FieldValue::Number(text.parse().map_err(|_| format!("{text} is not a number"))?)
+            }
+            FieldKind::Date => {
+                let format = time::macros::format_description!("[year]-[month]-[day]");
+                let date = time::Date::parse(text, &format);
+                FieldValue::Date(date.map_err(|_| "a date reads YYYY-MM-DD".to_string())?)
+            }
+            FieldKind::Words => {
+                FieldValue::Options(text.split_whitespace().map(String::from).collect())
+            }
+            FieldKind::Issue => FieldValue::Text(text.to_uppercase()),
+            _ => FieldValue::Text(text.to_string()),
+        }))
+    }
+}
+
+impl FieldValue {
+    /// The value as a line to edit, which [`FieldKind::parse`] reads back.
+    pub fn to_input(&self) -> String {
+        match self {
+            FieldValue::Text(t) => t.clone(),
+            FieldValue::Number(n) => n.to_string(),
+            FieldValue::Date(d) => d.to_string(),
+            FieldValue::User(u) => u.display_name.clone(),
+            FieldValue::Options(o) => o.join(" "),
+            FieldValue::RichText(r) => r.plain_text(),
+        }
+    }
 }
 
 /// The fields an edit changes. `None` leaves the field as it is.
@@ -310,6 +354,35 @@ pub struct NewIssue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_typed_line_becomes_the_value_its_field_takes() {
+        let words = |w: &[&str]| FieldValue::Options(w.iter().map(|s| s.to_string()).collect());
+        assert_eq!(FieldKind::Number.parse(" 3.5 "), Ok(Some(FieldValue::Number(3.5))));
+        assert_eq!(FieldKind::Number.parse("lots"), Err("lots is not a number".into()));
+        let date = time::macros::date!(2026 - 11 - 30);
+        assert_eq!(FieldKind::Date.parse("2026-11-30"), Ok(Some(FieldValue::Date(date))));
+        assert_eq!(FieldKind::Date.parse("soon"), Err("a date reads YYYY-MM-DD".into()));
+        assert_eq!(FieldKind::Words.parse("api  ui"), Ok(Some(words(&["api", "ui"]))));
+        assert_eq!(FieldKind::Issue.parse("ic-12"), Ok(Some(FieldValue::Text("IC-12".into()))));
+        assert_eq!(FieldKind::Text.parse(" a b "), Ok(Some(FieldValue::Text("a b".into()))));
+        assert_eq!(FieldKind::Text.parse("  "), Ok(None), "empty empties the field");
+        for value in [FieldValue::Number(5.0), FieldValue::Date(date), words(&["api", "ui"])] {
+            let kind = match value {
+                FieldValue::Number(_) => FieldKind::Number,
+                FieldValue::Date(_) => FieldKind::Date,
+                _ => FieldKind::Words,
+            };
+            assert_eq!(kind.parse(&value.to_input()), Ok(Some(value.clone())), "{value:?}");
+        }
+        assert_eq!(FieldValue::Number(5.0).to_input(), "5");
+    }
+
+    #[test]
+    fn a_priority_is_found_by_its_name() {
+        assert_eq!(Priority::from_name("high"), Some(Priority::High));
+        assert_eq!(Priority::from_name("Urgent"), None);
+    }
 
     fn user(name: &str) -> User {
         User { id: UserId::new("u"), display_name: name.into(), avatar_url: None }

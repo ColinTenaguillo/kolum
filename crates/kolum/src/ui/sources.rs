@@ -241,13 +241,18 @@ impl PickerSource for TransitionChoice {
 pub struct UserChoice {
     pub keys: Vec<kolum_domain::IssueKey>,
     pub users: Vec<Option<kolum_domain::User>>,
+    /// A user field to set instead of the assignee.
+    pub field: Option<kolum_domain::EditableField>,
 }
 
 impl PickerSource for UserChoice {
     type Item = Option<kolum_domain::User>;
 
     fn title(&self) -> String {
-        titled("Assign", &self.keys)
+        match &self.field {
+            Some(field) => format!("{} of {}", field.name, self.keys[0]),
+            None => titled("Assign", &self.keys),
+        }
     }
 
     fn candidates(&self, _query: &str) -> Vec<Self::Item> {
@@ -260,20 +265,30 @@ impl PickerSource for UserChoice {
     }
 
     fn act(&self, users: &[Self::Item], action: Action) -> Option<Pick> {
-        (action == Action::Confirm)
-            .then(|| Pick::Assign { keys: self.keys.clone(), user: users[0].clone() })
+        if action != Action::Confirm {
+            return None;
+        }
+        let user = users[0].clone();
+        Some(match &self.field {
+            Some(field) => Pick::SetField {
+                key: self.keys[0].clone(),
+                field: field.clone(),
+                value: user.map(kolum_domain::FieldValue::User),
+            },
+            None => Pick::Assign { keys: self.keys.clone(), user },
+        })
     }
 }
 
-/// The rich text fields of an issue, its description first: the one
-/// picked goes to `$EDITOR` alone.
+/// The fields of an issue, each with what it holds now: the one picked
+/// opens the editor its kind calls for.
 pub struct FieldChoice {
     pub key: kolum_domain::IssueKey,
-    pub fields: Vec<(super::EditTarget, String, kolum_domain::RichText)>,
+    pub fields: Vec<(super::FieldEntry, String, kolum_domain::RichText)>,
 }
 
 impl PickerSource for FieldChoice {
-    type Item = (super::EditTarget, String, kolum_domain::RichText);
+    type Item = (super::FieldEntry, String, kolum_domain::RichText);
 
     fn title(&self) -> String {
         titled("Edit", std::slice::from_ref(&self.key))
@@ -298,7 +313,46 @@ impl PickerSource for FieldChoice {
 
     fn act(&self, fields: &[Self::Item], action: Action) -> Option<Pick> {
         (action == Action::Confirm)
-            .then(|| Pick::EditField { key: self.key.clone(), target: fields[0].0.clone() })
+            .then(|| Pick::EditField { key: self.key.clone(), entry: fields[0].0.clone() })
+    }
+}
+
+/// The values a choice field allows, and `None` to empty it when it may
+/// be empty. Tab marks several for a field that takes many.
+pub struct OptionChoice {
+    pub key: kolum_domain::IssueKey,
+    pub field: kolum_domain::EditableField,
+    pub options: Vec<Option<String>>,
+}
+
+impl PickerSource for OptionChoice {
+    type Item = Option<String>;
+
+    fn title(&self) -> String {
+        format!("{} of {}", self.field.name, self.key)
+    }
+
+    fn candidates(&self, _query: &str) -> Vec<Self::Item> {
+        self.options.clone()
+    }
+
+    fn haystack(&self, option: &Self::Item) -> String {
+        option.clone().unwrap_or_else(|| "None".into())
+    }
+
+    fn act(&self, chosen: &[Self::Item], action: Action) -> Option<Pick> {
+        use kolum_domain::{FieldKind, FieldValue};
+        if action != Action::Confirm {
+            return None;
+        }
+        let picked: Vec<String> = chosen.iter().flatten().cloned().collect();
+        let many = matches!(self.field.kind, FieldKind::Choice { many: true, .. });
+        let value = match picked.first() {
+            None => None,
+            Some(_) if many => Some(FieldValue::Options(picked)),
+            Some(one) => Some(FieldValue::Text(one.clone())),
+        };
+        Some(Pick::SetField { key: self.key.clone(), field: self.field.clone(), value })
     }
 }
 

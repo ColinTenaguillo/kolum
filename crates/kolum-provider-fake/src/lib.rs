@@ -395,6 +395,12 @@ impl IssueWriter for FakeProvider {
             ),
             field("customfield_10030", "Acceptance criteria", FieldKind::RichText),
             field("customfield_10040", "Sprint", FieldKind::Sprint),
+            field("customfield_10050", "Reviewer", FieldKind::User),
+            field(
+                "customfield_10060",
+                "Platforms",
+                FieldKind::Choice { options: words(&["Web", "iOS", "Android"]), many: true },
+            ),
         ])
     }
 

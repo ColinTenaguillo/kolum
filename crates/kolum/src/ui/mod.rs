@@ -64,15 +64,16 @@ pub enum EditPurpose {
     /// One rich text field, alone.
     Field {
         key: IssueKey,
-        target: EditTarget,
+        field: kolum_domain::EditableField,
     },
 }
 
-/// A rich text field `E` edits on its own.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EditTarget {
-    Description,
-    Custom(kolum_domain::FieldId),
+/// A row of `E`'s picker.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FieldEntry {
+    /// Through the transitions, as `t` does.
+    Status,
+    Field(kolum_domain::EditableField),
 }
 
 /// How often the picker's spinner turns.
@@ -92,6 +93,8 @@ pub enum Level {
 enum PromptKind {
     Command,
     Filter,
+    /// A value for the field `App::field_prompt` names.
+    Field,
 }
 
 struct Prompt {
@@ -114,7 +117,7 @@ impl Prompt {
     fn proposals(&self) -> (usize, Vec<complete::Proposal>) {
         match self.kind {
             PromptKind::Command => complete::proposals(&self.typed, &self.themes),
-            PromptKind::Filter => (0, vec![]),
+            PromptKind::Filter | PromptKind::Field => (0, vec![]),
         }
     }
 
@@ -213,6 +216,8 @@ pub struct App {
     search_id: u64,
     /// When the pending remote search goes out, once typing pauses.
     search_due: Option<Instant>,
+    /// The field the bottom line is typing a value for.
+    field_prompt: Option<(IssueKey, kolum_domain::EditableField)>,
     remote_debounce: std::time::Duration,
     /// The time of the key being handled, for the debounce.
     now: Instant,
@@ -290,6 +295,7 @@ impl App {
             board_cached: false,
             search_id: 0,
             search_due: None,
+            field_prompt: None,
             remote_debounce: settings.remote_debounce,
             now: Instant::now(),
             ledger: kolum_app::Ledger::default(),
@@ -476,8 +482,7 @@ impl App {
                 }
             }
             Event::Transitions { key, result } => self.on_transitions(key, result),
-            // Asked for by nothing yet: `E` uses them next.
-            Event::EditableFields { .. } => {}
+            Event::EditableFields { key, result } => self.open_field_picker(key, result),
             Event::Written { op, key, issue } => {
                 self.ledger.settle(op);
                 if let (Some(snapshot), Some(issue)) = (&mut self.board.snapshot, issue) {
@@ -860,14 +865,16 @@ impl App {
         }
         match action {
             Action::Transition => self.ask_transitions(keys, None),
-            Action::Assign => self.open_user_picker(keys),
+            Action::Assign => self.open_user_picker(keys, None),
             Action::AssignMe => match self.me.clone() {
                 Some(me) => self.assign(keys, Some(me)),
                 None => self.say("Still finding out who you are", Level::Warn),
             },
             Action::Comment => self.edit(EditPurpose::Comment(keys[0].clone())),
             Action::Edit => self.edit(EditPurpose::Describe(keys[0].clone())),
-            Action::EditField => self.open_field_picker(keys[0].clone()),
+            Action::EditField => {
+                self.effects.push(Effect::Send(Command::EditableFields(keys[0].clone())));
+            }
             Action::Clone => {
                 self.effects.push(Effect::Send(Command::Clone(keys[0].clone())));
                 self.say(format!("Cloning {}…", keys[0]), Level::Info);
@@ -999,7 +1006,12 @@ impl App {
     }
 
     /// Who an issue can go to: me, then whoever is on the board.
-    fn open_user_picker(&mut self, keys: Vec<IssueKey>) {
+    /// People to assign the issues to, or to put in `field`.
+    fn open_user_picker(
+        &mut self,
+        keys: Vec<IssueKey>,
+        field: Option<kolum_domain::EditableField>,
+    ) {
         let mut users: Vec<kolum_domain::User> = self.me.clone().into_iter().collect();
         let mut others: Vec<kolum_domain::User> = vec![];
         for issue in self.board.snapshot.iter().flat_map(|s| &s.issues) {
@@ -1013,7 +1025,7 @@ impl App {
         users.extend(others);
         let mut choices: Vec<Option<kolum_domain::User>> = users.into_iter().map(Some).collect();
         choices.push(None);
-        let source = sources::UserChoice { keys, users: choices };
+        let source = sources::UserChoice { keys, users: choices, field };
         self.open_picker(Box::new(Picker::new(source, self.waker.clone())));
     }
 
@@ -1084,20 +1096,109 @@ impl App {
         self.effects.push(Effect::Edit { purpose: EditPurpose::Create { project, kind }, text });
     }
 
-    /// The rich text fields of the issue, from the detail's copy when it
-    /// is open: only it has them all.
-    fn open_field_picker(&mut self, key: IssueKey) {
+    /// `E`'s picker: the status, then every field the provider lets set,
+    /// each with its value; the description alone when it cannot say.
+    fn open_field_picker(
+        &mut self,
+        key: IssueKey,
+        result: kolum_domain::Result<Vec<kolum_domain::EditableField>>,
+    ) {
+        let fields = match result {
+            Ok(fields) => fields,
+            Err(kolum_domain::DomainError::Unsupported(_)) => vec![kolum_domain::EditableField {
+                id: kolum_domain::FieldId::new("description"),
+                name: "Description".into(),
+                kind: kolum_domain::FieldKind::RichText,
+                required: false,
+            }],
+            Err(e) => return self.say(format!("Reading the fields of {key}: {e}"), Level::Error),
+        };
         let Some(issue) = self.full_issue(&key) else { return };
-        let mut fields =
-            vec![(EditTarget::Description, "Description".into(), issue.description.clone())];
-        fields.extend(issue.fields.iter().filter_map(|f| match &f.value {
-            kolum_domain::FieldValue::RichText(text) => {
-                Some((EditTarget::Custom(f.id.clone()), f.name.clone(), text.clone()))
-            }
-            _ => None,
+        let plain = |s: String| kolum_domain::RichText {
+            blocks: vec![kolum_domain::rich_text::Block::Paragraph(vec![
+                kolum_domain::rich_text::Inline::text(s),
+            ])],
+            lossy: false,
+        };
+        let mut rows =
+            vec![(FieldEntry::Status, "Status".to_string(), plain(issue.status.name.clone()))];
+        rows.extend(fields.into_iter().map(|f| {
+            let shown = match current_value(issue, &f.id) {
+                Some(kolum_domain::FieldValue::RichText(text)) => text,
+                Some(value) => plain(value.to_input()),
+                None => plain("None".into()),
+            };
+            (FieldEntry::Field(f.clone()), f.name, shown)
         }));
-        let source = sources::FieldChoice { key, fields };
+        let source = sources::FieldChoice { key, fields: rows };
         self.open_picker(Box::new(Picker::new(source, self.waker.clone())));
+    }
+
+    /// The editor a field's kind calls for.
+    fn edit_field(&mut self, key: IssueKey, entry: FieldEntry) {
+        let field = match entry {
+            FieldEntry::Status => return self.ask_transitions(vec![key], None),
+            FieldEntry::Field(field) => field,
+        };
+        match &field.kind {
+            kolum_domain::FieldKind::RichText => self.edit(EditPurpose::Field { key, field }),
+            kolum_domain::FieldKind::User if field.id.as_str() == "assignee" => {
+                self.open_user_picker(vec![key], None)
+            }
+            kolum_domain::FieldKind::User => self.open_user_picker(vec![key], Some(field)),
+            kolum_domain::FieldKind::Choice { options, .. } => {
+                let mut choices: Vec<Option<String>> = options.iter().cloned().map(Some).collect();
+                if !field.required {
+                    choices.push(None);
+                }
+                let source = sources::OptionChoice { key, field: field.clone(), options: choices };
+                self.open_picker(Box::new(Picker::new(source, self.waker.clone())));
+            }
+            kolum_domain::FieldKind::Sprint => self.unavailable(Action::EditField),
+            _ => {
+                let mut input = Input::default();
+                let current = self.full_issue(&key).and_then(|i| current_value(i, &field.id));
+                input.set(&current.map(|v| v.to_input()).unwrap_or_default());
+                self.prompt = Some(Prompt::new(PromptKind::Field, input, vec![]));
+                self.field_prompt = Some((key, field));
+            }
+        }
+    }
+
+    /// The bottom line's value for the field it was opened for.
+    fn confirm_field(&mut self, text: &str) {
+        let Some((key, field)) = self.field_prompt.take() else { return };
+        match field.kind.parse(text) {
+            Ok(value) => self.set_field(key, &field, value),
+            Err(e) => self.say(e, Level::Warn),
+        }
+    }
+
+    /// One field set to `value`, or emptied: through the edit the domain
+    /// names (title, description, labels, priority), by id otherwise.
+    fn set_field(
+        &mut self,
+        key: IssueKey,
+        field: &kolum_domain::EditableField,
+        value: Option<kolum_domain::FieldValue>,
+    ) {
+        use kolum_domain::FieldValue;
+        if value.is_none() && field.required {
+            return self.say(format!("{} is required", field.name), Level::Warn);
+        }
+        let mut update = kolum_domain::IssueUpdate::default();
+        match (field.id.as_str(), value) {
+            ("summary", Some(FieldValue::Text(title))) => update.title = Some(title),
+            ("description", Some(FieldValue::RichText(text))) => update.description = Some(text),
+            ("labels", Some(FieldValue::Options(labels))) => update.labels = Some(labels),
+            ("priority", Some(FieldValue::Text(name)))
+                if kolum_domain::Priority::from_name(&name).is_some() =>
+            {
+                update.priority = kolum_domain::Priority::from_name(&name)
+            }
+            (_, value) => update.fields = vec![(field.id.clone(), value)],
+        }
+        self.save(key, update);
     }
 
     /// The detail's copy of the issue when it is the open one: the board's
@@ -1108,9 +1209,10 @@ impl App {
     }
 
     fn edit(&mut self, purpose: EditPurpose) {
-        if let EditPurpose::Field { key, target } = &purpose {
+        if let EditPurpose::Field { key, field } = &purpose {
             let Some(issue) = self.full_issue(key) else { return };
-            let Some((name, rich)) = field_text(issue, target) else { return };
+            let rich = rich_value(issue, &field.id);
+            let name = &field.name;
             let flattened = if rich.lossy {
                 "Jira holds things here that Markdown cannot keep (images, colours, expands): saving rewrites the field without them. "
             } else {
@@ -1177,7 +1279,7 @@ impl App {
                 self.effects.push(Effect::Send(Command::Create(new)));
                 self.say("Creating…", Level::Info);
             }
-            EditPurpose::Field { key, target } => self.save_field(key, target, &text),
+            EditPurpose::Field { key, field } => self.save_field(key, field, &text),
             EditPurpose::Describe(key) => self.save_description(key, &text),
         }
     }
@@ -1202,26 +1304,16 @@ impl App {
     }
 
     /// One rich text field back from `$EDITOR`: empty or unchanged leaves it.
-    fn save_field(&mut self, key: IssueKey, target: EditTarget, text: &str) {
+    fn save_field(&mut self, key: IssueKey, field: kolum_domain::EditableField, text: &str) {
         if text.is_empty() {
             return self.say("Nothing written: the field stays as it is", Level::Info);
         }
         let Some(issue) = self.full_issue(&key) else { return };
-        let Some((_, rich)) = field_text(issue, &target) else { return };
-        if text == rich.to_markdown().trim() {
+        if text == rich_value(issue, &field.id).to_markdown().trim() {
             return self.say("No change", Level::Info);
         }
-        let rich = kolum_domain::RichText::from_markdown(text);
-        let update = match target {
-            EditTarget::Description => {
-                kolum_domain::IssueUpdate { description: Some(rich), ..Default::default() }
-            }
-            EditTarget::Custom(id) => {
-                let value = Some(kolum_domain::FieldValue::RichText(rich));
-                kolum_domain::IssueUpdate { fields: vec![(id, value)], ..Default::default() }
-            }
-        };
-        self.save(key, update);
+        let value = kolum_domain::FieldValue::RichText(kolum_domain::RichText::from_markdown(text));
+        self.set_field(key, &field, Some(value));
     }
 
     /// The pictures of the open issue: its assignee's avatar, and its
@@ -1431,9 +1523,13 @@ impl App {
                 self.detail = None;
                 self.effects.push(Effect::Send(Command::LoadBoard(Some(id))));
             }
-            Pick::EditField { key, target } => {
+            Pick::EditField { key, entry } => {
                 self.close_picker();
-                self.edit(EditPurpose::Field { key, target });
+                self.edit_field(key, entry);
+            }
+            Pick::SetField { key, field, value } => {
+                self.close_picker();
+                self.set_field(key, &field, value);
             }
             Pick::Run(action) => {
                 self.close_picker();
@@ -1494,6 +1590,9 @@ impl App {
                 self.undo_theme_preview();
                 if prompt.kind == PromptKind::Command {
                     self.run_command(prompt.input.text().trim());
+                }
+                if prompt.kind == PromptKind::Field {
+                    self.confirm_field(prompt.input.text());
                 }
             }
             _ => {}
@@ -1635,10 +1734,14 @@ impl App {
         ];
         let lead_x = area.x + Line::from(left.clone()).width() as u16;
         if let Some(prompt) = &self.prompt {
-            let lead = if prompt.kind == PromptKind::Command { ":" } else { "/" };
+            let lead = match (prompt.kind, &self.field_prompt) {
+                (PromptKind::Command, _) => ":".to_string(),
+                (PromptKind::Field, Some((_, field))) => format!("{}: ", field.name),
+                _ => "/".to_string(),
+            };
             let text = prompt.input.text();
             let typed: String = text.chars().take(prompt.input.cursor()).collect();
-            let x = lead_x + (width(lead) + width(&typed)) as u16;
+            let x = lead_x + (width(&lead) + width(&typed)) as u16;
             left.push(Span::raw(format!("{lead}{text}")));
             frame.set_cursor_position((x, area.y));
         } else if let Some((text, level)) = &self.message {
@@ -1724,22 +1827,31 @@ impl App {
     }
 }
 
-/// `# Title` then Markdown, against the issue as it is: only what moved is
-/// sent. The description is compared as Markdown, so a rich text that does
-/// not survive the round trip exactly is not rewritten for nothing.
-/// The name and the text of a rich text field of the issue.
-fn field_text<'a>(
-    issue: &'a kolum_domain::Issue,
-    target: &EditTarget,
-) -> Option<(String, &'a kolum_domain::RichText)> {
-    match target {
-        EditTarget::Description => Some(("Description".into(), &issue.description)),
-        EditTarget::Custom(id) => {
-            issue.fields.iter().find(|f| &f.id == id).and_then(|f| match &f.value {
-                kolum_domain::FieldValue::RichText(text) => Some((f.name.clone(), text)),
-                _ => None,
-            })
-        }
+/// What a field of the issue holds now, by its provider id: the built-in
+/// fields from the issue's own members, the others from its custom fields.
+fn current_value(
+    issue: &kolum_domain::Issue,
+    id: &kolum_domain::FieldId,
+) -> Option<kolum_domain::FieldValue> {
+    use kolum_domain::FieldValue;
+    Some(match id.as_str() {
+        "summary" => FieldValue::Text(issue.title.clone()),
+        "description" => FieldValue::RichText(issue.description.clone()),
+        "labels" => FieldValue::Options(issue.labels.clone()),
+        "priority" => FieldValue::Text(issue.priority?.name().into()),
+        "duedate" => FieldValue::Date(issue.due?),
+        "assignee" => FieldValue::User(issue.assignee.clone()?),
+        "reporter" => FieldValue::User(issue.reporter.clone()?),
+        "parent" => FieldValue::Text(issue.parent.as_ref()?.key.to_string()),
+        _ => issue.fields.iter().find(|f| &f.id == id)?.value.clone(),
+    })
+}
+
+/// A rich text field's text, empty when it has none yet.
+fn rich_value(issue: &kolum_domain::Issue, id: &kolum_domain::FieldId) -> kolum_domain::RichText {
+    match current_value(issue, id) {
+        Some(kolum_domain::FieldValue::RichText(text)) => text,
+        _ => kolum_domain::RichText::default(),
     }
 }
 
@@ -1756,6 +1868,9 @@ fn refresh_detail(shown: &mut kolum_domain::Issue, fresh: &kolum_domain::Issue) 
     shown.fields.extend(only_here);
 }
 
+/// `# Title` then Markdown, against the issue as it is: only what moved is
+/// sent. The description is compared as Markdown, so a rich text that does
+/// not survive the round trip exactly is not rewritten for nothing.
 fn description_update(issue: &kolum_domain::Issue, text: &str) -> kolum_domain::IssueUpdate {
     let (title, body) = split_title(text);
     kolum_domain::IssueUpdate {

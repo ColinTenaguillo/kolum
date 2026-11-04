@@ -700,14 +700,7 @@ async fn one_field_is_edited_at_a_time() {
     let mut app = loaded().await;
     press(&mut app, "/ACME-10<CR><CR>");
     app.take_effects();
-    press(&mut app, "E");
-    settle(&mut app);
-    let shown = screen(&mut app, 140, 40);
-    assert!(shown.contains("Edit ACME-10"), "{shown}");
-    assert!(shown.contains("Description") && shown.contains("Acceptance criteria"));
-    press(&mut app, "accept");
-    settle(&mut app);
-    press(&mut app, "<CR>");
+    edit_field(&mut app, "accept").await;
     let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else { panic!() };
     assert!(text.starts_with("- Tokens refresh before they expire\n"), "{text}");
     assert!(!text.contains("cannot keep"), "nothing flattened here");
@@ -744,15 +737,11 @@ async fn one_field_is_edited_at_a_time() {
         comments: vec![],
         activity: vec![],
     })));
-    press(&mut app, "Eaccept");
-    settle(&mut app);
-    press(&mut app, "<CR>");
+    edit_field(&mut app, "accept").await;
     let Some(Effect::Edit { text, .. }) = app.take_effects().pop() else { panic!() };
     assert!(text.contains("Markdown cannot keep"), "{text}");
 
-    press(&mut app, "Edescription");
-    settle(&mut app);
-    press(&mut app, "<CR>");
+    edit_field(&mut app, "description").await;
     let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else { panic!() };
     app.on_edited(purpose, Ok(format!("Rewritten\n{text}")));
     let Some((_, _, kolum_app::Write::Update(update))) = writes(app.take_effects()).pop() else {
@@ -760,6 +749,137 @@ async fn one_field_is_edited_at_a_time() {
     };
     assert_eq!((update.title, update.fields), (None, vec![]), "the description alone");
     assert!(update.description.unwrap().plain_text().starts_with("Rewritten"));
+}
+
+/// What the provider says the issue lets kolum set, as the service would.
+async fn editable(key: &str) -> Event {
+    use kolum_domain::IssueWriter;
+    let key = IssueKey::new(key);
+    let result = FakeProvider::new().editable_fields(&key).await;
+    Event::EditableFields { key, result }
+}
+
+/// `E` on the open issue, then the field whose name starts with `field`.
+async fn edit_field(app: &mut App, field: &str) {
+    press(app, "E");
+    app.on_event(editable("ACME-10").await);
+    press(app, field);
+    settle(app);
+    press(app, "<CR>");
+    settle(app);
+}
+
+fn updates(app: &mut App) -> Vec<kolum_domain::IssueUpdate> {
+    writes(app.take_effects())
+        .into_iter()
+        .filter_map(|(_, _, w)| match w {
+            kolum_app::Write::Update(u) => Some(u),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every field the provider lets set, each edited its own way: a choice
+/// in a picker, a number or a date on the bottom line.
+#[tokio::test]
+async fn e_edits_every_field_the_issue_lets_set() {
+    use kolum_domain::{FieldId, FieldValue, IssueUpdate, Priority};
+    let mut app = loaded().await;
+    press(&mut app, "/ACME-10<CR><CR>");
+    app.take_effects();
+    press(&mut app, "E");
+    let asked = app.take_effects();
+    assert_eq!(asked, [Effect::Send(Command::EditableFields(IssueKey::new("ACME-10")))]);
+    app.on_event(editable("ACME-10").await);
+    settle(&mut app);
+    let shown = screen(&mut app, 140, 40);
+    for name in ["Edit ACME-10", "Status", "Team", "Story points", "Due date"] {
+        assert!(shown.contains(name), "{name}: {shown}");
+    }
+    press(&mut app, "<Esc><Esc>");
+
+    edit_field(&mut app, "team").await;
+    assert!(screen(&mut app, 140, 40).contains("Mobile"), "the options");
+    press(&mut app, "mobile");
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    let team = (FieldId::new("customfield_10020"), Some(FieldValue::Text("Mobile".into())));
+    assert_eq!(updates(&mut app), [IssueUpdate { fields: vec![team], ..Default::default() }]);
+
+    edit_field(&mut app, "story").await;
+    assert!(screen(&mut app, 140, 40).contains("Story points: "), "the bottom line");
+    press(&mut app, "5<CR>");
+    let points = (FieldId::new("customfield_10016"), Some(FieldValue::Number(5.0)));
+    assert_eq!(updates(&mut app), [IssueUpdate { fields: vec![points], ..Default::default() }]);
+
+    edit_field(&mut app, "due").await;
+    press(&mut app, "soon<CR>");
+    assert!(screen(&mut app, 140, 40).contains("a date reads YYYY-MM-DD"));
+    assert_eq!(updates(&mut app), [], "nothing sent");
+
+    edit_field(&mut app, "priority").await;
+    press(&mut app, "lowest");
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    let lowest = IssueUpdate { priority: Some(Priority::Lowest), ..Default::default() };
+    assert_eq!(updates(&mut app), [lowest]);
+
+    edit_field(&mut app, "summary").await;
+    assert!(screen(&mut app, 140, 40).contains("Summary: Search API returns duplicates"));
+    press(&mut app, "<C-u><CR>");
+    assert!(screen(&mut app, 140, 40).contains("Summary is required"));
+    assert_eq!(updates(&mut app), []);
+
+    edit_field(&mut app, "reviewer").await;
+    assert!(screen(&mut app, 140, 40).contains("Reviewer of ACME-10"));
+    press(&mut app, "ana");
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    let [IssueUpdate { fields, .. }] = &updates(&mut app)[..] else { panic!() };
+    let [(id, Some(FieldValue::User(ana)))] = &fields[..] else { panic!("{fields:?}") };
+    assert_eq!((id.as_str(), ana.display_name.as_str()), ("customfield_10050", "Ana Silva"));
+
+    edit_field(&mut app, "platforms").await;
+    press(&mut app, "<Tab><Tab><CR>");
+    let both = FieldValue::Options(vec!["Web".into(), "iOS".into()]);
+    let platforms = (FieldId::new("customfield_10060"), Some(both));
+    assert_eq!(updates(&mut app), [IssueUpdate { fields: vec![platforms], ..Default::default() }]);
+
+    edit_field(&mut app, "team").await;
+    press(&mut app, "none");
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    let emptied = (FieldId::new("customfield_10020"), None);
+    assert_eq!(updates(&mut app), [IssueUpdate { fields: vec![emptied], ..Default::default() }]);
+
+    edit_field(&mut app, "sprint").await;
+    assert!(screen(&mut app, 140, 40).contains("not available yet"));
+
+    press(&mut app, "E");
+    let key = IssueKey::new("ACME-10");
+    let error = kolum_domain::DomainError::Transport("timed out".into());
+    app.on_event(Event::EditableFields { key, result: Err(error) });
+    assert!(screen(&mut app, 140, 40).contains("Reading the fields of ACME-10: transport"));
+
+    edit_field(&mut app, "status").await;
+    let asked = Effect::Send(Command::Transitions(IssueKey::new("ACME-10")));
+    assert!(app.take_effects().contains(&asked), "the transitions, as t asks");
+}
+
+/// A provider that cannot list its fields still lets `E` edit the
+/// description and the status.
+#[tokio::test]
+async fn e_falls_back_to_the_description_and_the_status() {
+    let mut app = loaded().await;
+    press(&mut app, "/ACME-10<CR><CR>E");
+    let key = IssueKey::new("ACME-10");
+    let unsupported =
+        kolum_domain::DomainError::Unsupported(kolum_domain::Capability::CustomFields);
+    app.on_event(Event::EditableFields { key, result: Err(unsupported) });
+    settle(&mut app);
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("Status") && shown.contains("Description"), "{shown}");
+    assert!(!shown.contains("Due date"), "only what every provider has");
 }
 
 #[tokio::test]
