@@ -236,7 +236,7 @@ impl IssueReader for JiraProvider {
             "variables": { "cloudId": cloud, "key": key.as_str(), "project": project },
         });
         let response = self.client.send(Method::POST, "/gateway/api/graphql", &body).await?;
-        map::field_layout(&response)
+        map::field_layout(&response, &self.ctx().await?.fields)
     }
 
     async fn comments(&self, key: &IssueKey) -> Result<Vec<Comment>> {

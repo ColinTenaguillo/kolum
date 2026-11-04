@@ -96,7 +96,8 @@ pub fn field_json(
 /// The web issue view's layout, from the GraphQL answer to `LAYOUT_QUERY`:
 /// the pinned fields, the details (shown even empty) and the others once
 /// filled beside the issue; the body's fields in their order.
-pub fn field_layout(response: &Value) -> Result<FieldLayout> {
+/// Fields kolum has a name for go by that name, as `detail_fields` does.
+pub fn field_layout(response: &Value, known: &FieldIds) -> Result<FieldLayout> {
     if let Some(message) = response.pointer("/errors/0/message").and_then(Value::as_str) {
         return Err(DomainError::Transport(message.to_string()));
     }
@@ -125,23 +126,38 @@ pub fn field_layout(response: &Value) -> Result<FieldLayout> {
             })
             .collect()
     };
-    let mut side = pinned.clone();
+    let mut side: Vec<FieldId> = vec![];
+    let mut add = |id: &FieldId| {
+        let name = kolum_name(id, known);
+        if !side.contains(&name) {
+            side.push(name);
+        }
+    };
+    pinned.iter().for_each(&mut add);
     for (id, filled, kind) in nodes("PRIMARY") {
         // The web hides the old Advanced Roadmaps Parent Link while it is
         // empty, though the layout lists it; seen, not documented.
-        let hidden = !filled && kind == "com.atlassian.jpo:jpo-custom-field-parent";
-        if !hidden && !pinned.contains(&id) {
-            side.push(id);
+        if filled || kind != "com.atlassian.jpo:jpo-custom-field-parent" {
+            add(&id);
         }
     }
-    side.extend(
-        nodes("SECONDARY")
-            .into_iter()
-            .filter(|(id, filled, _)| *filled && !pinned.contains(id))
-            .map(|n| n.0),
-    );
+    nodes("SECONDARY").iter().filter(|(_, filled, _)| *filled).for_each(|n| add(&n.0));
     let body = nodes("CONTENT").into_iter().map(|n| n.0).collect();
     Ok(FieldLayout { side, body })
+}
+
+/// The name kolum gives a Jira field it reads into the issue itself.
+fn kolum_name(id: &FieldId, known: &FieldIds) -> FieldId {
+    let is = |field: &Option<String>| field.as_deref() == Some(id.as_str());
+    let name = match id.as_str() {
+        "duedate" => "due",
+        "parent" => "epic",
+        _ if is(&known.estimate) => "estimate",
+        _ if is(&known.sprint) => "sprint",
+        _ if is(&known.epic_link) => "epic",
+        _ => return id.clone(),
+    };
+    FieldId::new(name)
 }
 
 /// The fields editmeta lets kolum set, by name, each with how it is
@@ -200,8 +216,13 @@ pub fn schemas(fields: &[FieldDto]) -> BTreeMap<String, FieldSchemaDto> {
     fields.iter().filter_map(|f| Some((f.id.clone(), f.schema.clone()?))).collect()
 }
 
+/// System fields the issue holds as a list of names, read like custom ones
+/// since the domain has no member for them.
+const SYSTEM_LISTS: [&str; 2] = ["fixVersions", "components"];
+
 pub fn custom_names(fields: &[FieldDto]) -> BTreeMap<String, String> {
-    fields.iter().filter(|f| f.custom).map(|f| (f.id.clone(), f.name.clone())).collect()
+    let read = |f: &&FieldDto| f.custom || SYSTEM_LISTS.contains(&f.id.as_str());
+    fields.iter().filter(read).map(|f| (f.id.clone(), f.name.clone())).collect()
 }
 
 fn get<T: DeserializeOwned>(fields: &BTreeMap<String, Value>, name: &str) -> Option<T> {
@@ -390,7 +411,7 @@ pub fn issue(dto: &IssueDto, ctx: &Ctx) -> Result<Issue> {
     let fields = f
         .iter()
         .filter(|(id, _)| {
-            id.starts_with("customfield_")
+            (id.starts_with("customfield_") || SYSTEM_LISTS.contains(&id.as_str()))
                 && !known.iter().any(|k| k.as_deref() == Some(id.as_str()))
         })
         .filter_map(|(id, v)| {

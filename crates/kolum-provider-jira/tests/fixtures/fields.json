@@ -82,5 +82,11 @@
       "custom": "com.atlassian.jira.plugin.system.customfieldtypes:userpicker",
       "customId": 10070
     }
+  },
+  {
+    "id": "fixVersions",
+    "name": "Fix versions",
+    "custom": false,
+    "schema": { "type": "array", "items": "version", "system": "fixVersions" }
   }
 ]

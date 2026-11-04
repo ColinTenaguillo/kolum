@@ -142,15 +142,28 @@ fn the_editable_fields_say_how_each_is_edited() {
 #[test]
 fn the_field_layout_is_the_web_issue_view() {
     let response: serde_json::Value = serde_json::from_str(fixture!("field_layout.json")).unwrap();
-    let layout = map::field_layout(&response).unwrap();
+    let layout = map::field_layout(&response, &ctx().fields).unwrap();
     let ids = |v: &[FieldId]| v.iter().map(|f| f.as_str().to_string()).collect::<Vec<_>>();
+    // In kolum's names where it has one, so it reads like `detail_fields`;
+    // the old Epic Link says the same as Parent, once is enough.
     assert_eq!(
         ids(&layout.side),
-        ["duedate", "assignee", "customfield_10070", "labels", "parent", "priority", "reporter"]
+        [
+            "due",
+            "assignee",
+            "customfield_10070",
+            "labels",
+            "epic",
+            "estimate",
+            "sprint",
+            "priority",
+            "reporter"
+        ]
     );
     assert_eq!(ids(&layout.body), ["customfield_10080", "description"]);
     let refused = serde_json::json!({"errors": [{"message": "not allowed"}], "data": null});
-    assert_eq!(map::field_layout(&refused), Err(DomainError::Transport("not allowed".into())));
+    let refused = map::field_layout(&refused, &ctx().fields);
+    assert_eq!(refused, Err(DomainError::Transport("not allowed".into())));
 }
 
 #[test]
@@ -167,6 +180,9 @@ fn custom_fields_are_found_by_schema_and_name() {
 #[test]
 fn an_issue_maps_every_field() {
     let issue = &issues()[0];
+    let versions = issue.fields.iter().find(|f| f.id.as_str() == "fixVersions").unwrap();
+    let released = FieldValue::Options(vec!["3.1.0".into()]);
+    assert_eq!((versions.name.as_str(), &versions.value), ("Fix versions", &released));
     assert_eq!(issue.key.as_str(), "ACME-5");
     assert_eq!(issue.id.as_str(), "10005");
     assert_eq!(issue.kind, IssueType { name: "Bug".into(), kind: IssueKind::Bug });
@@ -204,7 +220,7 @@ fn an_issue_maps_every_field() {
     assert!(issue.attachments[0].is_image());
     let custom: Vec<(&str, &FieldValue)> =
         issue.fields.iter().map(|f| (f.name.as_str(), &f.value)).collect();
-    assert_eq!(custom.len(), 3, "the known ones and the empty one are left out: {custom:?}");
+    assert_eq!(custom.len(), 4, "the known ones and the empty one are left out: {custom:?}");
     assert!(custom.contains(&("Team", &FieldValue::Text("Platform".into()))));
     assert!(
         custom.contains(&("Platforms", &FieldValue::Options(vec!["iOS".into(), "Android".into()])))
@@ -520,7 +536,7 @@ async fn the_provider_reads_an_issue_its_comments_and_history() {
     assert_eq!(history[0].changes[0].to.as_deref(), Some("In Progress"));
     assert_eq!(history.len(), 2);
     let layout = p.field_layout(&key).await.unwrap();
-    assert_eq!(layout.side[0], FieldId::new("duedate"));
+    assert_eq!(layout.side[0], FieldId::new("due"));
     let asked = jira.seen.lock().unwrap().iter().find(|r| r.contains("graphql")).cloned().unwrap();
     assert!(
         asked.contains(r#""cloudId":"cloud-1""#) && asked.contains(r#""project":"ACME""#),

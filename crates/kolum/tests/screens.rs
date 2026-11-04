@@ -382,6 +382,39 @@ async fn the_detail_shows_every_field_unless_the_config_lists_some() {
     assert!(!right.contains("Acceptance"), "rich text stays in the middle: {right}");
 }
 
+/// With the provider's layout, the detail shows the fields the web does,
+/// in its order: beside the issue after the status, and in the body.
+#[tokio::test]
+async fn the_detail_follows_the_providers_layout() {
+    let open = |settings| async move {
+        let mut app = loaded_with(settings).await;
+        press(&mut app, "/ACME-10<CR><CR>");
+        let mut issue = FakeProvider::new().issue(&IssueKey::new("ACME-10")).await.unwrap();
+        issue.due = Some(time::macros::date!(2026 - 12 - 01));
+        let ids = |ids: &[&str]| ids.iter().map(|id| kolum_domain::FieldId::new(*id)).collect();
+        let layout = kolum_domain::FieldLayout {
+            side: ids(&["due", "customfield_10020", "assignee", "labels", "epic", "priority"]),
+            body: ids(&["customfield_10030", "description"]),
+        };
+        let detail =
+            IssueDetail { issue, comments: vec![], activity: vec![], layout: Some(layout) };
+        app.on_event(Event::IssueLoaded(Box::new(detail)));
+        screen(&mut app, 140, 60)
+    };
+    let shown = open(settings()).await;
+    let at = |label: &str| shown.find(label).unwrap_or_else(|| panic!("{label}: {shown}"));
+    let side = ["Status", "Due date", "Team", "Assignee", "Labels", "Parent", "Priority"];
+    let places: Vec<usize> = side.iter().map(|l| at(l)).collect();
+    assert!(places.is_sorted(), "{side:?} in this order: {shown}");
+    assert!(!shown.contains("Reporter") && !shown.contains("Updated"), "only the layout's");
+    assert!(at("── Acceptance criteria") < at("── Description"), "the body's order");
+
+    let mut settings = settings();
+    settings.ui.detail_fields = Some(vec!["reporter".into()]);
+    let configured = open(settings).await;
+    assert!(configured.contains("Reporter") && !configured.contains("Due date"), "config wins");
+}
+
 #[tokio::test]
 async fn the_detail_lists_links_and_configured_custom_fields() {
     let mut settings = settings();

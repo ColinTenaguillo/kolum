@@ -626,6 +626,7 @@
           }
         ],
         "customfield_10014": null,
+        "fixVersions": [{"id": "10", "name": "3.1.0"}],
         "customfield_10050": {
           "self": "x",
           "value": "Platform",

@@ -10,7 +10,10 @@
       {"node": {"fieldId": "customfield_10070", "type": "com.atlassian.jira.plugin.system.customfieldtypes:userpicker", "hasValue": false}},
       {"node": {"fieldId": "labels", "type": "labels", "hasValue": true}},
       {"node": {"fieldId": "customfield_10099", "type": "com.atlassian.jpo:jpo-custom-field-parent", "hasValue": false}},
-      {"node": {"fieldId": "parent", "type": "parent", "hasValue": true}}
+      {"node": {"fieldId": "parent", "type": "parent", "hasValue": true}},
+      {"node": {"fieldId": "customfield_10016", "type": "com.atlassian.jpo:jpo-custom-field-story-points", "hasValue": false}},
+      {"node": {"fieldId": "customfield_10014", "type": "com.pyxis.greenhopper.jira:gh-epic-link", "hasValue": false}},
+      {"node": {"fieldId": "customfield_10020", "type": "com.pyxis.greenhopper.jira:gh-sprint", "hasValue": false}}
     ]}},
     {"containerType": "SECONDARY", "fields": {"edges": [
       {"node": {"fieldId": "fixVersions", "type": "fixVersions", "hasValue": false}},

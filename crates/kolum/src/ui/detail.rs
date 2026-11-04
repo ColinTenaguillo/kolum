@@ -6,7 +6,7 @@ use super::{glyph, rich};
 use crate::config::UiConfig;
 use crate::theme::Theme;
 use kolum_app::IssueDetail;
-use kolum_domain::{CustomField, FieldValue, Issue, IssueRef, RichText, UserId};
+use kolum_domain::{CustomField, FieldLayout, FieldValue, Issue, IssueRef, RichText, UserId};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -109,9 +109,10 @@ impl DetailView {
         } else {
             [body, Rect::default()]
         };
-        let sections = ui.detail_sections.as_deref();
-        let mut content = self.content(theme, left.width.saturating_sub(2), sections);
-        let names = field_names(issue, ui.detail_fields.as_deref());
+        let layout = self.loaded.as_ref().and_then(|d| d.layout.as_ref());
+        let sections = body_sections(issue, ui.detail_sections.as_deref(), layout);
+        let mut content = self.content(theme, left.width.saturating_sub(2), &sections);
+        let names = field_names(issue, ui.detail_fields.as_deref(), layout);
         let field_lines = field_lines(issue, &names, theme, me);
         if side {
             let right = self.draw_avatar(frame, right, theme, pictures.avatar);
@@ -206,7 +207,12 @@ impl DetailView {
         rest
     }
 
-    fn content(&self, theme: &Theme, cols: u16, sections: Option<&[String]>) -> Vec<Line<'static>> {
+    fn content(
+        &self,
+        theme: &Theme,
+        cols: u16,
+        sections: &[(&str, &RichText)],
+    ) -> Vec<Line<'static>> {
         let issue = &self.issue;
         // `── Title ─────`: a rule across the pane, so sections stand apart.
         let section = |t: &str| {
@@ -218,15 +224,18 @@ impl DetailView {
                 Span::styled(format!(" {}", "─".repeat(rest)), rule),
             ])
         };
-        let mut lines = vec![section("Description")];
-        if issue.description.is_empty() {
-            lines.push(Line::from(Span::styled("No description", Style::new().fg(theme.muted))));
-        } else {
-            lines.extend(rich::lines(&issue.description, theme, cols));
-        }
-        for (name, text) in rich_sections(issue, sections) {
-            lines.extend([Line::default(), section(name)]);
-            lines.extend(rich::lines(text, theme, cols));
+        let mut lines = vec![];
+        for (i, (name, text)) in sections.iter().enumerate() {
+            if i > 0 {
+                lines.push(Line::default());
+            }
+            lines.push(section(name));
+            if text.is_empty() {
+                lines
+                    .push(Line::from(Span::styled("No description", Style::new().fg(theme.muted))));
+            } else {
+                lines.extend(rich::lines(text, theme, cols));
+            }
         }
         if !issue.subtasks.is_empty() {
             lines.extend([Line::default(), section("Child issues")]);
@@ -379,9 +388,19 @@ const BUILTIN_FIELDS: [&str; 11] = [
 
 /// The `wanted` fields, or the built-in ones then every custom field the
 /// issue fills that is not rich text (that shows under the description).
-fn field_names(issue: &Issue, wanted: Option<&[String]>) -> Vec<String> {
+fn field_names(
+    issue: &Issue,
+    wanted: Option<&[String]>,
+    layout: Option<&FieldLayout>,
+) -> Vec<String> {
     if let Some(names) = wanted {
         return names.to_vec();
+    }
+    // The web shows the status apart, above its fields; here it heads them.
+    if let Some(layout) = layout {
+        return std::iter::once("status".to_string())
+            .chain(layout.side.iter().map(|id| id.to_string()))
+            .collect();
     }
     let custom = issue.fields.iter().filter(|f| match &f.value {
         FieldValue::RichText(_) => false,
@@ -399,15 +418,32 @@ fn find_field<'a>(issue: &'a Issue, name: &str) -> Option<&'a CustomField> {
 
 /// The rich text custom fields the issue fills: the `wanted` ones in
 /// their order, or every one when the config lists none.
-fn rich_sections<'a>(issue: &'a Issue, wanted: Option<&[String]>) -> Vec<(&'a str, &'a RichText)> {
-    let rich = |f: &'a CustomField| match &f.value {
-        FieldValue::RichText(text) if !text.is_empty() => Some((f.name.as_str(), text)),
-        _ => None,
+fn body_sections<'a>(
+    issue: &'a Issue,
+    wanted: Option<&[String]>,
+    layout: Option<&FieldLayout>,
+) -> Vec<(&'a str, &'a RichText)> {
+    let names: Vec<String> = match (wanted, layout) {
+        (Some(names), _) => {
+            std::iter::once("description".into()).chain(names.iter().cloned()).collect()
+        }
+        (None, Some(layout)) => layout.body.iter().map(|id| id.to_string()).collect(),
+        (None, None) => std::iter::once("description".into())
+            .chain(issue.fields.iter().map(|f| f.id.to_string()))
+            .collect(),
     };
-    match wanted {
-        None => issue.fields.iter().filter_map(rich).collect(),
-        Some(names) => names.iter().filter_map(|n| find_field(issue, n)).filter_map(rich).collect(),
-    }
+    names
+        .iter()
+        .filter_map(|name| match find_field(issue, name) {
+            _ if name == "description" => Some(("Description", &issue.description)),
+            Some(CustomField { name, value: FieldValue::RichText(text), .. })
+                if !text.is_empty() =>
+            {
+                Some((name.as_str(), text))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// The right-hand column, in the order the config lists the fields. A
@@ -451,7 +487,7 @@ fn field_lines(
                 issue.sprint.as_ref().map_or_else(none, |s| vec![Span::raw(s.name.clone())]),
             ),
             "epic" => (
-                "Epic".into(),
+                "Parent".into(),
                 issue.parent.as_ref().map_or_else(none, |p| {
                     vec![Span::styled(format!("◆ {}", p.title), Style::new().fg(theme.type_epic))]
                 }),
@@ -470,7 +506,7 @@ fn field_lines(
                 issue.estimate.as_ref().map_or_else(none, |e| vec![Span::raw(glyph::estimate(e))]),
             ),
             "due" => {
-                ("Due".into(), issue.due.map_or_else(none, |d| vec![Span::raw(d.to_string())]))
+                ("Due date".into(), issue.due.map_or_else(none, |d| vec![Span::raw(d.to_string())]))
             }
             "created" => ("Created".into(), vec![Span::raw(glyph::datetime(issue.created))]),
             "updated" => ("Updated".into(), vec![Span::raw(glyph::datetime(issue.updated))]),
