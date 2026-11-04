@@ -284,6 +284,12 @@ impl JiraProvider {
 
 #[async_trait]
 impl IssueWriter for JiraProvider {
+    async fn editable_fields(&self, key: &IssueKey) -> Result<Vec<EditableField>> {
+        let meta: EditMetaDto =
+            self.client.get(&format!("{}/issue/{key}/editmeta", self.api()), &[]).await?;
+        Ok(map::editable_fields(&meta))
+    }
+
     async fn transitions(&self, key: &IssueKey) -> Result<Vec<Transition>> {
         let query = [("expand", "transitions.fields".to_string())];
         let page: TransitionPage =

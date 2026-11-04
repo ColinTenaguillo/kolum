@@ -476,6 +476,8 @@ impl App {
                 }
             }
             Event::Transitions { key, result } => self.on_transitions(key, result),
+            // Asked for by nothing yet: `E` uses them next.
+            Event::EditableFields { .. } => {}
             Event::Written { op, key, issue } => {
                 self.ledger.settle(op);
                 if let (Some(snapshot), Some(issue)) = (&mut self.board.snapshot, issue) {

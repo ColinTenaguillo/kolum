@@ -203,6 +203,32 @@ pub struct FieldSchemaDto {
     pub custom: Option<String>,
 }
 
+/// `/issue/{key}/editmeta`: what the issue lets the caller set.
+#[derive(Debug, Deserialize)]
+pub struct EditMetaDto {
+    pub fields: std::collections::BTreeMap<String, EditMetaFieldDto>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditMetaFieldDto {
+    #[serde(default)]
+    pub required: bool,
+    pub schema: Option<FieldSchemaDto>,
+    pub name: String,
+    #[serde(default)]
+    pub operations: Vec<String>,
+    #[serde(default)]
+    pub allowed_values: Vec<AllowedValueDto>,
+}
+
+/// An option says `value`; a priority or a version says `name`.
+#[derive(Debug, Deserialize)]
+pub struct AllowedValueDto {
+    pub value: Option<String>,
+    pub name: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct TransitionPage {
     pub transitions: Vec<TransitionDto>,

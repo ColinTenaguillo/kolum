@@ -369,6 +369,35 @@ impl IssueSearch for FakeProvider {
 impl IssueWriter for FakeProvider {
     /// Every status is one step from every other: the demo shows the
     /// mechanics, not a workflow.
+    async fn editable_fields(&self, key: &IssueKey) -> Result<Vec<EditableField>> {
+        self.issue(key).await?;
+        let field = |id: &str, name: &str, kind| EditableField {
+            id: FieldId::new(id),
+            name: name.into(),
+            kind,
+            required: id == "summary",
+        };
+        let words = |w: &[&str]| w.iter().map(|s| s.to_string()).collect();
+        let priorities = Priority::ALL.iter().map(|p| p.name().to_string()).collect();
+        Ok(vec![
+            field("summary", "Summary", FieldKind::Text),
+            field("description", "Description", FieldKind::RichText),
+            field("priority", "Priority", FieldKind::Choice { options: priorities, many: false }),
+            field("labels", "Labels", FieldKind::Words),
+            field("duedate", "Due date", FieldKind::Date),
+            field("assignee", "Assignee", FieldKind::User),
+            field("parent", "Parent", FieldKind::Issue),
+            field("customfield_10016", "Story points", FieldKind::Number),
+            field(
+                "customfield_10020",
+                "Team",
+                FieldKind::Choice { options: words(&["Platform", "Mobile"]), many: false },
+            ),
+            field("customfield_10030", "Acceptance criteria", FieldKind::RichText),
+            field("customfield_10040", "Sprint", FieldKind::Sprint),
+        ])
+    }
+
     async fn transitions(&self, key: &IssueKey) -> Result<Vec<Transition>> {
         let current = self.issue(key).await?.status.id;
         Ok(data::STATUSES

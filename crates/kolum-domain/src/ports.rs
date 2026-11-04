@@ -5,7 +5,9 @@
 use crate::board::{Board, BoardSummary};
 use crate::error::Result;
 use crate::ids::{BoardId, IssueKey, TransitionId, UserId};
-use crate::issue::{ActivityEntry, Comment, Issue, IssueUpdate, NewIssue, Transition, User};
+use crate::issue::{
+    ActivityEntry, Comment, EditableField, Issue, IssueUpdate, NewIssue, Transition, User,
+};
 use crate::query::Query;
 use crate::rich_text::RichText;
 use async_trait::async_trait;
@@ -100,6 +102,11 @@ pub trait IssueWriter: Send + Sync {
     async fn update(&self, key: &IssueKey, update: IssueUpdate) -> Result<()>;
     async fn create(&self, issue: NewIssue) -> Result<Issue>;
     async fn clone_issue(&self, key: &IssueKey) -> Result<Issue>;
+
+    /// The fields kolum may set on the issue, and how each is edited.
+    async fn editable_fields(&self, _key: &IssueKey) -> Result<Vec<EditableField>> {
+        Err(crate::DomainError::Unsupported(Capability::CustomFields))
+    }
 
     /// Moves the issue in the board's order, next to another.
     async fn rank(&self, _key: &IssueKey, _rank: &Rank) -> Result<()> {

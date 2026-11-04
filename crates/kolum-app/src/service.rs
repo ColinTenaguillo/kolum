@@ -26,6 +26,8 @@ pub enum Command {
     },
     /// The transitions open to an issue now.
     Transitions(IssueKey),
+    /// The fields the issue lets kolum set.
+    EditableFields(IssueKey),
     /// An avatar's bytes.
     Image(String),
     Create(kolum_domain::NewIssue),
@@ -64,6 +66,10 @@ pub enum Event {
     Transitions {
         key: IssueKey,
         result: Result<Vec<kolum_domain::Transition>, DomainError>,
+    },
+    EditableFields {
+        key: IssueKey,
+        result: Result<Vec<kolum_domain::EditableField>, DomainError>,
     },
     /// The write went through; `issue` is the provider's view of it after,
     /// when it could be read back.
@@ -182,6 +188,10 @@ async fn run(
         Command::Transitions(key) => {
             let result = provider.transitions(&key).await;
             Event::Transitions { key, result }
+        }
+        Command::EditableFields(key) => {
+            let result = provider.editable_fields(&key).await;
+            Event::EditableFields { key, result }
         }
         Command::Write { op, key, write } => match send_write(provider.as_ref(), &key, write).await
         {
@@ -362,6 +372,19 @@ mod tests {
         else {
             panic!()
         };
+    }
+
+    #[tokio::test]
+    async fn the_fields_an_issue_lets_set_come_back_for_it() {
+        let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), None);
+        events.recv().await; // Me
+        let key = IssueKey::new("ACME-9");
+        service.send(Command::EditableFields(key.clone()));
+        let Some(Event::EditableFields { key: k, result: Ok(fields) }) = events.recv().await else {
+            panic!()
+        };
+        assert_eq!(k, key);
+        assert!(fields.iter().any(|f| f.name == "Team"));
     }
 
     #[tokio::test]

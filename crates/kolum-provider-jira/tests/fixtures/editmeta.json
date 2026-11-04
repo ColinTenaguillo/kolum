@@ -1,0 +1,24 @@
+{
+  "fields": {
+    "summary": {"required": true, "schema": {"type": "string", "system": "summary"}, "name": "Summary", "key": "summary", "operations": ["set"]},
+    "description": {"required": false, "schema": {"type": "string", "system": "description"}, "name": "Description", "key": "description", "operations": ["set"]},
+    "issuetype": {"required": true, "schema": {"type": "issuetype", "system": "issuetype"}, "name": "Issue Type", "key": "issuetype", "operations": [], "allowedValues": [{"id": "1", "name": "Bug"}]},
+    "priority": {"required": false, "schema": {"type": "priority", "system": "priority"}, "name": "Priority", "key": "priority", "operations": ["set"], "allowedValues": [{"id": "2", "name": "High"}, {"id": "3", "name": "Medium"}]},
+    "labels": {"required": false, "schema": {"type": "array", "items": "string", "system": "labels"}, "name": "Labels", "key": "labels", "operations": ["add", "set", "remove"]},
+    "duedate": {"required": false, "schema": {"type": "date", "system": "duedate"}, "name": "Due date", "key": "duedate", "operations": ["set"]},
+    "assignee": {"required": false, "schema": {"type": "user", "system": "assignee"}, "name": "Assignee", "key": "assignee", "operations": ["set"]},
+    "parent": {"required": false, "schema": {"type": "issuelink", "system": "parent"}, "name": "Parent", "key": "parent", "operations": ["set"]},
+    "fixVersions": {"required": false, "schema": {"type": "array", "items": "version", "system": "fixVersions"}, "name": "Fix versions", "key": "fixVersions", "operations": ["set", "add", "remove"], "allowedValues": [{"id": "10", "name": "3.1.0"}, {"id": "11", "name": "3.2.0"}]},
+    "attachment": {"required": false, "schema": {"type": "array", "items": "attachment", "system": "attachment"}, "name": "Attachment", "key": "attachment", "operations": ["set", "copy"]},
+    "comment": {"required": false, "schema": {"type": "comments-page", "system": "comment"}, "name": "Comment", "key": "comment", "operations": ["add", "edit", "remove"]},
+    "customfield_10014": {"required": false, "schema": {"type": "any", "custom": "com.pyxis.greenhopper.jira:gh-epic-link", "customId": 10014}, "name": "Epic Link", "key": "customfield_10014", "operations": ["set"]},
+    "customfield_10016": {"required": false, "schema": {"type": "number", "custom": "com.atlassian.jpo:jpo-custom-field-story-points", "customId": 10016}, "name": "Story Points", "key": "customfield_10016", "operations": ["set"]},
+    "customfield_10020": {"required": false, "schema": {"type": "array", "items": "json", "custom": "com.pyxis.greenhopper.jira:gh-sprint", "customId": 10020}, "name": "Sprint", "key": "customfield_10020", "operations": ["set"]},
+    "customfield_10050": {"required": false, "schema": {"type": "option", "custom": "com.atlassian.jira.plugin.system.customfieldtypes:select", "customId": 10050}, "name": "Team", "key": "customfield_10050", "operations": ["set"], "allowedValues": [{"id": "1", "value": "Platform"}, {"id": "2", "value": "Mobile"}]},
+    "customfield_10060": {"required": false, "schema": {"type": "array", "items": "option", "custom": "com.atlassian.jira.plugin.system.customfieldtypes:multiselect", "customId": 10060}, "name": "Deals", "key": "customfield_10060", "operations": ["add", "set", "remove"], "allowedValues": [{"id": "3", "value": "Arrow"}, {"id": "4", "value": "Cirrus"}]},
+    "customfield_10070": {"required": false, "schema": {"type": "user", "custom": "com.atlassian.jira.plugin.system.customfieldtypes:userpicker", "customId": 10070}, "name": "Reviewer", "key": "customfield_10070", "operations": ["set"]},
+    "customfield_10080": {"required": true, "schema": {"type": "string", "custom": "com.atlassian.jira.plugin.system.customfieldtypes:textarea", "customId": 10080}, "name": "Bug report", "key": "customfield_10080", "operations": ["set"]},
+    "customfield_10090": {"required": false, "schema": {"type": "string", "custom": "com.atlassian.jira.plugin.system.customfieldtypes:url", "customId": 10090}, "name": "Documentation Link", "key": "customfield_10090", "operations": ["set"]},
+    "customfield_10100": {"required": false, "schema": {"type": "datetime", "custom": "com.atlassian.jira.plugin.system.customfieldtypes:datetime", "customId": 10100}, "name": "Go-live", "key": "customfield_10100", "operations": ["set"]}
+  }
+}

@@ -258,3 +258,14 @@ async fn ranking_moves_an_issue_next_to_another() {
     assert!(p.rank(&IssueKey::new("ACME-5"), &Rank::After(IssueKey::new("NOPE-1"))).await.is_err());
     assert!(p.capabilities().supports(Capability::Rank));
 }
+
+#[tokio::test]
+async fn the_fake_says_which_fields_can_be_set() {
+    let fields = FakeProvider::new().editable_fields(&IssueKey::new("ACME-10")).await.unwrap();
+    let team = fields.iter().find(|f| f.name == "Team").unwrap();
+    let options = vec!["Platform".to_string(), "Mobile".to_string()];
+    assert_eq!(team.kind, FieldKind::Choice { options, many: false });
+    assert!(
+        fields.iter().any(|f| f.kind == FieldKind::RichText && f.name == "Acceptance criteria")
+    );
+}

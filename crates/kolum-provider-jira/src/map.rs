@@ -93,6 +93,58 @@ pub fn field_json(
     }
 }
 
+/// The fields editmeta lets kolum set, by name, each with how it is
+/// edited. What kolum cannot edit (attachments, a date and time) is left out.
+pub fn editable_fields(meta: &EditMetaDto) -> Vec<EditableField> {
+    let mut out: Vec<EditableField> = meta
+        .fields
+        .iter()
+        .filter_map(|(id, f)| {
+            Some(EditableField {
+                id: FieldId::new(id),
+                name: f.name.clone(),
+                kind: edit_kind(id, f)?,
+                required: f.required,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+fn edit_kind(id: &str, f: &EditMetaFieldDto) -> Option<FieldKind> {
+    if !f.operations.iter().any(|o| o == "set") {
+        return None;
+    }
+    let schema = f.schema.as_ref()?;
+    let custom = schema.custom.as_deref().unwrap_or("");
+    let options: Vec<String> = f
+        .allowed_values
+        .iter()
+        .filter_map(|v| v.value.clone().or_else(|| v.name.clone()))
+        .collect();
+    Some(match (schema.kind.as_str(), schema.items.as_deref()) {
+        _ if custom.ends_with(":textarea") || matches!(id, "description" | "environment") => {
+            FieldKind::RichText
+        }
+        _ if custom.ends_with(":gh-sprint") => FieldKind::Sprint,
+        _ if custom.ends_with(":gh-epic-link") => FieldKind::Issue,
+        ("issuelink", _) => FieldKind::Issue,
+        ("string", _) => FieldKind::Text,
+        ("number", _) => FieldKind::Number,
+        ("date", _) => FieldKind::Date,
+        ("user", _) => FieldKind::User,
+        ("array", Some("string")) => FieldKind::Words,
+        ("option" | "priority" | "version" | "component", _) if !options.is_empty() => {
+            FieldKind::Choice { options, many: false }
+        }
+        ("array", Some("option" | "version" | "component")) if !options.is_empty() => {
+            FieldKind::Choice { options, many: true }
+        }
+        _ => return None,
+    })
+}
+
 pub fn schemas(fields: &[FieldDto]) -> BTreeMap<String, FieldSchemaDto> {
     fields.iter().filter_map(|f| Some((f.id.clone(), f.schema.clone()?))).collect()
 }

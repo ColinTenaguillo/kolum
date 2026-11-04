@@ -225,6 +225,39 @@ pub struct ActivityEntry {
     pub changes: Vec<FieldChange>,
 }
 
+/// A field kolum may set on an issue, as the provider describes it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EditableField {
+    pub id: FieldId,
+    pub name: String,
+    pub kind: FieldKind,
+    /// It cannot be emptied.
+    pub required: bool,
+}
+
+/// How a field is edited, and so what value it takes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum FieldKind {
+    /// Markdown, in `$EDITOR`.
+    RichText,
+    /// One line: a summary, a URL.
+    Text,
+    Number,
+    Date,
+    User,
+    /// Free words, like labels.
+    Words,
+    /// Another issue, by key: a parent, an epic.
+    Issue,
+    /// One of `options`, or several of them when `many`.
+    Choice {
+        options: Vec<String>,
+        many: bool,
+    },
+    /// One of the board's sprints.
+    Sprint,
+}
+
 /// The fields an edit changes. `None` leaves the field as it is.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct IssueUpdate {

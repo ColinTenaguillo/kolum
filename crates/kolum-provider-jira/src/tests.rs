@@ -101,6 +101,42 @@ fn a_value_is_written_in_the_shape_its_field_takes() {
     }
 }
 
+/// What Jira's editmeta lets kolum set, by how each field is edited:
+/// fields kolum cannot set (attachments, a date with a time) are left out.
+#[test]
+fn the_editable_fields_say_how_each_is_edited() {
+    let meta: dto::EditMetaDto = serde_json::from_str(fixture!("editmeta.json")).unwrap();
+    let fields = map::editable_fields(&meta);
+    let shown: Vec<(&str, &FieldKind, bool)> =
+        fields.iter().map(|f| (f.name.as_str(), &f.kind, f.required)).collect();
+    let choice = |o: &[&str], many| FieldKind::Choice {
+        options: o.iter().map(|s| s.to_string()).collect(),
+        many,
+    };
+    assert_eq!(
+        shown,
+        [
+            ("Assignee", &FieldKind::User, false),
+            ("Bug report", &FieldKind::RichText, true),
+            ("Deals", &choice(&["Arrow", "Cirrus"], true), false),
+            ("Description", &FieldKind::RichText, false),
+            ("Documentation Link", &FieldKind::Text, false),
+            ("Due date", &FieldKind::Date, false),
+            ("Epic Link", &FieldKind::Issue, false),
+            ("Fix versions", &choice(&["3.1.0", "3.2.0"], true), false),
+            ("Labels", &FieldKind::Words, false),
+            ("Parent", &FieldKind::Issue, false),
+            ("Priority", &choice(&["High", "Medium"], false), false),
+            ("Reviewer", &FieldKind::User, false),
+            ("Sprint", &FieldKind::Sprint, false),
+            ("Story Points", &FieldKind::Number, false),
+            ("Summary", &FieldKind::Text, true),
+            ("Team", &choice(&["Platform", "Mobile"], false), false),
+        ]
+    );
+    assert_eq!(fields[0].id, FieldId::new("assignee"));
+}
+
 #[test]
 fn custom_fields_are_found_by_schema_and_name() {
     let ids = ctx().fields;
@@ -314,6 +350,7 @@ fn route(method: &str, target: &str) -> Option<(&'static str, &'static str)> {
             "/rest/api/3/issue/ACME-5" => fixture!("issue.json"),
             "/rest/api/3/issue/ACME-5/comment" => fixture!("comments.json"),
             "/rest/api/3/issue/ACME-5/transitions" => fixture!("transitions.json"),
+            "/rest/api/3/issue/ACME-5/editmeta" => fixture!("editmeta.json"),
             "/rest/api/3/search/jql" => fixture!("search_jql.json"),
             "/rest/api/3/myself" => fixture!("myself.json"),
             "/rest/api/3/user/search" => fixture!("user_search.json"),
@@ -454,6 +491,8 @@ async fn the_provider_reads_an_issue_its_comments_and_history() {
     let history = p.activity(&key).await.unwrap();
     assert_eq!(history[0].changes[0].to.as_deref(), Some("In Progress"));
     assert_eq!(history.len(), 2);
+    let editable = p.editable_fields(&key).await.unwrap();
+    assert!(editable.iter().any(|f| f.name == "Team"), "{editable:?}");
     let transitions = p.transitions(&key).await.unwrap();
     assert_eq!(transitions[1].required_fields, [FieldId::new("resolution")]);
     assert_eq!(p.me().await.unwrap().display_name, "Colin Tenaguillo");
