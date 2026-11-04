@@ -1417,17 +1417,17 @@ impl App {
 
     fn draw_status(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let (mode, color) = match self.focus() {
-            Focus::Prompt => ("COMMAND", theme.warn),
+            Focus::Prompt => ("COMMAND", theme.mode_command),
             Focus::Picker if self.picker.as_ref().is_some_and(|p| p.is_insert()) => {
                 ("INSERT", theme.ok)
             }
-            Focus::Board if self.board.visual.is_some() => ("VISUAL", theme.match_highlight),
+            Focus::Board if self.board.visual.is_some() => ("VISUAL", theme.mode_visual),
             _ => ("NORMAL", theme.accent),
         };
         let mut left = vec![
             Span::styled(
                 format!(" {mode} "),
-                Style::new().bg(color).fg(theme.bg).add_modifier(Modifier::BOLD),
+                Style::new().bg(color).fg(theme.badge_fg).add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
         ];

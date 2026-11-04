@@ -42,13 +42,13 @@ pub fn status_badge(issue: &Issue, theme: &Theme) -> Span<'static> {
         format!(" {} ", issue.status.name.to_uppercase()),
         Style::new()
             .bg(theme.status(issue.status.category))
-            .fg(theme.bg)
+            .fg(theme.badge_fg)
             .add_modifier(Modifier::BOLD),
     )
 }
 
 pub fn label_badge(label: &str, theme: &Theme) -> Span<'static> {
-    Span::styled(format!(" {label} "), Style::new().bg(theme.label(label)).fg(theme.bg))
+    Span::styled(format!(" {label} "), Style::new().bg(theme.label(label)).fg(theme.badge_fg))
 }
 
 pub fn estimate(e: &Estimate) -> String {
@@ -64,4 +64,18 @@ pub fn estimate(e: &Estimate) -> String {
 pub fn datetime(t: time::OffsetDateTime) -> String {
     let format = time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]");
     t.format(&format).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::Color;
+
+    #[test]
+    fn badges_keep_their_text_colour_over_a_transparent_background() {
+        let mut theme = Theme::builtin("catppuccin").unwrap();
+        let overrides = toml::from_str("bg = \"reset\"\nbadge_fg = \"#010203\"").unwrap();
+        assert!(theme.apply(&overrides, "test").is_empty());
+        assert_eq!(label_badge("LISA", &theme).style.fg, Some(Color::Rgb(1, 2, 3)));
+    }
 }

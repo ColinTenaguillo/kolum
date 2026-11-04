@@ -132,7 +132,8 @@ A theme file in `~/.config/kolum/themes/<name>.toml` names a `base` theme and
 the tokens it changes, the same way `[theme.overrides]` does. Theme tokens:
 `bg fg muted accent border border_focus selection match_highlight`,
 `status.{todo,doing,done}`, `priority.{highest,high,medium,low,lowest}`,
-`type.{bug,story,task,epic,subtask}`, `error warn ok`, `label_palette`.
+`type.{bug,story,task,epic,subtask}`, `error warn ok`, `badge_fg` (the text on status, label and mode badges), `mode.{command,visual}`,
+`label_palette`. `bg = "reset"` leaves the terminal's own background, transparency included.
 
 The last board of each profile is kept in `~/.cache/kolum/<profile>/`: at
 start it is on screen at once, marked "cached, syncing…", while only the issues
