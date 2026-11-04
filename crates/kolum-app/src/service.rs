@@ -47,6 +47,8 @@ pub struct IssueDetail {
     pub issue: Issue,
     pub comments: Vec<Comment>,
     pub activity: Vec<ActivityEntry>,
+    /// How the provider's own issue view lays the fields out, if it says.
+    pub layout: Option<kolum_domain::FieldLayout>,
 }
 
 /// What comes back, in whatever order the requests finish.
@@ -276,9 +278,20 @@ async fn send_write(
 }
 
 async fn load_issue(provider: &dyn Provider, key: &IssueKey) -> kolum_domain::Result<IssueDetail> {
-    let (issue, comments, activity) =
-        tokio::try_join!(provider.issue(key), provider.comments(key), provider.activity(key))?;
-    Ok(IssueDetail { issue, comments, activity })
+    let (detail, layout) = tokio::join!(
+        async {
+            tokio::try_join!(provider.issue(key), provider.comments(key), provider.activity(key))
+        },
+        provider.field_layout(key),
+    );
+    let (issue, comments, activity) = detail?;
+    // A nicety: without the provider's layout, the detail has its own.
+    if let Err(e) = &layout
+        && !matches!(e, DomainError::Unsupported(_))
+    {
+        tracing::warn!("the field layout of {key}: {e}");
+    }
+    Ok(IssueDetail { issue, comments, activity, layout: layout.ok() })
 }
 
 #[cfg(test)]
@@ -305,6 +318,8 @@ mod tests {
         service.send(Command::LoadIssue(IssueKey::new("ACME-5")));
         let Some(Event::IssueLoaded(detail)) = events.recv().await else { panic!() };
         assert_eq!(detail.comments.len(), 3);
+        let layout = detail.layout.as_ref().expect("the fake has a layout");
+        assert_eq!(layout.body[0].as_str(), "description");
         assert!(!detail.activity.is_empty());
     }
 

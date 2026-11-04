@@ -6,7 +6,8 @@ use crate::board::{Board, BoardSummary};
 use crate::error::Result;
 use crate::ids::{BoardId, IssueKey, TransitionId, UserId};
 use crate::issue::{
-    ActivityEntry, Comment, EditableField, Issue, IssueUpdate, NewIssue, Sprint, Transition, User,
+    ActivityEntry, Comment, EditableField, FieldLayout, Issue, IssueUpdate, NewIssue, Sprint,
+    Transition, User,
 };
 use crate::query::Query;
 use crate::rich_text::RichText;
@@ -89,6 +90,12 @@ pub trait IssueReader: Send + Sync {
     async fn issue(&self, key: &IssueKey) -> Result<Issue>;
     async fn comments(&self, key: &IssueKey) -> Result<Vec<Comment>>;
     async fn activity(&self, key: &IssueKey) -> Result<Vec<ActivityEntry>>;
+
+    /// The fields the provider's own issue view shows for the issue, in its
+    /// order, when it has a layout to say so.
+    async fn field_layout(&self, _key: &IssueKey) -> Result<FieldLayout> {
+        Err(crate::DomainError::Unsupported(Capability::CustomFields))
+    }
 }
 
 #[async_trait]

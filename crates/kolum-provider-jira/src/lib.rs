@@ -35,7 +35,13 @@ pub struct JiraProvider {
     client: Client,
     settings: JiraSettings,
     ctx: OnceCell<Ctx>,
+    /// The site's id for Atlassian's GraphQL gateway.
+    cloud: OnceCell<String>,
 }
+
+/// The web issue view's field layout for one issue, and the fields its
+/// user pinned in the project: Atlassian's GraphQL, the only place they are.
+const LAYOUT_QUERY: &str = "query KolumFieldLayout($cloudId: ID!, $key: String!, $project: String!) { jira { issueByKey(key: $key, cloudId: $cloudId) { fieldsByContainerTypes(containerTypes: [CONTENT, PRIMARY, SECONDARY]) @optIn(to: \"JiraIssueFieldsByContainerTypes\") { ... on JiraIssueFieldsByContainerTypes { containerFields { containerType fields { edges { node { fieldId type hasValue } } } } } ... on QueryError { message } } } userPreferences(cloudId: $cloudId) { issueViewPinnedFields(projectKey: $project) } } }";
 
 impl JiraProvider {
     pub fn new(settings: JiraSettings) -> Self {
@@ -43,6 +49,7 @@ impl JiraProvider {
             client: Client::new(&settings.base_url, &settings.auth),
             settings,
             ctx: OnceCell::new(),
+            cloud: OnceCell::new(),
         }
     }
 
@@ -206,6 +213,30 @@ impl IssueReader for JiraProvider {
             .get(&format!("{}/issue/{key}", self.api()), &[("fields", "*all".into())])
             .await?;
         map::issue(&dto, ctx)
+    }
+
+    /// Cloud only: Data Center has no GraphQL gateway.
+    async fn field_layout(&self, key: &IssueKey) -> Result<FieldLayout> {
+        if self.settings.flavor == JiraFlavor::DataCenter {
+            return Err(DomainError::Unsupported(Capability::CustomFields));
+        }
+        let cloud = self
+            .cloud
+            .get_or_try_init(|| async {
+                let info: serde_json::Value = self.client.get("/_edge/tenant_info", &[]).await?;
+                info["cloudId"].as_str().map(String::from).ok_or_else(|| {
+                    DomainError::Transport("the site did not say its cloud id".into())
+                })
+            })
+            .await?;
+        let project = key.as_str().split('-').next().unwrap_or_default();
+        let body = json!({
+            "operationName": "KolumFieldLayout",
+            "query": LAYOUT_QUERY,
+            "variables": { "cloudId": cloud, "key": key.as_str(), "project": project },
+        });
+        let response = self.client.send(Method::POST, "/gateway/api/graphql", &body).await?;
+        map::field_layout(&response)
     }
 
     async fn comments(&self, key: &IssueKey) -> Result<Vec<Comment>> {

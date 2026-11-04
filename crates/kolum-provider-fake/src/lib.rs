@@ -346,6 +346,15 @@ impl IssueReader for FakeProvider {
         Ok(self.state().comments.get(key).cloned().unwrap_or_default())
     }
 
+    async fn field_layout(&self, key: &IssueKey) -> Result<FieldLayout> {
+        self.issue(key).await?;
+        let ids = |ids: &[&str]| ids.iter().map(|id| FieldId::new(*id)).collect();
+        Ok(FieldLayout {
+            side: ids(&["assignee", "customfield_10020", "labels", "priority", "reporter"]),
+            body: ids(&["description", "customfield_10030"]),
+        })
+    }
+
     async fn activity(&self, key: &IssueKey) -> Result<Vec<ActivityEntry>> {
         Ok(self.state().activity.get(key).cloned().unwrap_or_default())
     }

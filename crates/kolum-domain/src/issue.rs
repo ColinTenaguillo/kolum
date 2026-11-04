@@ -229,6 +229,15 @@ pub struct ActivityEntry {
     pub changes: Vec<FieldChange>,
 }
 
+/// Which fields the provider's own issue view shows, in its order.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FieldLayout {
+    /// Beside the issue: what the user pinned, then the details.
+    pub side: Vec<FieldId>,
+    /// Under the title: the rich text fields, the description among them.
+    pub body: Vec<FieldId>,
+}
+
 /// A field kolum may set on an issue, as the provider describes it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EditableField {

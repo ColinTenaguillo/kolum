@@ -93,6 +93,57 @@ pub fn field_json(
     }
 }
 
+/// The web issue view's layout, from the GraphQL answer to `LAYOUT_QUERY`:
+/// the pinned fields, the details (shown even empty) and the others once
+/// filled beside the issue; the body's fields in their order.
+pub fn field_layout(response: &Value) -> Result<FieldLayout> {
+    if let Some(message) = response.pointer("/errors/0/message").and_then(Value::as_str) {
+        return Err(DomainError::Transport(message.to_string()));
+    }
+    let jira = &response["data"]["jira"];
+    let pinned: Vec<FieldId> = jira["userPreferences"]["issueViewPinnedFields"]
+        .as_str()
+        .unwrap_or("")
+        .split(|c: char| c == ',' || c == '"' || c == '[' || c == ']' || c.is_whitespace())
+        .filter(|id| !id.is_empty())
+        .map(FieldId::new)
+        .collect();
+    let containers = jira["issueByKey"]["fieldsByContainerTypes"]["containerFields"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let nodes = |kind: &str| -> Vec<(FieldId, bool, String)> {
+        let found = containers.iter().find(|c| c["containerType"] == kind);
+        let edges = found.and_then(|c| c["fields"]["edges"].as_array());
+        edges
+            .into_iter()
+            .flatten()
+            .filter_map(|e| {
+                let node = &e["node"];
+                let id = FieldId::new(node["fieldId"].as_str()?);
+                Some((id, node["hasValue"] == true, node["type"].as_str().unwrap_or("").into()))
+            })
+            .collect()
+    };
+    let mut side = pinned.clone();
+    for (id, filled, kind) in nodes("PRIMARY") {
+        // The web hides the old Advanced Roadmaps Parent Link while it is
+        // empty, though the layout lists it; seen, not documented.
+        let hidden = !filled && kind == "com.atlassian.jpo:jpo-custom-field-parent";
+        if !hidden && !pinned.contains(&id) {
+            side.push(id);
+        }
+    }
+    side.extend(
+        nodes("SECONDARY")
+            .into_iter()
+            .filter(|(id, filled, _)| *filled && !pinned.contains(id))
+            .map(|n| n.0),
+    );
+    let body = nodes("CONTENT").into_iter().map(|n| n.0).collect();
+    Ok(FieldLayout { side, body })
+}
+
 /// The fields editmeta lets kolum set, by name, each with how it is
 /// edited. What kolum cannot edit (attachments, a date and time) is left out.
 pub fn editable_fields(meta: &EditMetaDto) -> Vec<EditableField> {

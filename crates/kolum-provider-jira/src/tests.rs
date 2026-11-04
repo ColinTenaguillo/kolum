@@ -137,6 +137,22 @@ fn the_editable_fields_say_how_each_is_edited() {
     assert_eq!(fields[0].id, FieldId::new("assignee"));
 }
 
+/// The web's issue view: pinned fields first, the details shown even
+/// empty, the others only once filled; the body's rich text in its order.
+#[test]
+fn the_field_layout_is_the_web_issue_view() {
+    let response: serde_json::Value = serde_json::from_str(fixture!("field_layout.json")).unwrap();
+    let layout = map::field_layout(&response).unwrap();
+    let ids = |v: &[FieldId]| v.iter().map(|f| f.as_str().to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        ids(&layout.side),
+        ["duedate", "assignee", "customfield_10070", "labels", "parent", "priority", "reporter"]
+    );
+    assert_eq!(ids(&layout.body), ["customfield_10080", "description"]);
+    let refused = serde_json::json!({"errors": [{"message": "not allowed"}], "data": null});
+    assert_eq!(map::field_layout(&refused), Err(DomainError::Transport("not allowed".into())));
+}
+
 #[test]
 fn custom_fields_are_found_by_schema_and_name() {
     let ids = ctx().fields;
@@ -330,6 +346,7 @@ fn route(method: &str, target: &str) -> Option<(&'static str, &'static str)> {
         ("POST", "/rest/api/3/issue/ACME-5/comment") => {
             return Some(("201 Created", fixture!("comment_created.json")));
         }
+        ("POST", "/gateway/api/graphql") => return Some(("200 OK", fixture!("field_layout.json"))),
         ("POST", "/rest/api/3/issue") => {
             return Some(("201 Created", r#"{"id":"10100","key":"ACME-5","self":"x"}"#));
         }
@@ -340,6 +357,7 @@ fn route(method: &str, target: &str) -> Option<(&'static str, &'static str)> {
         "200 OK",
         match path {
             "/rest/api/3/field" => fixture!("fields.json"),
+            "/_edge/tenant_info" => r#"{"cloudId": "cloud-1"}"#,
             "/rest/agile/1.0/board" => fixture!("boards.json"),
             "/rest/agile/1.0/board/42" => fixture!("board.json"),
             "/rest/agile/1.0/board/42/configuration" => fixture!("board_configuration.json"),
@@ -501,6 +519,13 @@ async fn the_provider_reads_an_issue_its_comments_and_history() {
     let history = p.activity(&key).await.unwrap();
     assert_eq!(history[0].changes[0].to.as_deref(), Some("In Progress"));
     assert_eq!(history.len(), 2);
+    let layout = p.field_layout(&key).await.unwrap();
+    assert_eq!(layout.side[0], FieldId::new("duedate"));
+    let asked = jira.seen.lock().unwrap().iter().find(|r| r.contains("graphql")).cloned().unwrap();
+    assert!(
+        asked.contains(r#""cloudId":"cloud-1""#) && asked.contains(r#""project":"ACME""#),
+        "{asked}"
+    );
     let editable = p.editable_fields(&key).await.unwrap();
     assert!(editable.iter().any(|f| f.name == "Team"), "{editable:?}");
     let transitions = p.transitions(&key).await.unwrap();

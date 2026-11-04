@@ -168,6 +168,7 @@ async fn the_issue_detail() {
         issue: fake.issue(&key).await.unwrap(),
         comments: fake.comments(&key).await.unwrap(),
         activity: fake.activity(&key).await.unwrap(),
+        layout: None,
     };
     app.on_event(Event::IssueLoaded(Box::new(detail)));
     insta::assert_snapshot!(screen(&mut app, 150, 60));
@@ -288,6 +289,7 @@ async fn detail_of(app: &mut App, key: &str) {
         issue: fake.issue(&key).await.unwrap(),
         comments: fake.comments(&key).await.unwrap(),
         activity: fake.activity(&key).await.unwrap(),
+        layout: None,
     };
     app.on_event(Event::IssueLoaded(Box::new(detail)));
 }
@@ -355,7 +357,7 @@ async fn a_board_sync_keeps_the_fields_only_the_detail_loaded() {
     press(&mut app, "/ACME-10<CR><CR>");
     let key = IssueKey::new("ACME-10");
     let issue = fake.issue(&key).await.unwrap();
-    let detail = IssueDetail { issue, comments: vec![], activity: vec![] };
+    let detail = IssueDetail { issue, comments: vec![], activity: vec![], layout: None };
     app.on_event(Event::IssueLoaded(Box::new(detail)));
     let mut snapshot = load_board(&fake, None).await.unwrap();
     for issue in &mut snapshot.issues {
@@ -736,6 +738,7 @@ async fn one_field_is_edited_at_a_time() {
         issue,
         comments: vec![],
         activity: vec![],
+        layout: None,
     })));
     edit_field(&mut app, "accept").await;
     let Some(Effect::Edit { text, .. }) = app.take_effects().pop() else { panic!() };
@@ -1324,7 +1327,7 @@ async fn a_search_hit_that_is_not_on_the_board_still_opens() {
     press(&mut app, "<CR>");
     assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(IssueKey::new("ACME-1")))]);
     assert!(screen(&mut app, 120, 30).contains("Opening ACME-1"));
-    let detail = IssueDetail { issue: epic, comments: vec![], activity: vec![] };
+    let detail = IssueDetail { issue: epic, comments: vec![], activity: vec![], layout: None };
     app.on_event(Event::IssueLoaded(Box::new(detail)));
     assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-1"), "opened once loaded");
     assert!(screen(&mut app, 120, 30).contains("Single sign-on"));
