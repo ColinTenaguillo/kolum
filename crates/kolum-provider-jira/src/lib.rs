@@ -338,6 +338,9 @@ impl IssueWriter for JiraProvider {
         if let Some(priority) = update.priority {
             fields.insert("priority".into(), json!({ "name": priority.name() }));
         }
+        for (id, text) in &update.rich_fields {
+            fields.insert(id.to_string(), self.rich(text));
+        }
         if fields.is_empty() {
             return Ok(());
         }

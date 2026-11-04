@@ -469,6 +469,10 @@ async fn writes_send_what_jira_expects() {
         priority: Some(Priority::High),
         labels: Some(vec!["a".into()]),
         description: None,
+        rich_fields: vec![(
+            FieldId::new("customfield_10674"),
+            RichText::from_markdown("Seen in CI"),
+        )],
     };
     p.update(&key, update).await.unwrap();
     p.update(&key, IssueUpdate::default()).await.unwrap();
@@ -494,8 +498,13 @@ async fn writes_send_what_jira_expects() {
         parts(&puts[1]),
         ("PUT /rest/api/3/issue/ACME-5/assignee", json!({"accountId": null}))
     );
-    let fields =
-        json!({"fields": {"summary": "New title", "priority": {"name": "High"}, "labels": ["a"]}});
+    let report = adf::from_rich_text(&RichText::from_markdown("Seen in CI"));
+    let fields = json!({"fields": {
+        "summary": "New title",
+        "priority": {"name": "High"},
+        "labels": ["a"],
+        "customfield_10674": report,
+    }});
     assert_eq!(parts(&puts[2]), ("PUT /rest/api/3/issue/ACME-5", fields));
     assert_eq!(puts.len(), 3, "an empty update sends nothing");
 }

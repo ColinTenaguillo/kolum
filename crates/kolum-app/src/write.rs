@@ -48,20 +48,7 @@ pub fn apply(issue: &mut Issue, change: &Change) {
         Change::Rank(_) => {}
         Change::Status(status) => issue.status = status.clone(),
         Change::Assignee(user) => issue.assignee = user.clone(),
-        Change::Update(u) => {
-            if let Some(t) = &u.title {
-                issue.title = t.clone();
-            }
-            if let Some(d) = &u.description {
-                issue.description = d.clone();
-            }
-            if let Some(l) = &u.labels {
-                issue.labels = l.clone();
-            }
-            if u.priority.is_some() {
-                issue.priority = u.priority;
-            }
-        }
+        Change::Update(u) => u.apply_to(issue),
     }
 }
 
@@ -225,6 +212,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_update_sets_rich_custom_fields_by_id() {
+        use kolum_domain::{FieldId, FieldValue};
+        let mut snapshot = load_board(&FakeProvider::new(), None).await.unwrap();
+        let key = IssueKey::new("ACME-10");
+        let text = RichText::from_markdown("- Reviewed by two people");
+        let update = IssueUpdate {
+            rich_fields: vec![(FieldId::new("customfield_10030"), text.clone())],
+            ..Default::default()
+        };
+        Ledger::default().begin(&mut snapshot, &key, &Change::Update(update));
+        let issue = snapshot.issues.iter().find(|i| i.key == key).unwrap();
+        let values: Vec<(&str, &FieldValue)> =
+            issue.fields.iter().map(|f| (f.id.as_str(), &f.value)).collect();
+        assert_eq!(
+            values,
+            [
+                ("customfield_10020", &FieldValue::Text("Platform".into())),
+                ("customfield_10030", &FieldValue::RichText(text)),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn a_settled_change_stays() {
         let mut snapshot = load_board(&FakeProvider::new(), None).await.unwrap();
         let key = IssueKey::new("ACME-9");
@@ -234,6 +244,7 @@ mod tests {
             labels: Some(vec!["x".into()]),
             priority: Some(kolum_domain::Priority::Lowest),
             description: Some(RichText::from_markdown("d")),
+            rich_fields: vec![],
         };
         let op = ledger.begin(&mut snapshot, &key, &Change::Update(update));
         ledger.settle(op);

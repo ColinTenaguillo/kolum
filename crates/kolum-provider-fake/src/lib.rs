@@ -429,20 +429,7 @@ impl IssueWriter for FakeProvider {
     }
 
     async fn update(&self, key: &IssueKey, update: IssueUpdate) -> Result<()> {
-        self.with_issue(key, |i| {
-            if let Some(t) = update.title {
-                i.title = t;
-            }
-            if let Some(d) = update.description {
-                i.description = d;
-            }
-            if let Some(l) = update.labels {
-                i.labels = l;
-            }
-            if update.priority.is_some() {
-                i.priority = update.priority;
-            }
-        })
+        self.with_issue(key, |i| update.apply_to(i))
     }
 
     async fn create(&self, new: NewIssue) -> Result<Issue> {

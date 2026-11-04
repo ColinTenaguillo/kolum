@@ -232,6 +232,32 @@ pub struct IssueUpdate {
     pub description: Option<RichText>,
     pub labels: Option<Vec<String>>,
     pub priority: Option<Priority>,
+    /// Rich text custom fields to set, by id.
+    pub rich_fields: Vec<(FieldId, RichText)>,
+}
+
+impl IssueUpdate {
+    /// What the edit does to the issue, as the provider will once it has
+    /// it. Only fields the issue has are set: they are the ones offered.
+    pub fn apply_to(&self, issue: &mut Issue) {
+        if let Some(t) = &self.title {
+            issue.title = t.clone();
+        }
+        if let Some(d) = &self.description {
+            issue.description = d.clone();
+        }
+        if let Some(l) = &self.labels {
+            issue.labels = l.clone();
+        }
+        if self.priority.is_some() {
+            issue.priority = self.priority;
+        }
+        for (id, text) in &self.rich_fields {
+            if let Some(field) = issue.fields.iter_mut().find(|f| f.id == *id) {
+                field.value = FieldValue::RichText(text.clone());
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

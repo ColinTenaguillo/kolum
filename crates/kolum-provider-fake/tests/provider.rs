@@ -91,9 +91,17 @@ async fn reading_does_not_touch_and_writing_stamps_updated() {
     p.transitions(&key).await.unwrap();
     assert_eq!(p.issue(&key).await.unwrap().updated, before);
 
-    p.update(&key, IssueUpdate { title: Some("New".into()), ..Default::default() }).await.unwrap();
+    let criteria = RichText::from_markdown("Exports open in Excel");
+    let update = IssueUpdate {
+        title: Some("New".into()),
+        rich_fields: vec![(FieldId::new("customfield_10030"), criteria.clone())],
+        ..Default::default()
+    };
+    p.update(&key, update).await.unwrap();
     let after = p.issue(&key).await.unwrap();
     assert_eq!(after.title, "New");
+    let field = after.fields.iter().find(|f| f.id.as_str() == "customfield_10030").unwrap();
+    assert_eq!(field.value, FieldValue::RichText(criteria));
     assert!(after.updated > before);
     // Only what changed comes back in an incremental sync.
     // The seeded data is all from September 2026.
