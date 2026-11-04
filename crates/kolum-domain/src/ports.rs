@@ -42,6 +42,9 @@ pub enum Capability {
     Images,
     /// Cards can be put in order within a column.
     Rank,
+    /// The board's issues can be listed by when they changed, so a sync
+    /// reads only those; without it, a sync reads the whole board again.
+    ChangedSince,
 }
 
 /// Where a card goes in its column's order, relative to another card.
@@ -71,7 +74,8 @@ pub trait BoardSource: Send + Sync {
     /// The columns and the statuses each one holds.
     async fn board(&self, id: &BoardId) -> Result<Board>;
     /// One page of the board's issues. With `since`, only those updated
-    /// since then: the incremental sync after a warm start.
+    /// since then: the incremental sync after a warm start, asked only of a
+    /// provider with `ChangedSince`.
     async fn board_issues(
         &self,
         id: &BoardId,

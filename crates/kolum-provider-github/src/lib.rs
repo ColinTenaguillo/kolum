@@ -384,12 +384,12 @@ impl BoardSource for GithubProvider {
         })
     }
 
-    /// GraphQL cannot filter items by date, so an incremental sync reads
-    /// every page and keeps what changed since.
+    /// GraphQL cannot filter items by date, so there is no `ChangedSince`:
+    /// every sync reads every page, and `since` is never given.
     async fn board_issues(
         &self,
         id: &BoardId,
-        since: Option<OffsetDateTime>,
+        _since: Option<OffsetDateTime>,
         page: Option<PageToken>,
     ) -> Result<Page<Issue>> {
         let first = page.is_none();
@@ -404,22 +404,16 @@ impl BoardSource for GithubProvider {
             .filter_map(|n| item_of(n, &self.settings.status_field))
             .collect();
         self.remember(&known);
-        if since.is_none() {
-            let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
-            if first {
-                order.clear();
-            }
-            order.extend(known.iter().filter_map(|k| k.item.clone()));
+        let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
+        if first {
+            order.clear();
         }
+        order.extend(known.iter().filter_map(|k| k.item.clone()));
+        drop(order);
         let next = (items["pageInfo"]["hasNextPage"] == true)
             .then(|| items["pageInfo"]["endCursor"].as_str().map(|c| PageToken(c.into())))
             .flatten();
-        let issues = known
-            .into_iter()
-            .map(|k| k.issue)
-            .filter(|i| since.is_none_or(|s| i.updated >= s))
-            .collect();
-        Ok(Page { items: issues, next })
+        Ok(Page { items: known.into_iter().map(|k| k.issue).collect(), next })
     }
 }
 

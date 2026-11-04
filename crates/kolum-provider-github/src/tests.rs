@@ -18,6 +18,7 @@ fn answer(query: &str, variables: &Value) -> &'static str {
     match () {
         _ if variables["id"] == "PVTI_new999" => fixture!("draft_item.json"),
         _ if has("projectV2(number") => fixture!("project.json"),
+        _ if variables["after"] == "Y3Vyc29yOjM=" => fixture!("items_last.json"),
         _ if has("items(first") => fixture!("items.json"),
         _ if has("addProjectV2DraftIssue") => fixture!("add_draft.json"),
         _ if has("addComment") => fixture!("add_comment.json"),
@@ -148,9 +149,6 @@ async fn items_become_issues_with_their_project_fields() {
     assert_eq!(pr.kind.name, "Pull request");
     assert_eq!(draft.key.as_str(), "draft-ccc333");
     assert_eq!((draft.status.name.as_str(), draft.kind.name.as_str()), ("No Status", "Draft"));
-    let since = time::macros::datetime!(2026-10-04 0:00 UTC);
-    let changed = p.board_issues(&BoardId::new("PVT_1"), Some(since), None).await.unwrap().items;
-    assert_eq!(changed.iter().map(|i| i.key.as_str()).collect::<Vec<_>>(), ["kolum#43"]);
 }
 
 #[tokio::test]
@@ -368,4 +366,17 @@ async fn ranking_places_the_item_after_another_in_the_projects_order() {
     assert_eq!(moves[1]["after"], "PVTI_aaa111", "before #43 is after the one before it");
     assert_eq!(moves[2]["after"], Value::Null, "before the first is first");
     assert_eq!(moves[3]["after"], Value::Null, "before #43, skipping itself: first");
+}
+
+#[tokio::test]
+async fn a_sync_drops_an_item_the_project_no_longer_holds() {
+    let gh = fake_github(200, None).await;
+    let p = provider(&gh);
+    let fresh = kolum_app::load_board(&p, None).await.unwrap();
+    let mut cached = fresh.clone();
+    let mut gone = cached.issues[0].clone();
+    gone.key = IssueKey::new("python-language-server#199");
+    cached.issues.insert(0, gone);
+    let synced = kolum_app::sync_board(&p, cached, OffsetDateTime::now_utc()).await.unwrap();
+    assert_eq!(synced, fresh, "the cards and their order are the project's");
 }

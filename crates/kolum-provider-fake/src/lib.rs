@@ -594,6 +594,7 @@ impl Provider for FakeProvider {
             Write,
             Images,
             Rank,
+            ChangedSince,
         ])
     }
 }

@@ -517,6 +517,7 @@ impl Provider for JiraProvider {
             Write,
             Images,
             Rank,
+            ChangedSince,
         ])
     }
 }

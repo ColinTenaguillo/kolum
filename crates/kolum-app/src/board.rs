@@ -1,4 +1,4 @@
-use kolum_domain::{Board, BoardId, DomainError, Issue, Provider, Query, Result};
+use kolum_domain::{Board, BoardId, Capability, DomainError, Issue, Provider, Query, Result};
 use time::OffsetDateTime;
 
 /// A board and its cards, as last loaded.
@@ -66,10 +66,12 @@ pub async fn load_board(provider: &dyn Provider, id: Option<BoardId>) -> Result<
 }
 
 /// Brings a cached snapshot up to date: the configuration again (it is
-/// small and columns do change), and only the issues updated since.
+/// small and columns do change), and the issues updated since, or every
+/// issue when the provider cannot tell which changed.
 ///
 /// An issue that left the board (deleted, or out of its filter) is not
-/// reported by an incremental sync, so it stays until a full reload.
+/// reported by an incremental sync, so it stays until a full reload; on a
+/// provider without `ChangedSince` every sync is a full one, so it goes.
 pub async fn sync_board(
     provider: &dyn Provider,
     mut cached: BoardSnapshot,
@@ -77,8 +79,11 @@ pub async fn sync_board(
 ) -> Result<BoardSnapshot> {
     let id = cached.board.id.clone();
     cached.board = provider.board(&id).await?;
-    let changed = all_issues(provider, &id, Some(since)).await?;
-    cached.merge(changed);
+    if provider.capabilities().supports(Capability::ChangedSince) {
+        cached.merge(all_issues(provider, &id, Some(since)).await?);
+    } else {
+        cached.issues = all_issues(provider, &id, None).await?;
+    }
     Ok(cached)
 }
 
@@ -177,8 +182,16 @@ mod tests {
             .await
             .unwrap();
 
+        let mut cached = cached;
+        let mut gone = cached.issues[0].clone();
+        gone.key = IssueKey::new("ACME-999");
+        cached.issues.push(gone);
         let synced = sync_board(&fake, cached.clone(), since).await.unwrap();
         assert_eq!(synced.issues.len(), cached.issues.len() + 1, "the new one joined");
+        assert!(
+            synced.issues.iter().any(|i| i.key.as_str() == "ACME-999"),
+            "only a full reload drops what left the board"
+        );
         let title = |s: &BoardSnapshot, k: &IssueKey| {
             s.issues.iter().find(|i| &i.key == k).map(|i| i.title.clone())
         };
