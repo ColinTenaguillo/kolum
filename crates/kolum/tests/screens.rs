@@ -1284,3 +1284,49 @@ async fn the_command_line_cursor_sits_after_what_was_typed() {
         assert_eq!((cursor.x, cursor.y), (lead as u16 + after, 9), "after {keys}");
     }
 }
+
+#[tokio::test]
+async fn the_command_line_proposes_and_tab_walks_through_them() {
+    let mut app = loaded().await;
+    press(&mut app, ":");
+    assert!(screen(&mut app, 100, 30).contains("refresh  Reload the board"), "before any key");
+    press(&mut app, "<Tab><Tab><Tab><Tab>");
+    let shown = screen(&mut app, 100, 30);
+    assert!(shown.contains(":theme "), "the fourth command is written in");
+    assert!(shown.contains("Reload the board"), "the commands stay listed while walking");
+    press(&mut app, "<S-Tab>");
+    assert!(screen(&mut app, 100, 30).contains(":refresh"));
+    press(&mut app, "<C-e>");
+    assert!(!screen(&mut app, 100, 30).contains("Reload the board"), "hidden");
+    press(&mut app, "<C-u>th");
+    let shown = screen(&mut app, 100, 30);
+    assert!(shown.contains("Switch theme") && !shown.contains("Reload the board"), "narrowed");
+    press(&mut app, "<Tab>");
+    let shown = screen(&mut app, 100, 30);
+    assert!(shown.contains(":theme ") && shown.contains("gruvbox"), "a lone match goes on");
+    press(&mut app, "<Esc>:<Tab><Tab><Tab><Tab><C-y>");
+    assert!(screen(&mut app, 100, 30).contains("tokyonight"), "taken, it lists what follows");
+}
+
+#[tokio::test]
+async fn walking_through_the_themes_previews_them_until_escape_or_enter() {
+    let mut app = loaded().await;
+    let theme = |name| kolum::theme::Theme::builtin(name).unwrap();
+    press(&mut app, ":theme <Tab><Tab>");
+    assert_eq!(app.theme(), &theme("light"), "dark, then light");
+    press(&mut app, "<S-Tab><S-Tab>");
+    assert_eq!(app.theme(), &theme("gruvbox"), "back past the first to the last");
+    press(&mut app, "<Esc>");
+    assert_eq!(app.theme(), &theme("dark"), "escape puts it back");
+    press(&mut app, ":theme <Tab><Tab><Tab><CR>");
+    assert_eq!(app.theme(), &theme("kanagawa"), "enter keeps it");
+    press(&mut app, ":theme <Tab><Tab><C-u>help<CR>");
+    assert_eq!(app.theme(), &theme("kanagawa"), "another command drops the preview");
+}
+
+#[tokio::test]
+async fn the_command_line_proposals() {
+    let mut app = loaded().await;
+    press(&mut app, ":<Tab><Tab>");
+    insta::assert_snapshot!(screen(&mut app, 100, 14));
+}

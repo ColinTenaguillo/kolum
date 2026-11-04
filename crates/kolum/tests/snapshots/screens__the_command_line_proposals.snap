@@ -1,0 +1,18 @@
+---
+source: crates/kolum/tests/screens.rs
+expression: "screen(&mut app, 100, 14)"
+---
+" Acme Web board Kanban                                                                              "
+"┌ BACKLOG  9 ───────────────────┐┌ TO DO  9 ─────────────────────┐┌ IN PROGRESS  9/4 ──────────────┐"
+"│┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓││╭─────────────────────────────╮││╭──────────────────────────────╮│"
+"│┃■ ACME-9                    ↓┃│││■ ACME-7                    =││││● ACME-5                     ⇈││"
+"│┃Enforce SSO per organisation ┃│││Just-in-time provisioning of ││││Login times out after SSO     ││"
+"│┃       ╭──────────────────────────────╮ers                    ││││redirect                      ││"
+"│┃◆ Singl│ quit     Quit kolum          │le sign-on             ││││◆ Single sign-on              ││"
+"│┃ auth  │ help     Show the keys       │                   8 AS││││ auth   backend          3 CT★││"
+"│┗━━━━━━━│ refresh  Reload the board    │───────────────────────╯││╰──────────────────────────────╯│"
+"│        │ theme    Switch theme        │                        ││                                │"
+"│        │ board    Switch board        │                        ││                                │"
+"│        │ jql      Search the provider │                        ││                                │"
+"└────────╰──────────────────────────────╯────────────── ↓ 8 more ┘└────────────────────── ↓ 8 more ┘"
+" COMMAND  :help                                                                              ? help "

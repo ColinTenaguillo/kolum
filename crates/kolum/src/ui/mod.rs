@@ -5,6 +5,7 @@
 //! what lets the tests drive it exactly as the binary does.
 
 pub mod board;
+mod complete;
 mod detail;
 mod glyph;
 mod help;
@@ -81,6 +82,57 @@ enum PromptKind {
 struct Prompt {
     kind: PromptKind,
     input: Input,
+    /// The line the proposals are for: what was typed, not what Tab wrote.
+    typed: String,
+    /// The proposal Tab last wrote in.
+    chosen: Option<usize>,
+    hidden: bool,
+    themes: Vec<String>,
+}
+
+impl Prompt {
+    fn new(kind: PromptKind, input: Input, themes: Vec<String>) -> Self {
+        let typed = input.text().to_string();
+        Prompt { kind, input, typed, chosen: None, hidden: false, themes }
+    }
+
+    fn proposals(&self) -> (usize, Vec<complete::Proposal>) {
+        match self.kind {
+            PromptKind::Command => complete::proposals(&self.typed, &self.themes),
+            PromptKind::Filter => (0, vec![]),
+        }
+    }
+
+    /// Proposals for the line as it now is.
+    fn retype(&mut self) {
+        self.typed = self.input.text().to_string();
+        self.chosen = None;
+        self.hidden = false;
+    }
+
+    /// Writes in the next or the previous proposal; a lone one is taken at
+    /// once, so what follows it is proposed. Returns the theme written in.
+    fn walk(&mut self, step: isize) -> Option<String> {
+        let (start, list) = self.proposals();
+        let n = list.len() as isize;
+        if n == 0 {
+            return None;
+        }
+        let i = match self.chosen {
+            Some(i) => (i as isize + step).rem_euclid(n),
+            None if step > 0 => 0,
+            None => n - 1,
+        } as usize;
+        let is_theme = start > 0;
+        self.input.set(&format!("{}{}", &self.typed[..start], list[i].text));
+        self.hidden = false;
+        if n == 1 {
+            self.retype()
+        } else {
+            self.chosen = Some(i)
+        }
+        is_theme.then(|| list[i].text.clone())
+    }
 }
 
 /// What has the focus, topmost first.
@@ -343,10 +395,12 @@ impl App {
             }
         } else if let Some(prompt) = &mut self.prompt
             && prompt.input.handle(key)
-            && prompt.kind == PromptKind::Filter
         {
-            self.board.filter = prompt.input.text().to_string();
-            self.board.clamp();
+            prompt.retype();
+            if prompt.kind == PromptKind::Filter {
+                self.board.filter = prompt.input.text().to_string();
+                self.board.clamp();
+            }
         }
     }
 
@@ -475,7 +529,8 @@ impl App {
             Action::Close => self.close(),
             Action::Help => self.help = Some(0),
             Action::CommandLine => {
-                self.prompt = Some(Prompt { kind: PromptKind::Command, input: Input::default() })
+                let themes = self.theme_names();
+                self.prompt = Some(Prompt::new(PromptKind::Command, Input::default(), themes))
             }
             Action::Refresh => {
                 let id = self.board.snapshot.as_ref().map(|s| s.board.id.clone());
@@ -518,6 +573,7 @@ impl App {
             Focus::Help => self.help = None,
             Focus::Picker => self.close_picker(),
             Focus::Prompt => {
+                self.undo_theme_preview();
                 if self.prompt.take().is_some_and(|p| p.kind == PromptKind::Filter) {
                     self.board.filter.clear();
                     self.board.clamp();
@@ -563,7 +619,7 @@ impl App {
             Action::Filter => {
                 let mut input = Input::default();
                 input.set(&b.filter);
-                self.prompt = Some(Prompt { kind: PromptKind::Filter, input });
+                self.prompt = Some(Prompt::new(PromptKind::Filter, input, vec![]));
             }
             Action::ToggleSwimlanes => self.toggle_swimlanes(),
             Action::ToggleEmptyColumns => self.toggle_empty_columns(),
@@ -1118,7 +1174,8 @@ impl App {
         )));
     }
 
-    fn open_theme_picker(&mut self) {
+    /// The built-in themes, then the theme files.
+    fn theme_names(&self) -> Vec<String> {
         let mut names: Vec<String> = theme::BUILTIN.iter().map(|s| s.to_string()).collect();
         if let Some(dir) = &self.themes_dir
             && let Ok(entries) = std::fs::read_dir(dir)
@@ -1130,6 +1187,11 @@ impl App {
             files.sort();
             names.extend(files);
         }
+        names
+    }
+
+    fn open_theme_picker(&mut self) {
+        let names = self.theme_names();
         self.open_picker(Box::new(Picker::new(sources::ThemeSource { names }, self.waker.clone())));
     }
 
@@ -1139,6 +1201,10 @@ impl App {
         if let Some(p) = self.picker.take() {
             self.last_picker = Some(p);
         }
+        self.undo_theme_preview();
+    }
+
+    fn undo_theme_preview(&mut self) {
         if let Some((name, theme)) = self.theme_before_preview.take() {
             self.theme_name = name;
             self.theme = theme;
@@ -1283,9 +1349,13 @@ impl App {
 
     /// The theme picker shows the highlighted theme at once.
     fn preview_hovered_theme(&mut self) {
-        let Some(Pick::Theme(name)) = self.picker.as_ref().and_then(|p| p.hovered()) else {
-            return;
-        };
+        if let Some(Pick::Theme(name)) = self.picker.as_ref().and_then(|p| p.hovered()) {
+            self.preview_theme(name);
+        }
+    }
+
+    /// Until confirmed: closing puts the theme from before back.
+    fn preview_theme(&mut self, name: String) {
         if name == self.theme_name {
             return;
         }
@@ -1297,12 +1367,23 @@ impl App {
     }
 
     fn prompt_action(&mut self, action: Action) {
-        if action != Action::Confirm {
-            return;
-        }
-        let Some(prompt) = self.prompt.take() else { return };
-        if prompt.kind == PromptKind::Command {
-            self.run_command(prompt.input.text().trim());
+        let Some(prompt) = &mut self.prompt else { return };
+        match action {
+            Action::Down | Action::Up => {
+                if let Some(name) = prompt.walk(if action == Action::Down { 1 } else { -1 }) {
+                    self.preview_theme(name);
+                }
+            }
+            Action::AcceptProposal => prompt.retype(),
+            Action::HideProposals => prompt.hidden = true,
+            Action::Confirm => {
+                let Some(prompt) = self.prompt.take() else { return };
+                self.undo_theme_preview();
+                if prompt.kind == PromptKind::Command {
+                    self.run_command(prompt.input.text().trim());
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1392,7 +1473,8 @@ impl App {
                 .render_widget(Paragraph::new(lines).block(block).wrap(Wrap { trim: false }), area);
         }
         self.draw_which_key(frame, main, &theme);
-        self.draw_status(frame, status, &theme);
+        let lead_x = self.draw_status(frame, status, &theme);
+        self.draw_proposals(frame, main, lead_x, &theme);
     }
 
     fn board_header(&self, theme: &Theme) -> Line<'static> {
@@ -1416,15 +1498,21 @@ impl App {
         Line::from(spans)
     }
 
-    fn draw_status(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let (mode, color) = match self.focus() {
+    /// The status line's badge.
+    fn mode(&self, theme: &Theme) -> (&'static str, ratatui::style::Color) {
+        match self.focus() {
             Focus::Prompt => ("COMMAND", theme.mode_command),
             Focus::Picker if self.picker.as_ref().is_some_and(|p| p.is_insert()) => {
                 ("INSERT", theme.ok)
             }
             Focus::Board if self.board.visual.is_some() => ("VISUAL", theme.mode_visual),
             _ => ("NORMAL", theme.accent),
-        };
+        }
+    }
+
+    /// Returns the column where the `:` or `/` line starts.
+    fn draw_status(&self, frame: &mut Frame, area: Rect, theme: &Theme) -> u16 {
+        let (mode, color) = self.mode(theme);
         let mut left = vec![
             Span::styled(
                 format!(" {mode} "),
@@ -1432,12 +1520,12 @@ impl App {
             ),
             Span::raw(" "),
         ];
+        let lead_x = area.x + Line::from(left.clone()).width() as u16;
         if let Some(prompt) = &self.prompt {
             let lead = if prompt.kind == PromptKind::Command { ":" } else { "/" };
             let text = prompt.input.text();
             let typed: String = text.chars().take(prompt.input.cursor()).collect();
-            let x =
-                area.x + (Line::from(left.clone()).width() + width(lead) + width(&typed)) as u16;
+            let x = lead_x + (width(lead) + width(&typed)) as u16;
             left.push(Span::raw(format!("{lead}{text}")));
             frame.set_cursor_position((x, area.y));
         } else if let Some((text, level)) = &self.message {
@@ -1454,6 +1542,46 @@ impl App {
         ]);
         frame.render_widget(Paragraph::new(Line::from(left)), area);
         frame.render_widget(Paragraph::new(right).right_aligned(), area);
+        lead_x
+    }
+
+    /// The `:` line's proposals, just above it, from its first column.
+    fn draw_proposals(&self, frame: &mut Frame, area: Rect, lead_x: u16, theme: &Theme) {
+        let Some(prompt) = self.prompt.as_ref().filter(|p| !p.hidden) else { return };
+        let (_, list) = prompt.proposals();
+        if list.is_empty() {
+            return;
+        }
+        let name_width = list.iter().map(|p| width(p.text.trim_end())).max().unwrap_or(0);
+        let lines: Vec<Line> = list
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let name = p.text.trim_end();
+                let pad = " ".repeat(name_width - width(name));
+                let line = Line::from(vec![
+                    Span::styled(format!(" {name}{pad}"), Style::new().fg(theme.accent)),
+                    Span::styled(format!("  {} ", p.about), Style::new().fg(theme.muted)),
+                ]);
+                if prompt.chosen == Some(i) {
+                    line.style(Style::new().bg(theme.selection))
+                } else {
+                    line
+                }
+            })
+            .collect();
+        let width = (lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 2).min(area.width);
+        let height = (lines.len() as u16 + 2).min(area.height);
+        let rows = height.saturating_sub(2) as usize;
+        let scroll = prompt.chosen.map_or(0, |i| (i + 1).saturating_sub(rows)) as u16;
+        let x = lead_x.saturating_sub(1).min(area.right().saturating_sub(width));
+        let rect = Rect { x, y: area.bottom() - height, width, height };
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(theme.border))
+            .style(Style::new().bg(theme.bg).fg(theme.fg));
+        frame.render_widget(Clear, rect);
+        frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), rect);
     }
 
     /// After a prefix like `g` or `<leader>`, what can follow.

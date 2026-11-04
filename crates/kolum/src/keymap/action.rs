@@ -68,6 +68,8 @@ actions! {
         PickerResume "picker_resume" "Reopen the last picker",
     PickerUsers "picker_users" "Show the cards of some people",
     Confirm "confirm" "Confirm the choice",
+    AcceptProposal "accept_proposal" "Take the proposal, to see what can follow",
+    HideProposals "hide_proposals" "Hide the proposals",
     NormalMode "normal_mode" "Back to normal mode",
     InsertMode "insert_mode" "Back to typing",
     ToggleSource "toggle_source" "Switch between local and remote results",

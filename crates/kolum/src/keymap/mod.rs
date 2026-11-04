@@ -188,6 +188,12 @@ const DEFAULTS: &[(Context, &str, Action)] = &[
     (C::Command, "<CR>", A::Confirm),
     (C::Command, "<Esc>", A::Close),
     (C::Command, "<C-c>", A::Close),
+    (C::Command, "<Tab>", A::Down),
+    (C::Command, "<S-Tab>", A::Up),
+    (C::Command, "<C-n>", A::Down),
+    (C::Command, "<C-p>", A::Up),
+    (C::Command, "<C-y>", A::AcceptProposal),
+    (C::Command, "<C-e>", A::HideProposals),
 ];
 
 /// `[keys]` in the config. Every other table under it is a context:
