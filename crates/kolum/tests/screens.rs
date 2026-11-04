@@ -613,6 +613,21 @@ async fn the_command_palette_runs_what_it_lists() {
     assert!(screen(&mut app, 120, 40).contains("Keys  (/ to search"), "it ran `help`");
 }
 
+/// Every action is a `:` command too, by its name.
+#[tokio::test]
+async fn an_action_runs_from_the_command_line() {
+    use kolum_domain::IssueReader;
+    let parent =
+        FakeProvider::new().issue(&IssueKey::new("ACME-5")).await.unwrap().parent.unwrap().key;
+    let mut app = loaded().await;
+    press(&mut app, "ll"); // ACME-5
+    app.take_effects();
+    press(&mut app, ":open_p");
+    assert!(screen(&mut app, 140, 40).contains("Open the parent issue"), "proposed");
+    press(&mut app, "arent<CR>");
+    assert!(app.take_effects().contains(&Effect::Send(Command::LoadIssue(parent))));
+}
+
 #[tokio::test]
 async fn the_command_line_reports_what_it_cannot_do() {
     let mut app = loaded().await;
@@ -1838,7 +1853,9 @@ async fn the_command_line_cursor_sits_after_what_was_typed() {
 async fn the_command_line_proposes_and_tab_walks_through_them() {
     let mut app = loaded().await;
     press(&mut app, ":");
-    assert!(screen(&mut app, 100, 30).contains("refresh  Reload the board"), "before any key");
+    let shown = screen(&mut app, 100, 30);
+    let listed = shown.lines().any(|l| l.contains("refresh ") && l.contains("Reload the board"));
+    assert!(listed, "before any key: {shown}");
     press(&mut app, "<Tab><Tab><Tab><Tab>");
     let shown = screen(&mut app, 100, 30);
     assert!(shown.contains(":theme "), "the fourth command is written in");

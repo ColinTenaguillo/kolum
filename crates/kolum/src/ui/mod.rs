@@ -1791,7 +1791,11 @@ impl App {
                 }
             }
             "assign" => self.say(":assign is not available yet", Level::Warn),
-            _ => self.say(format!("Not a command: {name}"), Level::Error),
+            // Any action, by the name its key binding gives it.
+            _ => match Action::from_name(name) {
+                Some(action) => self.dispatch(action, None),
+                None => self.say(format!("Not a command: {name}"), Level::Error),
+            },
         }
     }
 

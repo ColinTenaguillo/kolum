@@ -69,7 +69,7 @@ The defaults follow vim. Counts work on motions (`3j`, `5G`), sequences wait
 | `s` · `ze` | cycle swimlanes (epic, assignee, priority, none) · hide or show empty columns; both remembered |
 | `c` · `C` | create an issue in `$EDITOR` · clone the card |
 | `r` | reload the board from the provider |
-| `:` | `:theme <name>`, `:board [id]`, `:jql [query]`, `:help`, `:refresh`, `:q`, proposed as you type: `Tab` `S-Tab` walk through them (a theme is previewed), `C-y` takes one, `C-e` hides them |
+| `:` | `:theme <name>`, `:board [id]`, `:jql [query]`, `:help`, `:refresh`, `:q`, and every action by its name (`:open_parent`, `:view_pictures`…), proposed as you type: `Tab` `S-Tab` walk through them (a theme is previewed), `C-y` takes one, `C-e` hides them |
 | `q` `Esc` | close the view; `q` on the board quits |
 
 In the picker you type in insert mode; `Esc` goes to normal mode, where `j`
