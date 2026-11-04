@@ -410,6 +410,23 @@ async fn search_translates_the_query_and_resolves_names() {
     );
 }
 
+/// `text ~` never matches a key: the issue is looked up by its key and
+/// comes first, ahead of what the text search found.
+#[tokio::test]
+async fn a_search_for_an_issue_key_finds_that_issue() {
+    let jira = fake_jira(None).await;
+    let p = provider(&jira);
+    let by_key =
+        |text: &str| Query::Filter(Filter { text: Some(text.into()), ..Filter::default() });
+    let page = p.search(&by_key("acme-5"), None).await.unwrap();
+    let keys: Vec<&str> = page.items.iter().map(|i| i.key.as_str()).collect();
+    assert_eq!(keys, ["ACME-5", "ACME-6"]);
+
+    let missing = p.search(&by_key("ACME-404"), None).await.unwrap();
+    let keys: Vec<&str> = missing.items.iter().map(|i| i.key.as_str()).collect();
+    assert_eq!(keys, ["ACME-6"], "a key that is not there is only text");
+}
+
 #[tokio::test]
 async fn a_rate_limit_is_waited_out() {
     let jira = fake_jira(Some("/rest/api/3/myself")).await;

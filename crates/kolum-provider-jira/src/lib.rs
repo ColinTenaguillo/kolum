@@ -216,7 +216,31 @@ impl IssueReader for JiraProvider {
 
 #[async_trait]
 impl IssueSearch for JiraProvider {
+    /// Jira's `text ~` never matches a key: a query that is only a key also
+    /// looks that issue up, and puts it first.
     async fn search(&self, query: &Query, token: Option<PageToken>) -> Result<Page<Issue>> {
+        let key = match (query, &token) {
+            (Query::Filter(f), None) if !f.has_fields() => {
+                f.text.as_deref().and_then(jql::issue_key)
+            }
+            _ => None,
+        };
+        let mut page = self.search_jql(query, token).await?;
+        let Some(key) = key else { return Ok(page) };
+        match self.issue(&key).await {
+            Ok(issue) => {
+                page.items.retain(|i| i.key != issue.key);
+                page.items.insert(0, issue);
+            }
+            Err(DomainError::NotFound(_)) => {}
+            Err(e) => return Err(e),
+        }
+        Ok(page)
+    }
+}
+
+impl JiraProvider {
+    async fn search_jql(&self, query: &Query, token: Option<PageToken>) -> Result<Page<Issue>> {
         let jql = match query {
             Query::Native(jql) => jql.clone(),
             Query::Filter(filter) => {
