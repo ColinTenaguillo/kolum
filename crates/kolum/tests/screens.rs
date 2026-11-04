@@ -352,8 +352,11 @@ async fn the_detail_shows_rich_custom_fields_under_the_description() {
         screen(app, 140, 40)
     };
     let shown = open(&mut loaded().await);
-    assert!(shown.contains("── Description ────"), "a rule heads each section: {shown}");
-    assert!(shown.contains("── Acceptance criteria ────"));
+    assert!(
+        shown.contains("\u{f036} Description"),
+        "an icon and a title head each section: {shown}"
+    );
+    assert!(shown.contains("\u{f036} Acceptance criteria"));
     assert!(shown.contains("Tokens refresh before they expire"));
     let mut app = loaded().await;
     press(&mut app, "/ACME-11<CR><CR>");
@@ -465,7 +468,7 @@ async fn the_detail_follows_the_providers_layout() {
     assert!(!shown.contains("Reporter") && !shown.contains("Updated"), "only the layout's");
     assert!(!shown.contains("customfield_"), "an empty field goes by its name too: {shown}");
     assert!(!shown.contains("Platforms"), "shown only once filled, and it is empty");
-    assert!(at("── Acceptance criteria") < at("── Description"), "the body's order");
+    assert!(at("\u{f036} Acceptance criteria") < at("\u{f036} Description"), "the body's order");
 
     let mut settings = settings();
     settings.ui.detail_fields = Some(vec!["reporter".into()]);
@@ -1532,7 +1535,7 @@ async fn gp_opens_the_parent() {
         children: vec![],
     })));
     let shown = screen(&mut app, 140, 40);
-    assert!(shown.contains(&title) && shown.contains(&format!("› {parent}")), "{shown}");
+    assert!(shown.contains(&title) && shown.contains(&format!("· {parent}")), "{shown}");
 
     press(&mut app, "q");
     app.take_effects();
@@ -1548,7 +1551,7 @@ async fn gp_opens_the_parent() {
         IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
     app.on_event(Event::IssueLoaded(Box::new(late)));
     assert!(
-        screen(&mut app, 140, 40).contains("› ACME-5"),
+        screen(&mut app, 140, 40).contains("· ACME-5"),
         "opened since: the parent waits no more"
     );
 
@@ -1625,7 +1628,7 @@ async fn a_search_hit_that_is_not_on_the_board_still_opens() {
     app.on_event(Event::IssueLoaded(Box::new(detail)));
     assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-1"), "opened once loaded");
     let shown = screen(&mut app, 120, 50);
-    assert!(shown.contains("Single sign-on") && shown.contains("── Child issues"), "{shown}");
+    assert!(shown.contains("Single sign-on") && shown.contains("\u{f0e8} Child issues"), "{shown}");
     assert!(shown.contains("ACME-36"), "its children, found by their parent");
 }
 
@@ -1792,18 +1795,18 @@ async fn a_card_has_its_epic_under_the_title_and_its_labels_under_the_epic() {
         lines.iter().position(|l| l.contains(text)).unwrap_or_else(|| panic!("{text} in {shown}"))
     };
     // ACME-9, the first card of the Backlog, under the cursor.
-    let title = row("┃Enforce SSO per");
-    assert_eq!(row("┃organisation"), title + 1, "on two lines");
+    let title = row("┃Enforce SSO per organisation ");
+    assert!(lines[title + 1].starts_with("\"┃ "), "two lines kept for the title: {shown}");
     assert_eq!(row("┃◆ Single sign-on"), title + 2, "then the epic, whole");
-    assert!(lines[title + 3].contains("┃ auth   "), "then the labels: {shown}");
+    assert!(lines[title + 3].contains("┃\u{e0b6}auth\u{e0b4} "), "then the labels: {shown}");
     assert!(
-        lines[title + 4].contains("┃■ ACME-9 ↓ ") && lines[title + 4].contains("5 --│"),
+        lines[title + 4].contains("┃■ ACME-9 ↓ ") && lines[title + 4].contains("5 -- "),
         "then the type, key, priority, estimate and assignee: {shown}"
     );
     // A card with no epic keeps its lines where they are.
     let ten = row("▍● ACME-10");
     assert_eq!(row("▍Search API returns"), ten - 4, "an empty epic line between");
-    assert!(lines[ten - 1].contains("▍ backend   api "), "{shown}");
+    assert!(lines[ten - 1].contains("▍\u{e0b6}backend\u{e0b4} \u{e0b6}api\u{e0b4}"), "{shown}");
     assert!(lines[ten].contains("3 DP"), "{shown}");
 }
 

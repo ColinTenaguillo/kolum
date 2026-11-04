@@ -99,8 +99,10 @@ impl DetailView {
     ) {
         let issue = &self.issue;
         let [head, body] =
-            Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).areas(area);
-        frame.render_widget(Paragraph::new(header(issue, theme)), head);
+            Layout::vertical([Constraint::Length(HEADER_ROWS), Constraint::Min(0)]).areas(area);
+        let band = Rect { height: 4, ..head };
+        frame.render_widget(Block::new().style(Style::new().bg(theme.selection)), band);
+        frame.render_widget(Paragraph::new(header(issue, theme, head.width)), head);
 
         let side = body.width >= SIDE_BY_SIDE_MIN_WIDTH;
         let [left, right] = if side {
@@ -212,22 +214,23 @@ impl DetailView {
         sections: &[(&str, &RichText)],
     ) -> Vec<Line<'static>> {
         let issue = &self.issue;
-        // `── Title ─────`: a rule across the pane, so sections stand apart.
-        let section = |t: &str| {
-            let rule = Style::new().fg(theme.border);
-            let rest = (cols as usize).saturating_sub(super::text::width(t) + 4);
-            Line::from(vec![
-                Span::styled("── ", rule),
-                Span::styled(t.to_string(), Style::new().fg(theme.fg).add_modifier(Modifier::BOLD)),
-                Span::styled(format!(" {}", "─".repeat(rest)), rule),
-            ])
+        // gh-dash's section titles: an icon, the name bold and underlined,
+        // and a blank line under it.
+        let heading = |icon: &str, t: &str| {
+            vec![
+                Line::from(Span::styled(
+                    format!("{icon} {t}"),
+                    Style::new().fg(theme.fg).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                )),
+                Line::default(),
+            ]
         };
         let mut lines = vec![];
         for (i, (name, text)) in sections.iter().enumerate() {
             if i > 0 {
                 lines.push(Line::default());
             }
-            lines.push(section(name));
+            lines.extend(heading(glyph::icon::TEXT, name));
             if text.is_empty() {
                 lines
                     .push(Line::from(Span::styled("No description", Style::new().fg(theme.muted))));
@@ -244,15 +247,18 @@ impl DetailView {
             }
         }
         if !children.is_empty() {
-            lines.extend([Line::default(), section("Child issues")]);
+            lines.push(Line::default());
+            lines.extend(heading(glyph::icon::CHILDREN, "Child issues"));
             lines.extend(children.into_iter().map(|r| ref_line(r, "", theme)));
         }
         if !issue.links.is_empty() {
-            lines.extend([Line::default(), section("Linked issues")]);
+            lines.push(Line::default());
+            lines.extend(heading(glyph::icon::LINK, "Linked issues"));
             lines.extend(issue.links.iter().map(|l| ref_line(&l.issue, &l.relation, theme)));
         }
         if !issue.attachments.is_empty() {
-            lines.extend([Line::default(), section("Attachments")]);
+            lines.push(Line::default());
+            lines.extend(heading(glyph::icon::ATTACHMENT, "Attachments"));
             lines.extend(issue.attachments.iter().map(|a| {
                 Line::from(vec![
                     Span::styled("▪ ", Style::new().fg(theme.muted)),
@@ -280,26 +286,24 @@ impl DetailView {
     fn tabs(&self, theme: &Theme) -> Line<'static> {
         let comments = self.loaded.as_ref().map_or(0, |d| d.comments.len());
         let names = [
-            (Tab::Comments, format!("Comments ({comments})")),
-            (Tab::History, "History".into()),
-            (Tab::All, "All".into()),
+            format!("{} Comments ({comments})", glyph::icon::COMMENTS),
+            "History".into(),
+            "All".into(),
         ];
-        let mut spans = vec![];
-        for (tab, name) in names {
-            let style = if tab == self.tab {
-                Style::new().fg(theme.accent).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-            } else {
-                Style::new().fg(theme.muted)
-            };
-            spans.extend([Span::styled(name, style), Span::raw("   ")]);
-        }
-        Line::from(spans)
+        let active = Tab::ORDER.iter().position(|&t| t == self.tab).unwrap_or(0);
+        Line::from(glyph::tabs(&names, active, theme))
     }
 }
 
-fn header(issue: &Issue, theme: &Theme) -> Vec<Line<'static>> {
+/// The crumbs, the title, a blank line, the status and who reported it.
+const HEADER_ROWS: u16 = 7;
+
+/// gh-dash's preview header, on a band of the selection the caller
+/// paints: the crumbs, the title bold in the middle of three rows; then the status as a pill and
+/// who opened the issue, when.
+fn header(issue: &Issue, theme: &Theme, cols: u16) -> Vec<Line<'static>> {
     let muted = Style::new().fg(theme.muted);
-    let mut crumbs = vec![];
+    let mut crumbs = vec![Span::raw(" ")];
     let project = issue.key.as_str().split('-').next().unwrap_or_default().to_string();
     crumbs.push(Span::styled(project, muted));
     if let Some(parent) = &issue.parent {
@@ -310,18 +314,36 @@ fn header(issue: &Issue, theme: &Theme) -> Vec<Line<'static>> {
         ));
         crumbs.push(Span::styled(format!(" {} {}", parent.key, parent.title), muted));
     }
-    crumbs.push(Span::styled(" › ", muted));
+    crumbs.push(Span::styled(" · ", muted));
     crumbs.push(Span::styled(issue.key.to_string(), muted));
+    let title = super::text::truncate(&issue.title, (cols as usize).saturating_sub(4));
+    let mut status = vec![Span::raw(" ")];
+    status.extend(glyph::status_badge(issue, theme));
+    status.push(Span::styled(
+        format!(" {} {}", glyph::kind(issue.kind.kind), issue.kind.name),
+        Style::new().fg(theme.issue_type(issue.kind.kind)),
+    ));
+    if let Some(r) = &issue.reporter {
+        status.push(Span::styled(" ⋅ by ", muted));
+        status.push(Span::styled(
+            r.display_name.clone(),
+            Style::new().fg(theme.fg).add_modifier(Modifier::BOLD),
+        ));
+    }
+    status.push(Span::styled(format!(" ⋅ {}", glyph::datetime(issue.created)), muted));
     vec![
         Line::from(crumbs),
+        Line::default(),
         Line::from(vec![
+            Span::raw(" "),
             glyph::kind_span(issue, theme),
             Span::raw(" "),
-            Span::styled(
-                issue.title.clone(),
-                Style::new().fg(theme.fg).add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(title, Style::new().fg(theme.fg).add_modifier(Modifier::BOLD)),
         ]),
+        Line::default(),
+        Line::default(),
+        Line::from(status),
+        Line::default(),
     ]
 }
 
@@ -516,7 +538,7 @@ fn field_lines(
     let mut lines = vec![];
     for (name, shown_as) in fields {
         let (label, value): (String, Vec<Span<'static>>) = match name.as_str() {
-            "status" => ("Status".into(), vec![glyph::status_badge(issue, theme)]),
+            "status" => ("Status".into(), glyph::status_badge(issue, theme).into()),
             "assignee" => ("Assignee".into(), user(&issue.assignee)),
             "reporter" => ("Reporter".into(), user(&issue.reporter)),
             "priority" => (
@@ -544,7 +566,7 @@ fn field_lines(
                 issue
                     .labels
                     .iter()
-                    .flat_map(|l| [glyph::label_badge(l, theme), Span::raw(" ")])
+                    .flat_map(|l| glyph::label_badge(l, theme).into_iter().chain([Span::raw(" ")]))
                     .collect(),
             ),
             "estimate" => (
@@ -562,7 +584,7 @@ fn field_lines(
             },
         };
         let label = shown_as.clone().unwrap_or(label);
-        lines.push(Line::from(Span::styled(label, muted)));
+        lines.push(Line::from(Span::styled(label, muted.add_modifier(Modifier::BOLD))));
         lines.push(Line::from(value));
         lines.push(Line::default());
     }

@@ -15,7 +15,7 @@ mod rich;
 mod sources;
 mod text;
 
-use crate::config::{PickerLayout, UiConfig};
+use crate::config::{PickerLayout, Swimlanes, UiConfig};
 use crate::keymap::{Action, Context, Key, Keymap, Layers, Outcome, Resolver};
 use crate::theme::{self, Theme};
 use board::{BoardView, DrawCtx};
@@ -1866,9 +1866,16 @@ impl App {
                 d.draw(frame, main, &theme, shown, me, pictures)
             }
             None => {
-                let [head, body] =
-                    Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(main);
+                let [head, rule, body] = Layout::vertical([
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                    Constraint::Min(0),
+                ])
+                .areas(main);
                 frame.render_widget(Paragraph::new(self.board_header(&theme)), head);
+                frame.render_widget(Paragraph::new(logo(&theme)).right_aligned(), head);
+                let thick = "━".repeat(rule.width as usize);
+                frame.render_widget(Span::styled(thick, Style::new().fg(theme.border)), rule);
                 let ctx = DrawCtx { theme: &theme, fields: &self.ui.card_fields, me };
                 self.board.draw(frame, body, &ctx);
             }
@@ -1915,6 +1922,8 @@ impl App {
         self.draw_proposals(frame, main, lead_x, &theme);
     }
 
+    /// gh-dash's tab row: the board and its size, then the swimlanes as
+    /// tabs `s` steps through, then what narrows or delays it.
     fn board_header(&self, theme: &Theme) -> Line<'static> {
         let mut spans = vec![];
         if let Some(s) = &self.board.snapshot {
@@ -1922,7 +1931,16 @@ impl App {
                 format!(" {} ", s.board.name),
                 Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
             ));
-            spans.push(Span::styled(format!("{:?}", s.board.kind), Style::new().fg(theme.muted)));
+            spans.push(Span::styled(
+                format!("{:?} · {} issues ", s.board.kind, s.issues.len()),
+                Style::new().fg(theme.muted),
+            ));
+            spans.push(Span::styled("│", Style::new().fg(theme.border)));
+            let lanes =
+                [Swimlanes::None, Swimlanes::Epic, Swimlanes::Assignee, Swimlanes::Priority];
+            let active = lanes.iter().position(|&l| l == self.board.swimlanes).unwrap_or(0);
+            spans.extend(glyph::tabs(&["No lanes", "Epic", "Assignee", "Priority"], active, theme));
+            spans.push(Span::styled("│", Style::new().fg(theme.border)));
             if self.board_cached {
                 spans.push(Span::styled("  cached, syncing…", Style::new().fg(theme.warn)));
             }
@@ -1982,7 +2000,8 @@ impl App {
             Span::styled(self.resolver.typed(), Style::new().fg(theme.match_highlight)),
             Span::styled("  ? help ", Style::new().fg(theme.muted)),
         ]);
-        frame.render_widget(Paragraph::new(Line::from(left)), area);
+        let bar = Style::new().bg(theme.selection);
+        frame.render_widget(Paragraph::new(Line::from(left)).style(bar), area);
         frame.render_widget(Paragraph::new(right).right_aligned(), area);
         lead_x
     }
@@ -2119,6 +2138,18 @@ fn split_title(text: &str) -> (Option<&str>, &str) {
         }
         _ => (None, text.trim()),
     }
+}
+
+/// gh-dash's logo, on the right of the tab row: the name on a pill of
+/// the selection, and the version.
+fn logo(theme: &Theme) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            " KOLUM ",
+            Style::new().fg(theme.accent).bg(theme.selection).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!(" {} ", env!("CARGO_PKG_VERSION")), Style::new().fg(theme.muted)),
+    ])
 }
 
 fn popup(title: &str, theme: &Theme) -> Block<'static> {

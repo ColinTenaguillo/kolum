@@ -11,7 +11,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Paragraph};
+use ratatui::widgets::Paragraph;
 use std::cell::Cell;
 
 /// The tallest card: two lines of title, the epic, the labels, the key
@@ -340,18 +340,23 @@ impl BoardView {
             None => format!(" {count} "),
         };
         let count_style = Style::new().fg(if over { theme.error } else { theme.muted });
-        let title_style = Style::new()
-            .fg(if focused { theme.accent } else { theme.fg })
-            .add_modifier(Modifier::BOLD);
-        let block = Block::bordered()
-            .border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(if focused { theme.border_focus } else { theme.border }))
-            .title(Line::from(vec![
-                Span::styled(format!(" {} ", name.to_uppercase()), title_style),
-                Span::styled(count_text, count_style),
-            ]));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        // gh-dash's table: a header, the focused one styled as its active
+        // tab, over a rule; no box, a gap between columns.
+        let area = Rect { width: area.width.saturating_sub(1), ..area };
+        let head_style = if focused {
+            Style::new().fg(theme.fg).bg(theme.selection).add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(theme.muted).add_modifier(Modifier::BOLD)
+        };
+        let head = Line::from(vec![
+            Span::styled(format!(" {} ", name.to_uppercase()), head_style),
+            Span::styled(count_text, count_style.bg(head_style.bg.unwrap_or(theme.bg))),
+        ]);
+        frame.render_widget(Paragraph::new(head), Rect { height: 1, ..area });
+        let rule = Style::new().fg(if focused { theme.border_focus } else { theme.border });
+        let rule = Span::styled("─".repeat(area.width as usize), rule);
+        frame.render_widget(Paragraph::new(rule), Rect { y: area.y + 1, height: 1, ..area });
+        let inner = Rect { y: area.y + 2, height: area.height.saturating_sub(3), ..area };
         // Counted at the tallest, so a half page never skips past the screen.
         self.page.set((inner.height / CARD_HEIGHT).max(1) as usize);
         let cursor = self.cursor.get(c).copied().unwrap_or(0);
@@ -515,11 +520,12 @@ fn labels(issue: &Issue, ctx: &DrawCtx, cols: usize) -> Line<'static> {
     let mut spans = vec![];
     let mut used = 0;
     if ctx.fields.contains(&CardField::Labels) {
-        for badge in issue.labels.iter().map(|l| glyph::label_badge(l, ctx.theme)) {
-            let w = width(&badge.content);
+        for pill in issue.labels.iter().map(|l| glyph::label_badge(l, ctx.theme)) {
+            let w: usize = pill.iter().map(|s| width(&s.content)).sum();
             if used + w <= cols {
                 used += w + 1;
-                spans.extend([badge, Span::raw(" ")]);
+                spans.extend(pill);
+                spans.push(Span::raw(" "));
             }
         }
     }

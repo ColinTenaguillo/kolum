@@ -99,7 +99,10 @@ impl PickerSource for IssueSource {
                 issue.title.clone(),
                 Style::new().add_modifier(Modifier::BOLD),
             )),
-            Line::from(vec![Span::styled("Status    ", muted), glyph::status_badge(issue, theme)]),
+            Line::from(
+                [vec![Span::styled("Status    ", muted)], glyph::status_badge(issue, theme).into()]
+                    .concat(),
+            ),
             Line::from(vec![Span::styled("Assignee  ", muted), Span::raw(assignee)]),
             Line::from(Span::styled("─".repeat(cols as usize), Style::new().fg(theme.border))),
         ];
