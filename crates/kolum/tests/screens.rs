@@ -169,6 +169,7 @@ async fn the_issue_detail() {
         comments: fake.comments(&key).await.unwrap(),
         activity: fake.activity(&key).await.unwrap(),
         layout: None,
+        children: vec![],
     };
     app.on_event(Event::IssueLoaded(Box::new(detail)));
     insta::assert_snapshot!(screen(&mut app, 150, 60));
@@ -309,6 +310,7 @@ async fn detail_of(app: &mut App, key: &str) {
         comments: fake.comments(&key).await.unwrap(),
         activity: fake.activity(&key).await.unwrap(),
         layout: None,
+        children: vec![],
     };
     app.on_event(Event::IssueLoaded(Box::new(detail)));
 }
@@ -376,7 +378,8 @@ async fn a_board_sync_keeps_the_fields_only_the_detail_loaded() {
     press(&mut app, "/ACME-10<CR><CR>");
     let key = IssueKey::new("ACME-10");
     let issue = fake.issue(&key).await.unwrap();
-    let detail = IssueDetail { issue, comments: vec![], activity: vec![], layout: None };
+    let detail =
+        IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
     app.on_event(Event::IssueLoaded(Box::new(detail)));
     let mut snapshot = load_board(&fake, None).await.unwrap();
     for issue in &mut snapshot.issues {
@@ -433,8 +436,13 @@ async fn the_detail_follows_the_providers_layout() {
             ]),
             body: ids(&["customfield_10030", "description"]),
         };
-        let detail =
-            IssueDetail { issue, comments: vec![], activity: vec![], layout: Some(layout) };
+        let detail = IssueDetail {
+            issue,
+            comments: vec![],
+            activity: vec![],
+            layout: Some(layout),
+            children: vec![],
+        };
         app.on_event(Event::IssueLoaded(Box::new(detail)));
         screen(&mut app, 140, 60)
     };
@@ -485,8 +493,13 @@ async fn an_issue_opens_with_the_layout_its_type_had() {
     let shown = screen(&mut app, 140, 40);
     assert!(shown.contains("Squad") && !shown.contains("Reporter"), "at once: {shown}");
 
-    let detail =
-        IssueDetail { issue, comments: vec![], activity: vec![], layout: Some(layout("Team now")) };
+    let detail = IssueDetail {
+        issue,
+        comments: vec![],
+        activity: vec![],
+        layout: Some(layout("Team now")),
+        children: vec![],
+    };
     app.on_event(Event::IssueLoaded(Box::new(detail)));
     press(&mut app, "q<CR>");
     assert!(screen(&mut app, 140, 40).contains("Team now"), "the latest one is kept");
@@ -849,6 +862,7 @@ async fn one_field_is_edited_at_a_time() {
         comments: vec![],
         activity: vec![],
         layout: None,
+        children: vec![],
     })));
     edit_field(&mut app, "accept").await;
     let Some(Effect::Edit { text, .. }) = app.take_effects().pop() else { panic!() };
@@ -1460,6 +1474,7 @@ async fn gp_opens_the_parent() {
         comments: vec![],
         activity: vec![],
         layout: None,
+        children: vec![],
     })));
     let shown = screen(&mut app, 140, 40);
     assert!(shown.contains(&title) && shown.contains(&format!("› {parent}")), "{shown}");
@@ -1474,7 +1489,8 @@ async fn gp_opens_the_parent() {
     );
     press(&mut app, "<CR>"); // ACME-5 again, before the parent arrives
     let issue = fake.issue(&parent).await.unwrap();
-    let late = IssueDetail { issue, comments: vec![], activity: vec![], layout: None };
+    let late =
+        IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
     app.on_event(Event::IssueLoaded(Box::new(late)));
     assert!(
         screen(&mut app, 140, 40).contains("› ACME-5"),
@@ -1548,10 +1564,14 @@ async fn a_search_hit_that_is_not_on_the_board_still_opens() {
     press(&mut app, "<CR>");
     assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(IssueKey::new("ACME-1")))]);
     assert!(screen(&mut app, 120, 30).contains("Opening ACME-1"));
-    let detail = IssueDetail { issue: epic, comments: vec![], activity: vec![], layout: None };
+    let children = kolum_domain::IssueReader::children(&fake, &epic.key).await.unwrap();
+    let detail =
+        IssueDetail { issue: epic, comments: vec![], activity: vec![], layout: None, children };
     app.on_event(Event::IssueLoaded(Box::new(detail)));
     assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-1"), "opened once loaded");
-    assert!(screen(&mut app, 120, 30).contains("Single sign-on"));
+    let shown = screen(&mut app, 120, 50);
+    assert!(shown.contains("Single sign-on") && shown.contains("── Child issues"), "{shown}");
+    assert!(shown.contains("ACME-36"), "its children, found by their parent");
 }
 
 #[tokio::test]

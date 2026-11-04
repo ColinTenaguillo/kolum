@@ -49,6 +49,8 @@ pub struct IssueDetail {
     pub activity: Vec<ActivityEntry>,
     /// How the provider's own issue view lays the fields out, if it says.
     pub layout: Option<kolum_domain::FieldLayout>,
+    /// The issues whose parent it is, beyond its sub-tasks.
+    pub children: Vec<kolum_domain::IssueRef>,
 }
 
 /// The project and the issue type an issue's field layout belongs to:
@@ -298,20 +300,28 @@ async fn send_write(
 }
 
 async fn load_issue(provider: &dyn Provider, key: &IssueKey) -> kolum_domain::Result<IssueDetail> {
-    let (detail, layout) = tokio::join!(
+    let (detail, layout, children) = tokio::join!(
         async {
             tokio::try_join!(provider.issue(key), provider.comments(key), provider.activity(key))
         },
         provider.field_layout(key),
+        provider.children(key),
     );
     let (issue, comments, activity) = detail?;
-    // A nicety: without the provider's layout, the detail has its own.
-    if let Err(e) = &layout
+    // Niceties: without them the issue still opens, with what it has.
+    let layout = nicety(layout, "the field layout", key);
+    let children = nicety(children, "the children", key).unwrap_or_default();
+    Ok(IssueDetail { issue, comments, activity, layout, children })
+}
+
+/// What a provider cannot say is no news; what fails is logged.
+fn nicety<T>(result: kolum_domain::Result<T>, what: &str, key: &IssueKey) -> Option<T> {
+    if let Err(e) = &result
         && !matches!(e, DomainError::Unsupported(_))
     {
-        tracing::warn!("the field layout of {key}: {e}");
+        tracing::warn!("{what} of {key}: {e}");
     }
-    Ok(IssueDetail { issue, comments, activity, layout: layout.ok() })
+    result.ok()
 }
 
 #[cfg(test)]
@@ -339,6 +349,10 @@ mod tests {
         let Some(Event::IssueLoaded(detail)) = events.recv().await else { panic!() };
         assert_eq!(detail.comments.len(), 3);
         let layout = detail.layout.as_ref().expect("the fake has a layout");
+        assert!(detail.children.is_empty(), "ACME-5 is no epic");
+        service.send(Command::LoadIssue(IssueKey::new("ACME-1")));
+        let Some(Event::IssueLoaded(epic)) = events.recv().await else { panic!() };
+        assert_eq!(epic.children.len(), 6, "an epic comes with its children");
         assert_eq!(layout.body[0].as_str(), "description");
         assert!(!detail.activity.is_empty());
     }

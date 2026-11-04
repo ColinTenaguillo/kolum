@@ -397,6 +397,9 @@ fn route(method: &str, target: &str) -> Option<(&'static str, &'static str)> {
             "/rest/api/3/issue/ACME-5/transitions" => fixture!("transitions.json"),
             "/rest/api/3/issue/ACME-5/editmeta" => fixture!("editmeta.json"),
             "/rest/agile/1.0/board/42/sprint" => fixture!("sprints.json"),
+            "/rest/api/3/search/jql" if target.contains("nextPageToken") => {
+                fixture!("search_jql_last.json")
+            }
             "/rest/api/3/search/jql" => fixture!("search_jql.json"),
             "/rest/api/3/myself" => fixture!("myself.json"),
             "/rest/api/3/user/search" => fixture!("user_search.json"),
@@ -553,6 +556,10 @@ async fn the_provider_reads_an_issue_its_comments_and_history() {
         asked.contains(r#""cloudId":"cloud-1""#) && asked.contains(r#""project":"ACME""#),
         "{asked}"
     );
+    let children = p.children(&key).await.unwrap();
+    assert_eq!(children.iter().map(|c| c.key.as_str()).collect::<Vec<_>>(), ["ACME-6"]);
+    let asked = jira.seen.lock().unwrap().iter().rev().find(|r| r.contains("search/jql")).cloned();
+    assert!(asked.unwrap().contains("jql=parent+%3D+%22ACME-5%22"), "by parent");
     let editable = p.editable_fields(&key).await.unwrap();
     assert!(editable.iter().any(|f| f.name == "Team"), "{editable:?}");
     let transitions = p.transitions(&key).await.unwrap();

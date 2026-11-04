@@ -208,9 +208,13 @@ async fn the_demo_data_follows_its_rules() {
     );
     assert_eq!(six.due, None);
 
-    let children: Vec<&str> = sso.subtasks.iter().map(|r| r.key.as_str()).collect();
+    // As on Jira: an epic's children are found by their parent, not listed
+    // as its sub-tasks.
+    assert!(sso.subtasks.is_empty());
+    let children = p.children(&sso.key).await.unwrap();
+    let children: Vec<&str> = children.iter().map(|r| r.key.as_str()).collect();
     assert_eq!(children, ["ACME-5", "ACME-6", "ACME-7", "ACME-8", "ACME-9", "ACME-36"]);
-    assert!(five.subtasks.is_empty(), "only epics have children");
+    assert!(p.children(&five.key).await.unwrap().is_empty(), "only epics have children");
 
     let activity = |key: &str| {
         let p = &p;

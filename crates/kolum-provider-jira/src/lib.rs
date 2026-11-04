@@ -215,6 +215,21 @@ impl IssueReader for JiraProvider {
         map::issue(&dto, ctx)
     }
 
+    /// Every page of the issues whose parent it is, in the board's order.
+    async fn children(&self, key: &IssueKey) -> Result<Vec<IssueRef>> {
+        let query = Query::Native(format!("parent = {} ORDER BY rank", jql::quote(key.as_str())));
+        let mut out = vec![];
+        let mut token = None;
+        loop {
+            let page = self.search_jql(&query, token).await?;
+            out.extend(page.items.iter().map(Issue::as_ref));
+            match page.next {
+                Some(next) => token = Some(next),
+                None => return Ok(out),
+            }
+        }
+    }
+
     /// Cloud only: Data Center has no GraphQL gateway.
     async fn field_layout(&self, key: &IssueKey) -> Result<FieldLayout> {
         if self.settings.flavor == JiraFlavor::DataCenter {

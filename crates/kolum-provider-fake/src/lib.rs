@@ -151,11 +151,8 @@ fn issue(row: &data::Row) -> Issue {
         reporter: Some(user(row.reporter)),
         labels: row.labels.iter().map(|l| l.to_string()).collect(),
         parent: row.epic.map(row_ref),
-        subtasks: data::ROWS
-            .iter()
-            .filter(|r| row.kind == IssueKind::Epic && r.epic == Some(row.n))
-            .map(|r| row_ref(r.n))
-            .collect(),
+        // As on Jira: an epic's children are found by their parent.
+        subtasks: vec![],
         links,
         estimate: row.points.map(Estimate::Points),
         sprint: in_sprint.then(|| Sprint { id: "14".into(), name: "Sprint 14".into() }),
@@ -344,6 +341,12 @@ impl IssueReader for FakeProvider {
 
     async fn comments(&self, key: &IssueKey) -> Result<Vec<Comment>> {
         Ok(self.state().comments.get(key).cloned().unwrap_or_default())
+    }
+
+    async fn children(&self, key: &IssueKey) -> Result<Vec<IssueRef>> {
+        let state = self.state();
+        let child = |i: &&Issue| i.parent.as_ref().is_some_and(|p| &p.key == key);
+        Ok(state.issues.iter().filter(child).map(Issue::as_ref).collect())
     }
 
     async fn field_layout(&self, key: &IssueKey) -> Result<FieldLayout> {

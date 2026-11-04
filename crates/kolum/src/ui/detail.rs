@@ -235,9 +235,17 @@ impl DetailView {
                 lines.extend(rich::lines(text, theme, cols));
             }
         }
-        if !issue.subtasks.is_empty() {
+        // Its sub-tasks, then the issues found by their parent, once each.
+        let found = self.loaded.iter().flat_map(|d| &d.children);
+        let mut children: Vec<&IssueRef> = issue.subtasks.iter().collect();
+        for child in found {
+            if !children.iter().any(|c| c.key == child.key) {
+                children.push(child);
+            }
+        }
+        if !children.is_empty() {
             lines.extend([Line::default(), section("Child issues")]);
-            lines.extend(issue.subtasks.iter().map(|r| ref_line(r, "", theme)));
+            lines.extend(children.into_iter().map(|r| ref_line(r, "", theme)));
         }
         if !issue.links.is_empty() {
             lines.extend([Line::default(), section("Linked issues")]);
