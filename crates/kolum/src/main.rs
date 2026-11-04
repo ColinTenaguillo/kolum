@@ -79,7 +79,7 @@ fn with_token(
     if let Some(cmd) = profile.settings.remove("token_cmd") {
         let cmd = cmd.as_str().ok_or("`token_cmd` must be a command in quotes")?.to_string();
         if !profile.settings.contains_key("token") {
-            let token = run(&cmd).map_err(|e| format!("token_cmd `{cmd}`: {e}"))?;
+            let token = run(&cmd).map_err(|e| format!("`token_cmd`: {e}"))?;
             profile.settings.insert("token".into(), toml::Value::String(token.trim().to_string()));
         }
     }
@@ -87,9 +87,16 @@ fn with_token(
 }
 
 /// Runs `token_cmd` through the shell, as a password manager expects.
+/// Errors never quote the command: it may be a token pasted in its place.
 fn run_token_cmd(cmd: &str) -> Result<String, String> {
     let out =
         std::process::Command::new("sh").arg("-c").arg(cmd).output().map_err(|e| e.to_string())?;
+    // 127: the shell's "command not found".
+    if out.status.code() == Some(127) {
+        return Err(
+            "is not a command: to keep the token itself, write `token = \"…\"` instead".into()
+        );
+    }
     if !out.status.success() {
         return Err(format!("exited with {}", out.status));
     }
@@ -416,12 +423,17 @@ mod tests {
         let failing = profile("[profiles.p]\nprovider = \"jira\"\ntoken_cmd = \"pass x\"");
         assert_eq!(
             with_token(&failing, |_| Err("no shell".into())).unwrap_err(),
-            "token_cmd `pass x`: no shell"
+            "`token_cmd`: no shell",
+            "the command may be a pasted token: it is never shown"
         );
         let bad = profile("[profiles.p]\nprovider = \"jira\"\ntoken_cmd = 3");
         assert!(with_token(&bad, echo).is_err());
         assert_eq!(run_token_cmd("printf secret").unwrap(), "secret");
         assert!(run_token_cmd("exit 3").unwrap_err().contains("exited"));
+        assert_eq!(
+            run_token_cmd("ATATT3xFfGF0secret").unwrap_err(),
+            "is not a command: to keep the token itself, write `token = \"…\"` instead"
+        );
     }
 
     #[test]

@@ -127,18 +127,61 @@ fn not_empty(what: &'static str) -> impl Fn(&str) -> Result<(), &'static str> {
 }
 
 fn token_question(input: &mut impl BufRead, out: &mut impl Write) -> std::io::Result<Token> {
-    writeln!(out, "\nThe API token (Cloud: id.atlassian.com, Security, API tokens). kolum can")?;
-    writeln!(out, "  1) run a command that prints it, like `pass show jira` (recommended)")?;
-    writeln!(out, "  2) read $KOLUM_TOKEN")?;
-    writeln!(out, "  3) keep it in config.toml, which is then readable by you alone")?;
-    let how = ask_until(input, out, "Which", "1", |a| {
-        if matches!(a, "1" | "2" | "3") { Ok(()) } else { Err("1, 2 or 3") }
-    })?;
-    Ok(match how.as_str() {
-        "1" => Token::Command(ask_until(input, out, "Command", "", not_empty("a command"))?),
-        "2" => Token::Environment,
-        _ => Token::InFile(ask_until(input, out, "Token", "", not_empty("the token"))?),
-    })
+    write!(
+        out,
+        "\nThe API token (Cloud: id.atlassian.com, Security, API tokens). kolum can\n  \
+         1) run a command that prints it, like `pass show jira` (recommended)\n  \
+         2) read $KOLUM_TOKEN\n  \
+         3) keep it in config.toml, which is then readable by you alone\n"
+    )?;
+    loop {
+        let how = ask_until(input, out, "Which", "1", |a| {
+            if matches!(a, "1" | "2" | "3") { Ok(()) } else { Err("1, 2 or 3") }
+        })?;
+        match how.as_str() {
+            "1" => {
+                if let Some(cmd) = command_question(input, out)? {
+                    return Ok(Token::Command(cmd));
+                }
+            }
+            "2" => return Ok(Token::Environment),
+            _ => {
+                return ask_until(input, out, "Token", "", not_empty("the token"))
+                    .map(Token::InFile);
+            }
+        }
+    }
+}
+
+/// The command, or None when it runs no program: the choice is then asked
+/// again.
+fn command_question(
+    input: &mut impl BufRead,
+    out: &mut impl Write,
+) -> std::io::Result<Option<String>> {
+    let cmd = ask_until(input, out, "Command", "", not_empty("a command"))?;
+    if is_program(&cmd) {
+        return Ok(Some(cmd));
+    }
+    // Not echoed back: it is most often the token itself.
+    writeln!(out, "  not a program on your PATH: pick 3 to keep the token itself")?;
+    Ok(None)
+}
+
+/// Whether the command's first word is a program `sh` can run: a token
+/// pasted at the command prompt is not.
+fn is_program(cmd: &str) -> bool {
+    let Some(first) = cmd.split_whitespace().next() else { return false };
+    if first.contains('/') {
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let path = match (first.strip_prefix("~/"), home) {
+            (Some(rest), Some(home)) => home.join(rest),
+            _ => first.into(),
+        };
+        return path.is_file();
+    }
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(first).is_file()))
 }
 
 /// The profile as TOML, ready to append to config.toml.
@@ -193,7 +236,7 @@ mod tests {
     #[test]
     fn a_cloud_profile_with_a_token_command() {
         let (answer, said) = run(
-            "\nacme.atlassian.net\nhttps://acme.atlassian.net/\nme\nme@acme.com\n\npass show jira\n42\n\n",
+            "\nacme.atlassian.net\nhttps://acme.atlassian.net/\nme\nme@acme.com\n\ncat ~/.jira-token\n42\n\n",
         );
         assert!(said.contains("a URL, starting with https://"), "a wrong answer is asked again");
         assert!(said.contains("an e-mail address"));
@@ -204,7 +247,7 @@ mod tests {
                 name: "work".into(),
                 base_url: "https://acme.atlassian.net".into(),
                 email: Some("me@acme.com".into()),
-                token: Token::Command("pass show jira".into()),
+                token: Token::Command("cat ~/.jira-token".into()),
                 board: Some(42),
             }
         );
@@ -212,8 +255,24 @@ mod tests {
         let (config, problems) = crate::config::parse(&toml);
         assert!(problems.is_empty(), "{problems:?}");
         let profile = &config.profiles["work"];
-        assert_eq!(profile.settings["token_cmd"].as_str(), Some("pass show jira"));
+        assert_eq!(profile.settings["token_cmd"].as_str(), Some("cat ~/.jira-token"));
         assert_eq!(profile.settings["board"].as_integer(), Some(42));
+    }
+
+    #[test]
+    fn a_token_pasted_as_the_command_is_refused_without_being_shown() {
+        let (answer, said) = run(
+            "\nhttps://a.atlassian.net\nme@a.com\n\nATATT3xFfGF0secret\n3\nATATT3xFfGF0secret\n\n\n",
+        );
+        let Answer::Jira(a) = answer else { panic!() };
+        assert_eq!(a.token, Token::InFile("ATATT3xFfGF0secret".into()));
+        assert!(said.contains("not a program"), "{said}");
+        assert!(!said.contains("ATATT"), "the token is never written back");
+        for (cmd, ok) in
+            [("/bin/sh -c x", true), ("~/no/such/kolum-cmd", false), ("ATATT/x+y=", false)]
+        {
+            assert_eq!(is_program(cmd), ok, "{cmd}");
+        }
     }
 
     #[test]
