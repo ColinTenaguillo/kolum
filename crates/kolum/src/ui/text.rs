@@ -6,7 +6,8 @@ pub fn width(s: &str) -> usize {
     s.width()
 }
 
-/// Cuts to `max` cells, ending in `…` when anything was cut.
+/// Cuts to `max` cells, ending in `…` when anything was cut, with no
+/// space before it.
 pub fn truncate(s: &str, max: usize) -> String {
     if s.width() <= max {
         return s.to_string();
@@ -22,6 +23,7 @@ pub fn truncate(s: &str, max: usize) -> String {
         used += w;
     }
     if max > 0 {
+        out.truncate(out.trim_end().len());
         out.push('…');
     }
     out
@@ -69,6 +71,7 @@ mod tests {
         assert_eq!(truncate("hello", 5), "hello");
         assert_eq!(truncate("hello world", 8), "hello w…");
         assert_eq!(truncate("x", 0), "");
+        assert_eq!(truncate("Billing revamp", 9), "Billing…", "no space before the mark");
     }
 
     #[test]
