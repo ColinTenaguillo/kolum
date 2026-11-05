@@ -1,7 +1,7 @@
 //! Renders the domain's RichText. The only renderer: every provider's
 //! format reaches the screen through this.
 
-use super::text::width;
+use super::text::{width, wrap};
 use crate::theme::Theme;
 use kolum_domain::RichText;
 use kolum_domain::rich_text::{Block, Inline, Marks, PanelKind, inline_text};
@@ -85,7 +85,7 @@ fn render_block(block: &Block, theme: &Theme, cols: usize, out: &mut Vec<Line<'s
             blocks.iter().for_each(|b| render_block(b, theme, cols.saturating_sub(2), &mut inner));
             out.extend(indent(inner, gutter.clone(), gutter));
         }
-        Block::Table { header, rows } => out.extend(table(rows, *header, theme)),
+        Block::Table { header, rows } => out.extend(table(rows, *header, theme, cols)),
         Block::Rule => out.push(Line::from(Span::styled(
             "─".repeat(cols.min(80)),
             Style::new().fg(theme.border),
@@ -112,7 +112,59 @@ fn panel(kind: PanelKind, theme: &Theme) -> (ratatui::style::Color, &'static str
     }
 }
 
-fn table(rows: &[Vec<Vec<Inline>>], header: bool, theme: &Theme) -> Vec<Line<'static>> {
+/// The columns' widths within `room` cells: each its widest cell when all
+/// fit; otherwise those narrower than a fair share keep theirs and the
+/// others share what is left.
+fn fit_widths(natural: &[usize], room: usize) -> Vec<usize> {
+    if natural.iter().sum::<usize>() <= room {
+        return natural.to_vec();
+    }
+    let mut kept = vec![false; natural.len()];
+    loop {
+        let (used, left) = natural
+            .iter()
+            .zip(&kept)
+            .fold((0, 0), |(u, l), (w, k)| if *k { (u + w, l) } else { (u, l + 1) });
+        let share = room.saturating_sub(used) / left.max(1);
+        let fits: Vec<usize> =
+            (0..natural.len()).filter(|&c| !kept[c] && natural[c] <= share).collect();
+        if fits.is_empty() {
+            let width = |c: usize| if kept[c] { natural[c] } else { share.max(1) };
+            return (0..natural.len()).map(width).collect();
+        }
+        fits.into_iter().for_each(|c| kept[c] = true);
+    }
+}
+
+/// Words wider than `cols` broken into pieces that fit, so that wrapping
+/// moves them on rather than cutting them short.
+fn split_long_words(text: &str, cols: usize) -> String {
+    let mut out = String::new();
+    for word in text.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        let mut used = 0;
+        for c in word.chars() {
+            let w = width(c.encode_utf8(&mut [0; 4]));
+            if used > 0 && used + w > cols {
+                out.push(' ');
+                used = 0;
+            }
+            out.push(c);
+            used += w;
+        }
+    }
+    out
+}
+
+/// Each cell wrapped within its column, a row as tall as its tallest cell.
+fn table(
+    rows: &[Vec<Vec<Inline>>],
+    header: bool,
+    theme: &Theme,
+    cols: usize,
+) -> Vec<Line<'static>> {
     let cells: Vec<Vec<String>> = rows
         .iter()
         .map(|row| {
@@ -126,24 +178,37 @@ fn table(rows: &[Vec<Vec<Inline>>], header: bool, theme: &Theme) -> Vec<Line<'st
         })
         .collect();
     let ncols = cells.iter().map(Vec::len).max().unwrap_or(0);
-    let widths: Vec<usize> = (0..ncols)
+    let natural: Vec<usize> = (0..ncols)
         .map(|c| cells.iter().filter_map(|r| r.get(c)).map(|s| width(s)).max().unwrap_or(0))
         .collect();
+    let widths = fit_widths(&natural, cols.saturating_sub(3 * ncols.saturating_sub(1)));
     let sep = Style::new().fg(theme.border);
     let mut out = vec![];
     for (r, row) in cells.iter().enumerate() {
         let is_header = header && r == 0;
         let style =
             if is_header { Style::new().add_modifier(Modifier::BOLD) } else { Style::default() };
-        let mut spans = vec![];
-        for (c, w) in widths.iter().enumerate() {
-            if c > 0 {
-                spans.push(Span::styled(" │ ", sep));
+        let wrapped: Vec<Vec<String>> = widths
+            .iter()
+            .enumerate()
+            .map(|(c, w)| {
+                let text = split_long_words(row.get(c).map(String::as_str).unwrap_or(""), *w);
+                wrap(&text, *w, usize::MAX)
+            })
+            .collect();
+        let height = wrapped.iter().map(Vec::len).max().unwrap_or(0).max(1);
+        for n in 0..height {
+            let mut spans = vec![];
+            for (c, w) in widths.iter().enumerate() {
+                if c > 0 {
+                    spans.push(Span::styled(" │ ", sep));
+                }
+                let text = wrapped[c].get(n).map(String::as_str).unwrap_or("");
+                let pad = " ".repeat(w.saturating_sub(width(text)));
+                spans.push(Span::styled(format!("{text}{pad}"), style));
             }
-            let text = row.get(c).map(String::as_str).unwrap_or("");
-            spans.push(Span::styled(format!("{text}{}", " ".repeat(w - width(text))), style));
+            out.push(Line::from(spans));
         }
-        out.push(Line::from(spans));
         if is_header {
             let rule: Vec<String> = widths.iter().map(|w| "─".repeat(*w)).collect();
             out.push(Line::from(Span::styled(rule.join("─┼─"), sep)));
@@ -203,6 +268,44 @@ mod tests {
 
     fn plain(lines: &[Line]) -> Vec<String> {
         lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect()).collect()
+    }
+
+    #[test]
+    fn columns_keep_their_width_when_it_fits_and_share_the_rest_when_not() {
+        assert_eq!(fit_widths(&[2, 10, 30], 60), [2, 10, 30], "room for all");
+        assert_eq!(fit_widths(&[2, 40, 60], 50), [2, 24, 24], "the narrow one keeps its own");
+        assert_eq!(fit_widths(&[2, 10, 60], 40), [2, 10, 28], "the rest to the widest");
+        assert_eq!(fit_widths(&[30, 30], 4), [2, 2], "never under a little");
+    }
+
+    #[test]
+    fn a_wide_table_wraps_its_cells_within_the_width() {
+        let theme = Theme::builtin("dark").unwrap();
+        let rt = RichText::from_markdown(
+            "| # | Test | Fails when |\n|---|---|---|\n| 1 | Effective date consistency | benefit_at is not a date, or its month differs |",
+        );
+        let shown = plain(&lines(&rt, &theme, 40));
+        assert!(shown.iter().all(|l| width(l) <= 40), "{shown:#?}");
+        assert_eq!(shown[0].trim_end(), "# │ Test             │ Fails when", "{shown:#?}");
+        assert!(shown[2].starts_with("1 │ Effective date   │ benefit_at is"), "{shown:#?}");
+        assert!(shown[3].starts_with("  │ consistency      │ not a date, or"), "{shown:#?}");
+        assert_eq!(
+            shown[5].trim_end(),
+            "  │                  │ differs",
+            "a row as tall as its tallest cell"
+        );
+    }
+
+    #[test]
+    fn a_word_wider_than_its_column_is_split_not_cut() {
+        let theme = Theme::builtin("dark").unwrap();
+        let rt = RichText::from_markdown(
+            "| a | b |\n|---|---|\n| EXCLUDED_PENSION_ID_COUNT | the pensions failing a test |",
+        );
+        let shown = plain(&lines(&rt, &theme, 24));
+        let first: String =
+            shown[2..].iter().map(|l| l.split(" │ ").next().unwrap().trim()).collect();
+        assert_eq!(first, "EXCLUDED_PENSION_ID_COUNT", "{shown:#?}");
     }
 
     #[test]

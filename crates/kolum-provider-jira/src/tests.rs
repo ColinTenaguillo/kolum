@@ -320,7 +320,7 @@ fn data_center_sprints_and_wiki_descriptions_are_read() {
     dto.fields.insert("description".into(), serde_json::json!("h2. Steps\n\nIt *fails*."));
     let issue = map::issue(&dto, &ctx()).unwrap();
     assert_eq!(issue.sprint, Some(Sprint { id: "3".into(), name: "Sprint 3".into() }));
-    assert_eq!(issue.description.plain_text(), "h2. Steps\nIt *fails*.");
+    assert_eq!(issue.description.to_markdown(), "## Steps\n\nIt **fails**.\n");
 }
 
 #[test]
@@ -374,6 +374,9 @@ fn route(method: &str, target: &str) -> Option<(&'static str, &'static str)> {
             return Some(("201 Created", fixture!("comment_created.json")));
         }
         ("POST", "/gateway/api/graphql") => return Some(("200 OK", fixture!("field_layout.json"))),
+        ("POST", "/rest/api/3/issue/bulkfetch") => {
+            return Some(("200 OK", fixture!("bulkfetch.json")));
+        }
         ("POST", "/rest/api/3/issue") => {
             return Some(("201 Created", r#"{"id":"10100","key":"ACME-5","self":"x"}"#));
         }
@@ -386,9 +389,19 @@ fn route(method: &str, target: &str) -> Option<(&'static str, &'static str)> {
             "/rest/api/3/field" => fixture!("fields.json"),
             "/_edge/tenant_info" => r#"{"cloudId": "cloud-1"}"#,
             "/rest/agile/1.0/board" => fixture!("boards.json"),
-            "/rest/agile/1.0/board/42" => fixture!("board.json"),
-            "/rest/agile/1.0/board/42/configuration" => fixture!("board_configuration.json"),
-            "/rest/agile/1.0/board/42/issue" => fixture!("board_issues.json"),
+            // Board 7: the same, on a Jira whose private API does not answer.
+            "/rest/agile/1.0/board/42" | "/rest/agile/1.0/board/7" => fixture!("board.json"),
+            "/rest/agile/1.0/board/42/configuration" | "/rest/agile/1.0/board/7/configuration" => {
+                fixture!("board_configuration.json")
+            }
+            "/rest/greenhopper/1.0/rapidviewconfig/editmodel.json"
+                if target.contains("rapidViewId=42") =>
+            {
+                fixture!("board_editmodel.json")
+            }
+            "/rest/agile/1.0/board/42/issue" | "/rest/agile/1.0/board/7/issue" => {
+                fixture!("board_issues.json")
+            }
             "/rest/api/3/issue/ACME-5" if target.contains("expand=changelog") => {
                 fixture!("issue_changelog.json")
             }
@@ -531,10 +544,86 @@ async fn the_provider_reads_a_board_end_to_end() {
         "{issue_request}"
     );
     assert!(
-        seen.iter().any(|r| r.contains("jql=updated+%3E%3D+%222026-09-01+09%3A00%22")),
+        !issue_request.contains("description"),
+        "Cloud sends a board's descriptions as wiki markup: the bulk read brings them: {issue_request}"
+    );
+    assert!(
+        seen.iter().any(|r| r.contains("%29+AND+updated+%3E%3D+%222026-09-01+09%3A00%22")),
         "{seen:?}"
     );
     assert!(seen.iter().any(|r| r.contains("/sprint?state=active%2Cfuture")), "{seen:?}");
+    let sub = "%28resolution+%3D+EMPTY+OR+resolution+changed+after+-2w%29+AND+\
+               %28status+not+in+%2810002%29+OR+resolved+is+EMPTY+OR+resolved+%3E%3D+startOfDay%28-1w%29%29";
+    let issue_requests: Vec<_> =
+        seen.iter().filter(|r| r.starts_with("/rest/agile/1.0/board/42/issue")).collect();
+    assert!(
+        issue_requests.len() == 2 && issue_requests.iter().all(|r| r.contains(sub)),
+        "the board's sub-filter and its cutoff for completed issues on every page, as the web \
+         board applies them: {issue_requests:?}"
+    );
+}
+
+#[tokio::test]
+async fn without_the_private_api_the_board_keeps_its_sub_filter_alone() {
+    let jira = fake_jira(None).await;
+    let p = provider(&jira);
+    let board = p.board(&BoardId::new("7")).await.unwrap();
+    assert_eq!(board.columns.len(), 4);
+    p.board_issues(&BoardId::new("7"), None, None).await.unwrap();
+    let seen = jira.seen.lock().unwrap().clone();
+    let issues = seen.iter().find(|r| r.starts_with("/rest/agile/1.0/board/7/issue")).unwrap();
+    assert!(
+        issues.contains("jql=%28resolution+%3D+EMPTY") && !issues.contains("resolved"),
+        "{issues}"
+    );
+}
+
+/// The order, and what is still on the board: only keys, a thousand to a page.
+#[tokio::test]
+async fn the_board_keys_come_in_its_order_and_its_scope() {
+    let jira = fake_jira(None).await;
+    let p = provider(&jira);
+    let keys = p.board_keys(&BoardId::new("42")).await.unwrap();
+    assert_eq!(keys.iter().map(IssueKey::as_str).collect::<Vec<_>>(), ["ACME-5", "ACME-6"]);
+    let seen = jira.seen.lock().unwrap().clone();
+    let asked = seen.iter().find(|r| r.starts_with("/rest/agile/1.0/board/42/issue")).unwrap();
+    assert!(
+        asked.contains("fields=key")
+            && asked.contains("maxResults=1000")
+            && asked.contains("jql=%28resolution+%3D+EMPTY"),
+        "{asked}"
+    );
+}
+
+#[tokio::test]
+async fn the_board_sub_filter_is_read_when_the_board_was_not() {
+    let jira = fake_jira(None).await;
+    provider(&jira).board_issues(&BoardId::new("42"), None, None).await.unwrap();
+    let seen = jira.seen.lock().unwrap().clone();
+    let issues = seen.iter().find(|r| r.starts_with("/rest/agile/1.0/board/42/issue")).unwrap();
+    assert!(issues.contains("jql=%28resolution+%3D+EMPTY"), "{issues}");
+    assert!(issues.contains("resolved+%3E%3D+startOfDay%28-1w%29"), "{issues}");
+}
+
+#[tokio::test]
+async fn issues_are_read_in_full_with_their_comments_and_history_in_one_request() {
+    let jira = fake_jira(None).await;
+    let p = provider(&jira);
+    assert!(p.capabilities().supports(Capability::BulkRead));
+    let read = p.issues_in_full(&[IssueKey::new("ACME-5")]).await.unwrap();
+    assert_eq!(read.len(), 1);
+    assert_eq!(read[0].issue.title, "Login times out after SSO redirect");
+    assert_eq!(read[0].comments[0].body.plain_text(), "I can reproduce with MFA on.");
+    assert_eq!(read[0].comments.len(), 2, "one comment of an odd shape leaves the others");
+    assert_eq!(read[0].activity[0].changes[0].to.as_deref(), Some("In Progress"));
+    let seen = jira.seen.lock().unwrap().clone();
+    let asked = seen.iter().find(|r| r.contains("bulkfetch")).unwrap();
+    assert!(
+        asked.contains(r#""issueIdsOrKeys":["ACME-5"]"#)
+            && asked.contains(r#""fields":["*all"]"#)
+            && asked.contains(r#""expand":["changelog"]"#),
+        "{asked}"
+    );
 }
 
 #[tokio::test]

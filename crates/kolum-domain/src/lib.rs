@@ -21,8 +21,8 @@ pub use issue::{
     IssueUpdate, LayoutField, NewIssue, Priority, Sprint, Status, StatusCategory, Transition, User,
 };
 pub use ports::{
-    BoardSource, Capabilities, Capability, IssueReader, IssueSearch, IssueWriter, Page, PageToken,
-    Provider, Rank, UserDirectory,
+    BULK_READ_MAX, BoardSource, Capabilities, Capability, IssueInFull, IssueReader, IssueSearch,
+    IssueWriter, Page, PageToken, Provider, Rank, UserDirectory,
 };
 pub use query::{Filter, Query, UserSel};
 pub use rich_text::RichText;

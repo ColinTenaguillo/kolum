@@ -1,8 +1,8 @@
 //! Jira's shapes to the domain's: the anti-corruption layer. Every Jira
 //! word (statusCategory, hierarchyLevel, customfield_10020) stops here.
 
-use crate::adf;
 use crate::dto::*;
+use crate::{adf, wiki};
 use kolum_domain::*;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -346,21 +346,10 @@ fn sprint(value: &Value) -> Option<Sprint> {
 
 fn description(value: Option<&Value>) -> RichText {
     match value {
-        Some(Value::String(text)) => wikitext(text),
+        Some(Value::String(text)) => wiki::to_rich_text(text),
         Some(doc @ Value::Object(_)) => adf::to_rich_text(doc),
         _ => RichText::default(),
     }
-}
-
-/// Data Center sends wiki markup. Until it has its own reader, each
-/// paragraph is kept as plain text: the words survive, the markup shows.
-fn wikitext(text: &str) -> RichText {
-    let blocks = text
-        .split("\n\n")
-        .filter(|p| !p.trim().is_empty())
-        .map(|p| rich_text::Block::Paragraph(vec![rich_text::Inline::text(p.trim())]))
-        .collect();
-    RichText { blocks, lossy: false }
 }
 
 fn field_value(value: &Value) -> Option<FieldValue> {

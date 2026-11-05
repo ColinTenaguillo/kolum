@@ -50,7 +50,7 @@ The defaults follow vim. Counts work on motions (`3j`, `5G`), sequences wait
 | `Ctrl-d` `Ctrl-u` | half a page |
 | `Enter` `gd` | open the issue |
 | `gp` | open its parent (the epic), from the card or the issue |
-| `/` then `n` `N` | filter the board as you type, step through matches; `/@me`, `/@ana #bug`, `/l:backend login` take the picker's prefixes |
+| `/` then `n` `N` | filter the board as you type, step through matches; `/@me`, `/@ana #bug`, `/l:backend login` take the picker's prefixes; the filter applied (`Enter`, `Space u`) is remembered, `Esc` clears it |
 | `Space f` | find an issue: fuzzy, with `@me` `@name` `#bug` `s:review` `l:backend` `e:PROJ-10` `sp:14` |
 | `Space F` | search the provider (`Ctrl-Space` switches in the picker); `!` starts raw JQL; a key (`IC-12983`) or a number alone (`12983`, in the board's project) finds that issue |
 | `Space b` | switch board |
@@ -110,6 +110,7 @@ theme = "kanagawa"
 images = "auto"                   # auto, halfblocks, off: avatars in the issue view                # dark light kanagawa catppuccin tokyonight gruvbox
 hide_empty_columns = true
 sync_secs = 30                    # what changed on the board, every 30 s, and 5 s after each change of yours (Jira automations); 0: only on r
+# filter = "@me"                  # the board filter at the first start; then the last one applied
 card_fields = ["type", "key", "priority", "labels", "epic", "estimate", "assignee"]
 detail_fields = ["status", "assignee", "reporter", "priority", "sprint", "epic", "labels", "customfield_10016"]  # unset: the fields Jira Cloud's web view shows, in its order, pinned ones first; elsewhere every field the issue fills
 # detail_sections = ["Bug report"]  # rich text fields under the description; unset: the web view's body order, or every one filled
@@ -142,9 +143,20 @@ the tokens it changes, the same way `[theme.overrides]` does. Theme tokens:
 `label_palette`. `bg = "reset"` leaves the terminal's own background, transparency included.
 
 The last board of each profile is kept in `~/.cache/kolum/<profile>/`: at
-start it is on screen at once, marked "cached, syncing…", while only the issues
-changed since are fetched. An issue that left the board is only dropped by a
-full reload (`r`).
+start it is on screen at once, marked "cached, syncing…", while the whole board
+is read again. After that, every `sync_secs` fetches the issues changed since
+and the board's order (only its keys, as a rank changes no issue): a card moved
+elsewhere takes its place, and one that left the board (a completed one past
+the board's "hide completed issues older than") goes.
+Each issue is kept there too, read in full with its comments and history, so
+its view is whole at once: on Jira Cloud the board's issues are prefetched in
+the background, 100 to a request, and after that only those updated since; a
+refusal (a rate limit) stops the prefetch until the next start. An issue not
+read for 30 days goes.
+
+On Jira, the board shows what its web board shows: the board's sub-filter is
+applied, and so is "hide completed issues older than", read from Jira's private
+API when it answers.
 
 Avatars and attachments: the issue view shows the assignee's avatar, lists the
 issue's attachments, and previews the first picture among them. In kitty, Ghostty, WezTerm,
@@ -221,8 +233,9 @@ against your own site, see `crates/kolum-provider-jira/tests/live.rs`; they are
 ignored by default and write only with `KOLUM_LIVE_WRITES=1`.
 
 Data Center is designed in (`flavor`: REST v2, a Bearer token, user names)
-but untested against a live server; its wiki markup is read as plain text and
-written as Markdown for now.
+but untested against a live server; its wiki markup is read (headings, lists,
+marks, `{{code}}`, links, `{code}`, quotes, panels, tables) and written as
+Markdown for now. Jira Cloud sends a board's descriptions in the same markup.
 
 ## GitHub Projects
 

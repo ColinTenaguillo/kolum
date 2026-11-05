@@ -100,8 +100,6 @@ impl DetailView {
         let issue = &self.issue;
         let [head, body] =
             Layout::vertical([Constraint::Length(HEADER_ROWS), Constraint::Min(0)]).areas(area);
-        let band = Rect { height: 4, ..head };
-        frame.render_widget(Block::new().style(Style::new().bg(theme.selection)), band);
         frame.render_widget(Paragraph::new(header(issue, theme, head.width)), head);
 
         let side = body.width >= SIDE_BY_SIDE_MIN_WIDTH;
@@ -296,9 +294,8 @@ impl DetailView {
 /// The crumbs, the title, a blank line, the status and who reported it.
 const HEADER_ROWS: u16 = 7;
 
-/// gh-dash's preview header, on a band of the selection the caller
-/// paints: the crumbs, the title bold in the middle of three rows; then the status as a pill and
-/// who opened the issue, when.
+/// gh-dash's preview header: the crumbs, the title bold in the middle of
+/// three rows; then the status as a pill and who opened the issue, when.
 fn header(issue: &Issue, theme: &Theme, cols: u16) -> Vec<Line<'static>> {
     let muted = Style::new().fg(theme.muted);
     let mut crumbs = vec![Span::raw(" ")];

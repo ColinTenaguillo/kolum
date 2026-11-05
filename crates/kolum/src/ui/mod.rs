@@ -21,7 +21,7 @@ use crate::theme::{self, Theme};
 use board::{BoardView, DrawCtx};
 use detail::DetailView;
 use input::Input;
-use kolum_app::{Command, Event};
+use kolum_app::{Command, Event, IssueDetail};
 use kolum_domain::{IssueKey, User};
 use picker::{AnyPicker, Pick, Picker, Waker};
 use ratatui::Frame;
@@ -242,6 +242,13 @@ pub struct App {
     /// The field layout of each project's issue types, by `layout_key`: an
     /// issue opens with its type's before its own arrive.
     layouts: std::collections::BTreeMap<String, kolum_domain::FieldLayout>,
+    /// The last full read of each issue, opened or prefetched: it opens from
+    /// there, comments and history included, rather than from the board's
+    /// copy, which lacks fields.
+    read: std::collections::HashMap<IssueKey, IssueDetail>,
+    /// `e` on an issue with no read as new as the board's copy: its editor
+    /// opens once it has been read.
+    describe_after: Option<IssueKey>,
     remote_debounce: std::time::Duration,
     /// The time of the key being handled, for the debounce.
     now: Instant,
@@ -292,6 +299,7 @@ impl App {
         let mut board = BoardView::default();
         board.hide_empty = settings.ui.hide_empty_columns;
         board.swimlanes = settings.ui.swimlanes;
+        board.filter = settings.ui.filter.clone();
         App {
             keymap: settings.keymap,
             resolver: Resolver::default(),
@@ -326,6 +334,8 @@ impl App {
             viewer: None,
             help_filter: String::new(),
             layouts: Default::default(),
+            read: Default::default(),
+            describe_after: None,
             remote_debounce: settings.remote_debounce,
             now: Instant::now(),
             ledger: kolum_app::Ledger::default(),
@@ -490,13 +500,33 @@ impl App {
     }
 
     pub fn on_event(&mut self, event: Event) {
-        if let Event::IssueLoaded(detail) = &event
-            && let Some(layout) = &detail.layout
-        {
-            self.layouts.insert(kolum_app::layout_key(&detail.issue), layout.clone());
+        if let Event::IssueLoaded(detail) = &event {
+            if let Some(layout) = &detail.layout {
+                self.layouts.insert(kolum_app::layout_key(&detail.issue), layout.clone());
+            }
+            self.read.insert(detail.issue.key.clone(), (**detail).clone());
+            if self.describe_after.as_ref() == Some(&detail.issue.key) {
+                let key = detail.issue.key.clone();
+                self.describe_after = None;
+                self.said_done(&reading(&key));
+                self.edit(EditPurpose::Describe(key));
+            }
         }
         match event {
             Event::FieldLayouts(kept) => self.layouts.extend(kept),
+            // Only a newer copy replaces one: a prefetch has no children,
+            // what an opening read does.
+            Event::ReadIssues(read) => {
+                for detail in read {
+                    let newer = self
+                        .read
+                        .get(&detail.issue.key)
+                        .is_none_or(|kept| detail.issue.updated > kept.issue.updated);
+                    if newer {
+                        self.read.insert(detail.issue.key.clone(), detail);
+                    }
+                }
+            }
             Event::Me(user) => {
                 self.board.me = Some(user.id.clone());
                 self.me = Some(user);
@@ -504,6 +534,9 @@ impl App {
             }
             Event::BoardLoaded { snapshot, fresh } => {
                 self.board_cached = !fresh;
+                if fresh {
+                    self.said_done(REFRESHING);
+                }
                 if fresh && self.sync_due.is_none() {
                     self.sync_due = self.next_sync(self.now);
                 }
@@ -517,6 +550,7 @@ impl App {
             // In place of the open issue, if any: `gp` waits on the parent there.
             Event::IssueLoaded(detail) if self.opening.as_ref() == Some(&detail.issue.key) => {
                 self.opening = None;
+                self.said_done(&opening(&detail.issue.key));
                 let mut view = DetailView::new(detail.issue.clone());
                 view.loaded = Some(*detail);
                 self.detail = Some(view);
@@ -620,6 +654,14 @@ impl App {
         self.message = Some((text.into(), level));
     }
 
+    /// `said` goes once what it waited for has come, unless something else
+    /// was said since.
+    fn said_done(&mut self, said: &str) {
+        if self.message.as_ref().is_some_and(|(text, _)| text == said) {
+            self.message = None;
+        }
+    }
+
     fn unavailable(&mut self, action: Action) {
         self.say(format!("`{}` is not available yet", action.name()), Level::Warn);
     }
@@ -637,7 +679,7 @@ impl App {
             Action::Refresh => {
                 let id = self.board.snapshot.as_ref().map(|s| s.board.id.clone());
                 self.effects.push(Effect::Send(Command::ReloadBoard(id)));
-                self.say("Refreshing…", Level::Info);
+                self.say(REFRESHING, Level::Info);
             }
             Action::PickerIssues => self.open_issue_picker(),
             Action::PickerRemote => {
@@ -679,6 +721,9 @@ impl App {
                 self.undo_theme_preview();
                 if self.prompt.take().is_some_and(|p| p.kind == PromptKind::Filter) {
                     self.set_filter(String::new());
+                    if self.help.is_none() {
+                        self.save_state();
+                    }
                 }
             }
             Focus::Viewer => self.viewer = None,
@@ -718,6 +763,7 @@ impl App {
             Action::ClearFilter => {
                 b.filter.clear();
                 b.clamp();
+                self.save_state();
             }
             Action::Filter => {
                 let mut input = Input::default();
@@ -824,6 +870,7 @@ impl App {
         }
         self.board.filter = words.join(" ");
         self.board.clamp();
+        self.save_state();
         let msg = if everyone || tokens.is_empty() {
             "Everyone's cards".to_string()
         } else {
@@ -865,6 +912,7 @@ impl App {
         let state = crate::config::UiState {
             hide_empty_columns: self.board.hide_empty,
             swimlanes: self.board.swimlanes,
+            filter: self.board.filter.clone(),
         };
         self.effects.push(Effect::SaveState(state));
     }
@@ -1329,6 +1377,20 @@ impl App {
 
     /// The detail's copy of the issue when it is the open one: the board's
     /// lacks the fields Jira sends for one issue only.
+    /// The issue whole, from its last full read brought up to the board's
+    /// copy; `None` when no read is as new as that copy, whose description
+    /// is missing or lacks what Markdown cannot hold.
+    fn issue_in_full(&self, key: &IssueKey) -> Option<kolum_domain::Issue> {
+        let read = &self.read.get(key)?.issue;
+        let Some(board) = self.issue(key) else { return Some(read.clone()) };
+        if board.updated > read.updated {
+            return None;
+        }
+        let mut whole = read.clone();
+        refresh_detail(&mut whole, board);
+        Some(whole)
+    }
+
     fn full_issue(&self, key: &IssueKey) -> Option<&kolum_domain::Issue> {
         let open = self.detail.as_ref().map(|d| &d.issue).filter(|i| &i.key == key);
         open.or_else(|| self.issue(key))
@@ -1339,11 +1401,7 @@ impl App {
             let Some(issue) = self.full_issue(key) else { return };
             let rich = rich_value(issue, &field.id);
             let name = &field.name;
-            let flattened = if rich.lossy {
-                "Jira holds things here that Markdown cannot keep (images, colours, expands): saving rewrites the field without them. "
-            } else {
-                ""
-            };
+            let flattened = if rich.lossy { LOSSY } else { "" };
             let text = format!(
                 "{}\n\n{MARKER} {name} of {}, in Markdown above this line. {flattened}Empty or unchanged leaves it as it is. -->\n",
                 rich.to_markdown().trim(),
@@ -1352,21 +1410,27 @@ impl App {
             self.effects.push(Effect::Edit { purpose, text });
             return;
         }
-        let (EditPurpose::Comment(key) | EditPurpose::Describe(key)) = &purpose else { return };
-        let Some(issue) = self.issue(key) else { return };
-        let text = match &purpose {
-            EditPurpose::Comment(_) => format!(
-                "\n\n{MARKER} a comment on {}: {}. Markdown above this line; leave it empty to cancel. -->\n",
-                issue.key, issue.title
-            ),
-            EditPurpose::Create { .. } | EditPurpose::Field { .. } => return,
-            EditPurpose::Describe(_) => format!(
-                "# {}\n\n{}\n{MARKER} {}: the first `# ` line is the title, the rest the description, in Markdown. -->\n",
+        if let EditPurpose::Describe(key) = &purpose {
+            let Some(issue) = self.issue_in_full(key) else {
+                self.describe_after = Some(key.clone());
+                self.say(reading(key), Level::Info);
+                return self.effects.push(Effect::Send(Command::LoadIssue(key.clone())));
+            };
+            let flattened = if issue.description.lossy { LOSSY } else { "" };
+            let text = format!(
+                "# {}\n\n{}\n{MARKER} {}: the first `# ` line is the title, the rest the description, in Markdown. {flattened}-->\n",
                 issue.title,
                 issue.description.to_markdown(),
                 issue.key
-            ),
-        };
+            );
+            return self.effects.push(Effect::Edit { purpose, text });
+        }
+        let EditPurpose::Comment(key) = &purpose else { return };
+        let Some(issue) = self.issue(key) else { return };
+        let text = format!(
+            "\n\n{MARKER} a comment on {}: {}. Markdown above this line; leave it empty to cancel. -->\n",
+            issue.key, issue.title
+        );
         self.effects.push(Effect::Edit { purpose, text });
     }
 
@@ -1421,7 +1485,11 @@ impl App {
 
     /// The title and the description back from `$EDITOR`.
     fn save_description(&mut self, key: IssueKey, text: &str) {
-        let Some(issue) = self.issue(&key) else { return };
+        let Some(issue) = self.issue_in_full(&key) else {
+            let why = format!("{key} changed meanwhile: nothing saved; `e` reads it again");
+            return self.say(why, Level::Warn);
+        };
+        let issue = &issue;
         let update = description_update(issue, text);
         if update == kolum_domain::IssueUpdate::default() {
             return self.say("No change", Level::Info);
@@ -1537,19 +1605,30 @@ impl App {
         frame.render_widget(line, Rect { y: inner.y + inner.height / 2, height: 1, ..inner });
     }
 
-    /// Opens at once from the board's copy; an issue not on the board (a
-    /// remote search hit) opens when it has been read.
+    /// Opens at once from the board's copy, over what its last opening read
+    /// if any; an issue not on the board (a remote search hit) opens when it
+    /// has been read.
     fn open_detail(&mut self, key: IssueKey) {
         let issue =
             self.board.snapshot.as_ref().and_then(|s| s.issues.iter().find(|i| i.key == key));
         match issue {
             Some(issue) => {
-                self.detail = Some(DetailView::new(issue.clone()));
+                let view = match self.read.get(&key) {
+                    Some(read) => {
+                        let mut read = read.clone();
+                        refresh_detail(&mut read.issue, issue);
+                        let mut view = DetailView::new(read.issue.clone());
+                        view.loaded = Some(read);
+                        view
+                    }
+                    None => DetailView::new(issue.clone()),
+                };
+                self.detail = Some(view);
                 self.opening = None;
                 self.want_avatar();
             }
             None => {
-                self.say(format!("Opening {key}…"), Level::Info);
+                self.say(opening(&key), Level::Info);
                 self.opening = Some(key.clone());
             }
         }
@@ -1569,8 +1648,12 @@ impl App {
         self.history_pos = None;
     }
 
+    /// The board's issues, each as read whole when it has been: the board's
+    /// copy has no description on Jira Cloud.
     fn open_issue_picker(&mut self) {
-        let issues = self.board.snapshot.as_ref().map(|s| s.issues.clone()).unwrap_or_default();
+        let board = self.board.snapshot.as_ref().map(|s| s.issues.as_slice()).unwrap_or_default();
+        let issues =
+            board.iter().map(|i| self.issue_in_full(&i.key).unwrap_or_else(|| i.clone())).collect();
         let me = self.me.as_ref().map(|u| u.id.clone());
         self.open_picker(Box::new(Picker::new(
             sources::IssueSource { issues, me, remote: None },
@@ -1800,6 +1883,9 @@ impl App {
                 }
                 if prompt.kind == PromptKind::Field {
                     self.confirm_field(prompt.input.text());
+                }
+                if prompt.kind == PromptKind::Filter && self.help.is_none() {
+                    self.save_state();
                 }
             }
             _ => {}
@@ -2099,8 +2185,21 @@ fn rich_value(issue: &kolum_domain::Issue, id: &kolum_domain::FieldId) -> kolum_
     }
 }
 
-/// The board's copy of the open issue, keeping the fields only the detail
-/// loaded: Jira sends rich text fields for one issue, not for a board.
+const REFRESHING: &str = "Refreshing…";
+
+const LOSSY: &str = "Jira holds things here that Markdown cannot keep (images, colours, expands): saving rewrites the field without them. ";
+
+fn reading(key: &IssueKey) -> String {
+    format!("Reading {key}…")
+}
+
+fn opening(key: &IssueKey) -> String {
+    format!("Opening {key}…")
+}
+
+/// The board's copy of the open issue, keeping what the detail read
+/// better: Jira sends rich text fields for one issue and not for a board,
+/// and Jira Cloud sends a board its descriptions as wiki markup.
 fn refresh_detail(shown: &mut kolum_domain::Issue, fresh: &kolum_domain::Issue) {
     let only_here: Vec<_> = shown
         .fields
@@ -2108,8 +2207,10 @@ fn refresh_detail(shown: &mut kolum_domain::Issue, fresh: &kolum_domain::Issue) 
         .filter(|f| !fresh.fields.iter().any(|x| x.id == f.id))
         .cloned()
         .collect();
+    let description = std::mem::take(&mut shown.description);
     *shown = fresh.clone();
     shown.fields.extend(only_here);
+    shown.description = description;
 }
 
 /// `# Title` then Markdown, against the issue as it is: only what moved is

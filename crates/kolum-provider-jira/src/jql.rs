@@ -86,6 +86,51 @@ pub fn updated_since(t: OffsetDateTime) -> String {
     format!("updated >= \"{}\"", t.format(&format).unwrap_or_default())
 }
 
+/// What a board's web view shows of its filter.
+#[derive(Debug, Clone, Default)]
+pub struct Scope {
+    pub sub_query: Option<String>,
+    /// "Hide completed issues older than", as Jira gives it: `-1w`.
+    pub done_cutoff: Option<String>,
+    /// The statuses of the last column, the only one the cutoff empties.
+    pub done_statuses: Vec<String>,
+}
+
+/// The JQL of a page of board issues, as its web board shows them: its
+/// sub-filter, without the last column's issues resolved before the cutoff,
+/// then the incremental clause.
+pub fn board_issues(scope: &Scope, since: Option<OffsetDateTime>) -> Option<String> {
+    let sub = scope.sub_query.as_deref().map(str::trim).filter(|q| !q.is_empty());
+    let sub = sub.map(|q| format!("({q})"));
+    let ids: Vec<&str> = scope
+        .done_statuses
+        .iter()
+        .map(String::as_str)
+        .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+        .collect();
+    let elsewhere = if ids.is_empty() {
+        String::new()
+    } else {
+        format!("status not in ({}) OR ", ids.join(", "))
+    };
+    let cutoff = scope
+        .done_cutoff
+        .as_deref()
+        .filter(|c| is_relative_date(c))
+        // In whole days, as the web board counts them.
+        .map(|c| format!("({elsewhere}resolved is EMPTY OR resolved >= startOfDay({c}))"));
+    let parts: Vec<String> =
+        sub.into_iter().chain(cutoff).chain(since.map(updated_since)).collect();
+    (!parts.is_empty()).then(|| parts.join(" AND "))
+}
+
+/// `-1w`, `-12d`: what the cutoff holds, and nothing else goes into JQL.
+fn is_relative_date(s: &str) -> bool {
+    s.strip_prefix('-')
+        .and_then(|n| n.strip_suffix(['d', 'w']))
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +206,60 @@ mod tests {
     fn the_incremental_clause_is_in_utc_minutes() {
         let t = time::macros::datetime!(2026-09-01 11:07:59 +02:00);
         assert_eq!(updated_since(t), "updated >= \"2026-09-01 09:07\"");
+    }
+
+    fn scope(sub: Option<&str>, cutoff: Option<&str>, done: &[&str]) -> Scope {
+        Scope {
+            sub_query: sub.map(String::from),
+            done_cutoff: cutoff.map(String::from),
+            done_statuses: done.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn the_board_query_is_its_sub_filter_and_the_incremental_clause() {
+        let t = time::macros::datetime!(2026-09-01 9:07 UTC);
+        let sub = scope(Some("resolved >= -2w OR resolved is EMPTY"), None, &[]);
+        assert_eq!(
+            board_issues(&sub, None).as_deref(),
+            Some("(resolved >= -2w OR resolved is EMPTY)")
+        );
+        assert_eq!(
+            board_issues(&sub, Some(t)).as_deref(),
+            Some("(resolved >= -2w OR resolved is EMPTY) AND updated >= \"2026-09-01 09:07\"")
+        );
+        assert_eq!(
+            board_issues(&scope(None, None, &[]), Some(t)).as_deref(),
+            Some("updated >= \"2026-09-01 09:07\"")
+        );
+        let blank = scope(Some("  "), None, &[]);
+        assert_eq!(board_issues(&blank, None), None, "a blank sub-filter is none");
+    }
+
+    /// As the web board: only the last column's completed issues are hidden.
+    #[test]
+    fn completed_issues_resolved_before_the_cutoff_leave_the_last_column() {
+        assert_eq!(
+            board_issues(&scope(Some("project = KOA"), Some("-1w"), &["10403", "10505"]), None)
+                .as_deref(),
+            Some(
+                "(project = KOA) AND (status not in (10403, 10505) OR resolved is EMPTY \
+                 OR resolved >= startOfDay(-1w))"
+            )
+        );
+        assert_eq!(
+            board_issues(&scope(None, Some("-12d"), &[]), None).as_deref(),
+            Some("(resolved is EMPTY OR resolved >= startOfDay(-12d))"),
+            "no column known: every completed issue"
+        );
+        assert_eq!(
+            board_issues(&scope(None, Some("-1w"), &["10403", "x) OR (1=1"]), None).as_deref(),
+            Some("(status not in (10403) OR resolved is EMPTY OR resolved >= startOfDay(-1w))"),
+            "a status id is digits"
+        );
+        for odd in ["", "-", "1w", "-1y", "-1w OR 1=1", "-w"] {
+            let odd = scope(None, Some(odd), &["1"]);
+            assert_eq!(board_issues(&odd, None), None, "{odd:?} is no cutoff");
+        }
     }
 }

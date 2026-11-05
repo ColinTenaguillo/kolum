@@ -45,6 +45,21 @@ pub enum Capability {
     /// The board's issues can be listed by when they changed, so a sync
     /// reads only those; without it, a sync reads the whole board again.
     ChangedSince,
+    /// Several issues with their comments and history in one request:
+    /// what a board prefetches so each opens whole.
+    BulkRead,
+}
+
+/// The most issues `issues_in_full` takes at once: Jira's limit.
+pub const BULK_READ_MAX: usize = 100;
+
+/// An issue with its comments and history, read along with others. On a
+/// long one they may be cut short; opening the issue reads them whole.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IssueInFull {
+    pub issue: Issue,
+    pub comments: Vec<Comment>,
+    pub activity: Vec<ActivityEntry>,
 }
 
 /// Where a card goes in its column's order, relative to another card.
@@ -74,14 +89,31 @@ pub trait BoardSource: Send + Sync {
     /// The columns and the statuses each one holds.
     async fn board(&self, id: &BoardId) -> Result<Board>;
     /// One page of the board's issues. With `since`, only those updated
-    /// since then: the incremental sync after a warm start, asked only of a
-    /// provider with `ChangedSince`.
+    /// since then: the periodic incremental sync, asked only of a provider
+    /// with `ChangedSince`.
     async fn board_issues(
         &self,
         id: &BoardId,
         since: Option<OffsetDateTime>,
         page: Option<PageToken>,
     ) -> Result<Page<Issue>>;
+
+    /// The keys of the board's issues in its order: what an incremental
+    /// sync reads for the order, which a rank changes without updating any
+    /// issue, and for what left the board. Every page of `board_issues`
+    /// unless the provider has a lighter way.
+    async fn board_keys(&self, id: &BoardId) -> Result<Vec<IssueKey>> {
+        let mut keys = vec![];
+        let mut token = None;
+        loop {
+            let page = self.board_issues(id, None, token).await?;
+            keys.extend(page.items.into_iter().map(|i| i.key));
+            token = page.next;
+            if token.is_none() {
+                return Ok(keys);
+            }
+        }
+    }
 
     /// The board's running and coming sprints, to put an issue in one.
     async fn sprints(&self, _board: &BoardId) -> Result<Vec<Sprint>> {
@@ -94,6 +126,12 @@ pub trait IssueReader: Send + Sync {
     async fn issue(&self, key: &IssueKey) -> Result<Issue>;
     async fn comments(&self, key: &IssueKey) -> Result<Vec<Comment>>;
     async fn activity(&self, key: &IssueKey) -> Result<Vec<ActivityEntry>>;
+
+    /// Up to `BULK_READ_MAX` issues in full, asked only of a provider with
+    /// `BulkRead`.
+    async fn issues_in_full(&self, _keys: &[IssueKey]) -> Result<Vec<IssueInFull>> {
+        Err(crate::DomainError::Unsupported(Capability::BulkRead))
+    }
 
     /// The issues whose parent it is: an epic's stories, a story's sub-tasks.
     async fn children(&self, _key: &IssueKey) -> Result<Vec<IssueRef>> {

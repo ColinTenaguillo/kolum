@@ -393,6 +393,107 @@ async fn a_board_sync_keeps_the_fields_only_the_detail_loaded() {
     assert!(screen(&mut app, 140, 40).contains("Tokens refresh before they expire"));
 }
 
+/// The board does not carry every field; an issue opened again starts from
+/// what its last opening read, so its right-hand column does not fill in twice.
+#[tokio::test]
+async fn an_issue_opened_again_starts_from_what_it_last_read() {
+    let fake = FakeProvider::new();
+    let mut app = loaded().await;
+    let mut snapshot = load_board(&fake, None).await.unwrap();
+    for issue in &mut snapshot.issues {
+        issue.fields.clear();
+    }
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true });
+    press(&mut app, "/ACME-10<CR><CR>");
+    let issue = fake.issue(&IssueKey::new("ACME-10")).await.unwrap();
+    let detail =
+        IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
+    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    press(&mut app, "q");
+    press(&mut app, "<CR>");
+    assert_eq!(selected(&app), "ACME-10");
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("Tokens refresh before they expire"), "{shown}");
+}
+
+/// What an earlier run read in full is there at the first opening.
+#[tokio::test]
+async fn an_issue_read_on_an_earlier_run_opens_with_its_fields() {
+    let fake = FakeProvider::new();
+    let mut app = loaded().await;
+    let mut snapshot = load_board(&fake, None).await.unwrap();
+    for issue in &mut snapshot.issues {
+        issue.fields.clear();
+    }
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true });
+    let issue = fake.issue(&IssueKey::new("ACME-10")).await.unwrap();
+    let comments = fake.comments(&issue.key).await.unwrap();
+    assert!(!comments.is_empty());
+    let detail = IssueDetail { issue, comments, activity: vec![], layout: None, children: vec![] };
+    app.on_event(Event::ReadIssues(vec![detail]));
+    press(&mut app, "/ACME-10<CR><CR>");
+    let shown = screen(&mut app, 140, 60);
+    assert!(shown.contains("Tokens refresh before they expire"), "{shown}");
+    assert!(shown.contains("Comments (1)"), "its comments too: {shown}");
+}
+
+/// What a run read wins over an older copy, from disk or a prefetch.
+#[tokio::test]
+async fn an_older_copy_does_not_replace_what_was_read() {
+    let fake = FakeProvider::new();
+    let mut app = loaded().await;
+    let issue = fake.issue(&IssueKey::new("ACME-10")).await.unwrap();
+    let with = |n: usize, issue: &kolum_domain::Issue| IssueDetail {
+        issue: issue.clone(),
+        comments: (0..n)
+            .map(|i| kolum_domain::Comment {
+                id: format!("c{i}"),
+                author: issue.reporter.clone().unwrap(),
+                body: kolum_domain::RichText::from_markdown("hello"),
+                created: issue.created,
+            })
+            .collect(),
+        activity: vec![],
+        layout: None,
+        children: vec![],
+    };
+    app.on_event(Event::ReadIssues(vec![with(3, &issue)]));
+    app.on_event(Event::ReadIssues(vec![with(2, &issue)]));
+    let comments = |app: &mut App| {
+        press(app, "/ACME-10<CR><CR>");
+        let shown = screen(app, 140, 60);
+        press(app, "q<Esc>");
+        shown
+    };
+    assert!(comments(&mut app).contains("Comments (3)"), "the same age: the first stays");
+    let mut newer = issue.clone();
+    newer.updated += time::Duration::minutes(1);
+    app.on_event(Event::ReadIssues(vec![with(2, &newer)]));
+    assert!(comments(&mut app).contains("Comments (2)"), "a newer one wins");
+}
+
+/// Jira Cloud sends a board's descriptions as wiki markup, an open issue's
+/// as rich text: a sync while the issue is open keeps the rich one.
+#[tokio::test]
+async fn a_board_sync_keeps_the_description_the_detail_loaded() {
+    let fake = FakeProvider::new();
+    let mut app = loaded().await;
+    press(&mut app, "/ACME-10<CR><CR>");
+    let key = IssueKey::new("ACME-10");
+    let issue = fake.issue(&key).await.unwrap();
+    let detail =
+        IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
+    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    let mut snapshot = load_board(&fake, None).await.unwrap();
+    for issue in &mut snapshot.issues {
+        issue.description = kolum_domain::RichText::from_markdown("h3. Context{{raw}}");
+    }
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true });
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("Offset pagination over a non-unique sort"), "{shown}");
+    assert!(!shown.contains("h3. Context"), "{shown}");
+}
+
 /// Unset, the right-hand column shows every field: the built-in ones, then
 /// each custom field the issue fills that is not rich text.
 #[tokio::test]
@@ -675,6 +776,78 @@ async fn a_refresh_keeps_the_highlight_on_the_same_issue() {
     assert!(screen(&mut app, 120, 30).contains("loading the board failed: transport: timed out"));
 }
 
+fn saved_filters(app: &mut App) -> Vec<String> {
+    app.take_effects()
+        .into_iter()
+        .filter_map(|e| match e {
+            Effect::SaveState(state) => Some(state.filter),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The board filter is kept for the next run once applied, not while typed.
+#[tokio::test]
+async fn the_board_filter_is_kept_when_applied_or_cleared() {
+    let mut app = loaded().await;
+    app.take_effects();
+    press(&mut app, "/@me");
+    assert!(saved_filters(&mut app).is_empty(), "not while typed");
+    press(&mut app, "<CR>");
+    assert_eq!(saved_filters(&mut app), ["@me"], "Enter");
+    press(&mut app, "/x<Esc>");
+    assert_eq!(saved_filters(&mut app), [""], "Esc clears it");
+    press(&mut app, "<Space>ubruno");
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    assert_eq!(saved_filters(&mut app), ["@BrunoCosta"], "Space u");
+    press(&mut app, "?/zz<CR>");
+    assert!(saved_filters(&mut app).is_empty(), "the help page's filter is not the board's");
+}
+
+/// The filter of the last run, or the config's, is on at start.
+#[tokio::test]
+async fn the_board_opens_with_the_kept_filter() {
+    let mut settings = settings();
+    settings.ui.filter = "ACME-29".into();
+    let mut app = loaded_with(settings).await;
+    let shown = screen(&mut app, 150, 30);
+    assert!(shown.contains("/ACME-29") && shown.contains("No cards"), "{shown}");
+}
+
+/// "Refreshing…" and "Opening…" go once what they wait for has come.
+#[tokio::test]
+async fn a_message_of_waiting_goes_once_it_is_done() {
+    let fake = FakeProvider::new();
+    let mut app = loaded().await;
+    press(&mut app, "r");
+    assert!(screen(&mut app, 150, 30).contains("Refreshing…"));
+    // The epic of ACME-9 off the board: `gp` waits for it to be read.
+    let epic = IssueKey::new("ACME-1");
+    let mut snapshot = load_board(&fake, None).await.unwrap();
+    snapshot.issues.retain(|i| i.key != epic);
+    app.on_event(Event::BoardLoaded { snapshot: snapshot.clone(), fresh: true });
+    assert!(!screen(&mut app, 150, 30).contains("Refreshing…"));
+
+    assert_eq!(selected(&app), "ACME-9");
+    press(&mut app, "gp");
+    assert!(screen(&mut app, 150, 30).contains("Opening ACME-1…"));
+    let issue = fake.issue(&epic).await.unwrap();
+    let detail =
+        IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
+    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    assert!(!screen(&mut app, 150, 30).contains("Opening ACME-1…"));
+
+    press(&mut app, "q");
+    press(&mut app, "r");
+    app.on_event(Event::Failed {
+        what: "renaming".into(),
+        error: kolum_domain::DomainError::Transport("down".into()),
+    });
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true });
+    assert!(screen(&mut app, 150, 30).contains("down"), "a message said since stays");
+}
+
 #[tokio::test]
 async fn empty_columns_can_be_hidden() {
     let mut app = loaded().await;
@@ -685,6 +858,7 @@ async fn empty_columns_can_be_hidden() {
     let saved = kolum::config::UiState {
         hide_empty_columns: true,
         swimlanes: kolum::config::Swimlanes::None,
+        filter: "ACME-29".into(),
     };
     assert_eq!(app.take_effects(), [Effect::SaveState(saved)], "kept for the next run");
     let shown = screen(&mut app, 150, 30);
@@ -1304,10 +1478,19 @@ async fn editing_sends_only_what_changed() {
     let mut app = loaded().await;
     press(&mut app, "<CR>");
     app.take_effects();
+    // The board's copy is no ground for an edit: the issue is read first.
     press(&mut app, "e");
+    let key = IssueKey::new("ACME-9");
+    assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(key.clone()))]);
+    assert!(screen(&mut app, 120, 30).contains("Reading ACME-9…"));
+    let issue = FakeProvider::new().issue(&key).await.unwrap();
+    let detail =
+        IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
+    app.on_event(Event::IssueLoaded(Box::new(detail)));
     let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else { panic!() };
-    assert_eq!(purpose, EditPurpose::Describe(IssueKey::new("ACME-9")));
+    assert_eq!(purpose, EditPurpose::Describe(key));
     assert!(text.starts_with("# Enforce SSO per organisation\n\nAn admin switch"), "{text}");
+    assert!(!screen(&mut app, 120, 30).contains("Reading ACME-9…"));
 
     app.on_edited(purpose.clone(), Ok(text.clone()));
     assert!(writes(app.take_effects()).is_empty());
@@ -1330,6 +1513,62 @@ async fn editing_sends_only_what_changed() {
         (update.title.as_ref(), update.description.as_ref().map(|d| d.plain_text())),
         (None, Some("New body".into()))
     );
+}
+
+/// An edit starts from the issue read whole, never from an older read: the
+/// board's copy lacks what Markdown cannot hold, or the description itself.
+#[tokio::test]
+async fn an_edit_starts_from_a_read_as_new_as_the_board() {
+    let fake = FakeProvider::new();
+    let mut app = loaded().await;
+    let key = IssueKey::new("ACME-9");
+    let mut read = fake.issue(&key).await.unwrap();
+    read.description = kolum_domain::RichText { lossy: true, ..read.description };
+    let detail = |issue| IssueDetail {
+        issue,
+        comments: vec![],
+        activity: vec![],
+        layout: None,
+        children: vec![],
+    };
+    app.on_event(Event::ReadIssues(vec![detail(read.clone())]));
+    app.take_effects();
+    press(&mut app, "e");
+    let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else { panic!() };
+    assert!(text.contains("An admin switch"), "{text}");
+    assert!(text.contains("Markdown cannot keep"), "the loss is said: {text}");
+
+    // The issue changed on Jira since: what is kept is not saved over it.
+    let mut snapshot = load_board(&fake, None).await.unwrap();
+    let on_board = snapshot.issues.iter_mut().find(|i| i.key == key).unwrap();
+    on_board.updated = read.updated + time::Duration::minutes(1);
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true });
+    app.on_edited(purpose, Ok(text.replace("An admin switch", "A switch")));
+    assert!(writes(app.take_effects()).is_empty(), "nothing saved");
+    assert!(screen(&mut app, 120, 30).contains("changed meanwhile"));
+    press(&mut app, "e");
+    assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(key))], "read again");
+}
+
+/// The board's copy has no description on Jira Cloud: the picker's preview
+/// takes it from the issue read whole.
+#[tokio::test]
+async fn the_picker_previews_the_description_read_whole() {
+    let fake = FakeProvider::new();
+    let mut app = loaded().await;
+    let mut snapshot = load_board(&fake, None).await.unwrap();
+    for issue in &mut snapshot.issues {
+        issue.description = kolum_domain::RichText::default();
+    }
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true });
+    let issue = fake.issue(&IssueKey::new("ACME-10")).await.unwrap();
+    let detail =
+        IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
+    app.on_event(Event::ReadIssues(vec![detail]));
+    press(&mut app, "<Space>fACME-10");
+    settle(&mut app);
+    let shown = screen(&mut app, 150, 40);
+    assert!(shown.contains("Offset pagination over a non-unique sort"), "{shown}");
 }
 
 #[tokio::test]

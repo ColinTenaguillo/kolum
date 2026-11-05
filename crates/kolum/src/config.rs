@@ -102,6 +102,9 @@ pub struct UiConfig {
     /// Seconds between two syncs of what changed on the board, as Jira's
     /// automations change it; 0 syncs only on `r`.
     pub sync_secs: u64,
+    /// The board filter at start, as typed after `/`, until one is applied:
+    /// the last one applied wins from then on.
+    pub filter: String,
 }
 
 impl Default for UiConfig {
@@ -116,6 +119,7 @@ impl Default for UiConfig {
             detail_fields: None,
             detail_sections: None,
             sync_secs: 30,
+            filter: String::new(),
         }
     }
 }
@@ -153,10 +157,13 @@ impl Default for PickerConfig {
 /// What the board toggles leave behind for the next run: `ze` and `s`.
 /// Kept apart from config.toml, which is the user's file and never
 /// rewritten.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
 pub struct UiState {
     pub hide_empty_columns: bool,
     pub swimlanes: Swimlanes,
+    /// The board filter last applied, as typed after `/`.
+    #[serde(default)]
+    pub filter: String,
 }
 
 impl UiState {
@@ -290,9 +297,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("kolum-state-{}", std::process::id()));
         let path = dir.join("state.toml");
         assert_eq!(UiState::load(&path), None);
-        let state = UiState { hide_empty_columns: true, swimlanes: Swimlanes::Assignee };
+        let state = UiState {
+            hide_empty_columns: true,
+            swimlanes: Swimlanes::Assignee,
+            filter: "@me".into(),
+        };
         state.save(&path).unwrap();
         assert_eq!(UiState::load(&path), Some(state));
+        std::fs::write(&path, "hide_empty_columns = true\nswimlanes = \"epic\"").unwrap();
+        assert_eq!(UiState::load(&path).map(|s| s.filter), Some(String::new()), "an older file");
         std::fs::write(&path, "swimlanes = 3").unwrap();
         assert_eq!(UiState::load(&path), None);
         std::fs::remove_dir_all(dir).unwrap();

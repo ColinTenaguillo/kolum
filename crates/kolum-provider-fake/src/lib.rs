@@ -343,6 +343,17 @@ impl IssueReader for FakeProvider {
         Ok(self.state().comments.get(key).cloned().unwrap_or_default())
     }
 
+    /// An unknown key fails the whole read, as a refusal would.
+    async fn issues_in_full(&self, keys: &[IssueKey]) -> Result<Vec<IssueInFull>> {
+        let mut out = vec![];
+        for key in keys {
+            let (issue, comments, activity) =
+                (self.issue(key).await?, self.comments(key).await?, self.activity(key).await?);
+            out.push(IssueInFull { issue, comments, activity });
+        }
+        Ok(out)
+    }
+
     async fn children(&self, key: &IssueKey) -> Result<Vec<IssueRef>> {
         let state = self.state();
         let child = |i: &&Issue| i.parent.as_ref().is_some_and(|p| &p.key == key);
@@ -595,6 +606,7 @@ impl Provider for FakeProvider {
             Images,
             Rank,
             ChangedSince,
+            BulkRead,
         ])
     }
 }

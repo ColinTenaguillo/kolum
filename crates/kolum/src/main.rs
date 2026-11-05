@@ -159,13 +159,16 @@ fn init_logging(debug: bool) -> Option<PathBuf> {
     let dir = config::cache_dir()?;
     std::fs::create_dir_all(&dir).ok()?;
     let appender = tracing_appender::rolling::never(&dir, "kolum.log");
-    let default = if debug { "kolum=debug,kolum_app=debug" } else { "kolum=info,kolum_app=info" };
+    let level = if debug { "debug" } else { "info" };
+    let default = ["kolum", "kolum_app", "kolum_provider_jira", "kolum_provider_github"]
+        .map(|target| format!("{target}={level}"))
+        .join(",");
     tracing_subscriber::fmt()
         .with_writer(appender)
         .with_ansi(false)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| default.into()),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default)),
         )
         .init();
     Some(dir.join("kolum.log"))
@@ -240,6 +243,7 @@ fn with_state(mut settings: Settings, state_file: Option<&std::path::Path>) -> S
     if let Some(state) = state_file.and_then(config::UiState::load) {
         settings.ui.hide_empty_columns = state.hide_empty_columns;
         settings.ui.swimlanes = state.swimlanes;
+        settings.ui.filter = state.filter;
     }
     settings
 }
@@ -443,12 +447,16 @@ mod tests {
         let (_, settings) = load(&Args::default(), None);
         let untouched = with_state(settings, Some(&path));
         assert!(!untouched.ui.hide_empty_columns, "no state yet: the config's");
-        let state =
-            config::UiState { hide_empty_columns: true, swimlanes: config::Swimlanes::Priority };
+        let state = config::UiState {
+            hide_empty_columns: true,
+            swimlanes: config::Swimlanes::Priority,
+            filter: "@me #bug".into(),
+        };
         state.save(&path).unwrap();
         let restored = with_state(untouched, Some(&path));
         assert!(restored.ui.hide_empty_columns);
         assert_eq!(restored.ui.swimlanes, config::Swimlanes::Priority);
+        assert_eq!(restored.ui.filter, "@me #bug");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -2,8 +2,8 @@
 //! authentication switching to v2 and a Bearer token on Data Center.
 //!
 //! Reads and writes: transitions, assigning, comments, edits, creating
-//! and cloning. Data Center's rich text is wiki markup, read as plain text
-//! and written as Markdown until it has a reader and a writer of its own.
+//! and cloning. Data Center's rich text is wiki markup, read by `wiki` and
+//! written as Markdown until it has a writer of its own.
 
 mod adf;
 mod client;
@@ -11,6 +11,7 @@ mod dto;
 pub mod jql;
 mod map;
 mod settings;
+mod wiki;
 
 pub use settings::{JiraFlavor, JiraSettings};
 
@@ -37,6 +38,8 @@ pub struct JiraProvider {
     ctx: OnceCell<Ctx>,
     /// The site's id for Atlassian's GraphQL gateway.
     cloud: OnceCell<String>,
+    /// What each board shows of its filter, by board id, as last read.
+    scopes: std::sync::Mutex<std::collections::HashMap<String, jql::Scope>>,
 }
 
 /// The web issue view's field layout for one issue, and the fields its
@@ -50,6 +53,7 @@ impl JiraProvider {
             settings,
             ctx: OnceCell::new(),
             cloud: OnceCell::new(),
+            scopes: Default::default(),
         }
     }
 
@@ -92,6 +96,63 @@ impl JiraProvider {
                 })
             })
             .await
+    }
+
+    /// What the board shows of its filter: as last read with the board, or
+    /// read now when the board itself was not.
+    async fn scope(&self, id: &BoardId) -> Result<jql::Scope> {
+        let known = self.scopes.lock().unwrap().get(id.as_str()).cloned();
+        if let Some(scope) = known {
+            return Ok(scope);
+        }
+        let config_path = format!("{AGILE}/board/{id}/configuration");
+        let (config, done_cutoff) = tokio::join!(
+            self.client.get::<BoardConfigDto>(&config_path, &[]),
+            self.done_cutoff(id),
+        );
+        Ok(self.remember_scope(id, &config?, done_cutoff))
+    }
+
+    fn remember_scope(
+        &self,
+        id: &BoardId,
+        config: &BoardConfigDto,
+        done_cutoff: Option<String>,
+    ) -> jql::Scope {
+        let last = config.column_config.columns.last();
+        let scope = jql::Scope {
+            sub_query: config.sub_query.as_ref().map(|q| q.query.clone()),
+            done_cutoff,
+            done_statuses: last
+                .map_or(vec![], |c| c.statuses.iter().map(|s| s.id.clone()).collect()),
+        };
+        self.scopes.lock().unwrap().insert(id.to_string(), scope.clone());
+        scope
+    }
+
+    /// shortcut: "hide completed issues older than" is only in the private
+    /// greenhopper API; read at best, the sub-filter alone when it does not
+    /// answer. Read it from the public API if Atlassian ever puts it there.
+    async fn done_cutoff(&self, id: &BoardId) -> Option<String> {
+        let query = [("rapidViewId", id.to_string())];
+        let path = "/rest/greenhopper/1.0/rapidviewconfig/editmodel.json";
+        let model: EditModelDto = (self.client.get(path, &query).await)
+            .inspect_err(|e| tracing::info!("{path}: {e}; completed issues kept"))
+            .ok()?;
+        model.old_done_issues_cutoff
+    }
+
+    /// A board page's fields: on Cloud without the description, which the
+    /// Agile API sends as wiki markup; the issue's own read and the bulk read
+    /// bring it whole.
+    async fn board_fields(&self) -> Result<String> {
+        let all = self.fields_param().await?;
+        Ok(match self.settings.flavor {
+            JiraFlavor::Cloud => {
+                all.split(',').filter(|f| *f != "description").collect::<Vec<_>>().join(",")
+            }
+            JiraFlavor::DataCenter => all,
+        })
     }
 
     async fn fields_param(&self) -> Result<String> {
@@ -158,10 +219,13 @@ impl BoardSource for JiraProvider {
     async fn board(&self, id: &BoardId) -> Result<Board> {
         let (summary_path, config_path) =
             (format!("{AGILE}/board/{id}"), format!("{AGILE}/board/{id}/configuration"));
-        let (summary, config) = tokio::try_join!(
+        let (summary, config, done_cutoff) = tokio::join!(
             self.client.get::<BoardDto>(&summary_path, &[]),
             self.client.get::<BoardConfigDto>(&config_path, &[]),
-        )?;
+            self.done_cutoff(id),
+        );
+        let (summary, config) = (summary?, config?);
+        self.remember_scope(id, &config, done_cutoff);
         Ok(map::board(&summary, &config))
     }
 
@@ -183,14 +247,36 @@ impl BoardSource for JiraProvider {
         let mut query = vec![
             ("startAt", start_at(&token)),
             ("maxResults", PAGE.to_string()),
-            ("fields", self.fields_param().await?),
+            ("fields", self.board_fields().await?),
         ];
-        if let Some(since) = since {
-            query.push(("jql", jql::updated_since(since)));
-        }
+        let scope = self.scope(id).await?;
+        query.extend(jql::board_issues(&scope, since).map(|jql| ("jql", jql)));
         let page: OffsetPage =
             self.client.get(&format!("{AGILE}/board/{id}/issue"), &query).await?;
         Ok(Page { next: offset_page(&page), items: self.issues(&page.issues).await? })
+    }
+
+    /// Only the keys, a thousand to a page, in the board's scope.
+    async fn board_keys(&self, id: &BoardId) -> Result<Vec<IssueKey>> {
+        let scope = self.scope(id).await?;
+        let jql = jql::board_issues(&scope, None);
+        let mut keys = vec![];
+        loop {
+            let mut query = vec![
+                ("startAt", keys.len().to_string()),
+                ("maxResults", KEY_PAGE.to_string()),
+                ("fields", "key".to_string()),
+            ];
+            query.extend(jql.clone().map(|jql| ("jql", jql)));
+            let page: KeyPage =
+                self.client.get(&format!("{AGILE}/board/{id}/issue"), &query).await?;
+            let next = page.start_at + page.issues.len() as u64;
+            let last = page.issues.is_empty() || next >= page.total;
+            keys.extend(page.issues.into_iter().map(|i| IssueKey::new(i.key)));
+            if last {
+                return Ok(keys);
+            }
+        }
     }
 }
 
@@ -202,6 +288,37 @@ struct WithChangelog {
 #[derive(serde::Deserialize)]
 struct Histories {
     histories: Vec<HistoryDto>,
+}
+
+/// A page of a board's issues with only their keys.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KeyPage {
+    start_at: u64,
+    total: u64,
+    issues: Vec<KeyOnly>,
+}
+
+#[derive(serde::Deserialize)]
+struct KeyOnly {
+    key: String,
+}
+
+/// The most keys Jira gives in one page of a board.
+const KEY_PAGE: u64 = 1000;
+
+/// Jira Cloud's bulk read: each issue with its `comment` field and its
+/// changelog.
+#[derive(serde::Deserialize)]
+struct BulkFetch {
+    issues: Vec<BulkIssue>,
+}
+
+#[derive(serde::Deserialize)]
+struct BulkIssue {
+    #[serde(flatten)]
+    issue: IssueDto,
+    changelog: Option<Histories>,
 }
 
 #[async_trait]
@@ -259,6 +376,20 @@ impl IssueReader for JiraProvider {
         let page: CommentPage =
             self.client.get(&format!("{}/issue/{key}/comment", self.api()), &query).await?;
         Ok(page.comments.iter().filter_map(map::comment).collect())
+    }
+
+    async fn issues_in_full(&self, keys: &[IssueKey]) -> Result<Vec<IssueInFull>> {
+        let ctx = self.ctx().await?;
+        let body = json!({
+            "issueIdsOrKeys": keys.iter().map(IssueKey::as_str).collect::<Vec<_>>(),
+            "fields": ["*all"],
+            "expand": ["changelog"],
+        });
+        let path = format!("{}/issue/bulkfetch", self.api());
+        let answer = self.client.send(Method::POST, &path, &body).await?;
+        let read: BulkFetch = serde_json::from_value(answer)
+            .map_err(|e| DomainError::Transport(format!("{path}: {e}")))?;
+        read.issues.iter().map(|bulk| in_full(bulk, ctx)).collect()
     }
 
     async fn activity(&self, key: &IssueKey) -> Result<Vec<ActivityEntry>> {
@@ -505,21 +636,45 @@ impl Provider for JiraProvider {
 
     fn capabilities(&self) -> Capabilities {
         use Capability::*;
-        Capabilities::new([
-            Sprints,
-            Epics,
-            Estimates,
-            WipLimits,
-            NativeQuery,
-            CustomFields,
-            Comments,
-            Activity,
-            Write,
-            Images,
-            Rank,
-            ChangedSince,
-        ])
+        Capabilities::new(
+            [
+                Sprints,
+                Epics,
+                Estimates,
+                WipLimits,
+                NativeQuery,
+                CustomFields,
+                Comments,
+                Activity,
+                Write,
+                Images,
+                Rank,
+                ChangedSince,
+            ]
+            .into_iter()
+            // shortcut: Data Center's bulk read is not known; declare it there once one is.
+            .chain((self.settings.flavor == JiraFlavor::Cloud).then_some(BulkRead)),
+        )
     }
+}
+
+/// One issue of a bulk read: its comments from its `comment` field, its
+/// history from its changelog; the first page of each.
+fn in_full(bulk: &BulkIssue, ctx: &Ctx) -> Result<IssueInFull> {
+    let key = &bulk.issue.key;
+    let comments = bulk.issue.fields.get("comment").and_then(|c| c["comments"].as_array());
+    // One by one: a comment of an odd shape costs only itself.
+    let comments = comments.into_iter().flatten().filter_map(|c| {
+        serde_json::from_value::<CommentDto>(c.clone())
+            .inspect_err(|e| tracing::warn!("a comment of {key} left out: {e}"))
+            .ok()
+    });
+    let histories = bulk.changelog.as_ref().map_or(&[][..], |c| &c.histories[..]);
+    Ok(IssueInFull {
+        issue: map::issue(&bulk.issue, ctx)?,
+        comments: comments.filter_map(|c| map::comment(&c)).collect(),
+        activity: histories.iter().filter_map(map::activity).collect(),
+    })
 }
 
 #[cfg(test)]

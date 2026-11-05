@@ -35,6 +35,19 @@ pub struct BoardConfigDto {
     pub id: u64,
     pub name: String,
     pub column_config: ColumnConfigDto,
+    pub sub_query: Option<SubQueryDto>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SubQueryDto {
+    pub query: String,
+}
+
+/// The board settings page's model, from the private greenhopper API.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditModelDto {
+    pub old_done_issues_cutoff: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

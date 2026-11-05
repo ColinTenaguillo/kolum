@@ -22,6 +22,13 @@ impl BoardSnapshot {
         }
     }
 
+    /// In the order of `keys`, without what is not among them.
+    pub fn order_by(&mut self, keys: &[kolum_domain::IssueKey]) {
+        let mut by_key: std::collections::HashMap<_, _> =
+            std::mem::take(&mut self.issues).into_iter().map(|i| (i.key.clone(), i)).collect();
+        self.issues = keys.iter().filter_map(|k| by_key.remove(k)).collect();
+    }
+
     /// A number alone, `12983`, read as the key of this board's project:
     /// `ACME-12983`. Only when the board's keys read that way; GitHub's
     /// `repo#12` do not.
@@ -66,12 +73,13 @@ pub async fn load_board(provider: &dyn Provider, id: Option<BoardId>) -> Result<
 }
 
 /// Brings a cached snapshot up to date: the configuration again (it is
-/// small and columns do change), and the issues updated since, or every
-/// issue when the provider cannot tell which changed.
+/// small and columns do change), and the issues updated since in the
+/// board's order now, or every issue when the provider cannot tell which
+/// changed.
 ///
-/// An issue that left the board (deleted, or out of its filter) is not
-/// reported by an incremental sync, so it stays until a full reload; on a
-/// provider without `ChangedSince` every sync is a full one, so it goes.
+/// The order is read apart: a rank changes no issue's `updated`. An issue
+/// that left the board goes with it; one that entered it unchanged waits
+/// for a full load.
 pub async fn sync_board(
     provider: &dyn Provider,
     mut cached: BoardSnapshot,
@@ -80,7 +88,10 @@ pub async fn sync_board(
     let id = cached.board.id.clone();
     cached.board = provider.board(&id).await?;
     if provider.capabilities().supports(Capability::ChangedSince) {
-        cached.merge(all_issues(provider, &id, Some(since)).await?);
+        let (changed, order) =
+            tokio::try_join!(all_issues(provider, &id, Some(since)), provider.board_keys(&id))?;
+        cached.merge(changed);
+        cached.order_by(&order);
     } else {
         cached.issues = all_issues(provider, &id, None).await?;
     }
@@ -186,19 +197,24 @@ mod tests {
         let mut gone = cached.issues[0].clone();
         gone.key = IssueKey::new("ACME-999");
         cached.issues.push(gone);
+        // A rank changed elsewhere: no issue is updated by it.
+        cached.issues.reverse();
         let synced = sync_board(&fake, cached.clone(), since).await.unwrap();
-        assert_eq!(synced.issues.len(), cached.issues.len() + 1, "the new one joined");
+        let keys = |s: &BoardSnapshot| s.issues.iter().map(|i| i.key.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            keys(&synced),
+            keys(&load_board(&fake, None).await.unwrap()),
+            "the board's order"
+        );
         assert!(
-            synced.issues.iter().any(|i| i.key.as_str() == "ACME-999"),
-            "only a full reload drops what left the board"
+            !synced.issues.iter().any(|i| i.key.as_str() == "ACME-999"),
+            "what left the board goes"
         );
         let title = |s: &BoardSnapshot, k: &IssueKey| {
             s.issues.iter().find(|i| &i.key == k).map(|i| i.title.clone())
         };
         assert_eq!(title(&synced, &key).as_deref(), Some("Export as CSV and XLSX"));
         assert_eq!(title(&synced, &created.key).as_deref(), Some("Brand new"));
-        let position = |s: &BoardSnapshot| s.issues.iter().position(|i| i.key == key);
-        assert_eq!(position(&synced), position(&cached), "a changed issue keeps its place");
     }
 
     #[test]

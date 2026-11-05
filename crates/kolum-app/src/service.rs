@@ -2,10 +2,13 @@ use crate::board::{BoardSnapshot, load_board, sync_board};
 use crate::cache::Cache;
 use crate::write::Write;
 use kolum_domain::{
-    ActivityEntry, BoardId, BoardSummary, Capabilities, Comment, DomainError, Issue, IssueKey,
-    Provider, Query, User,
+    ActivityEntry, BULK_READ_MAX, BoardId, BoardSummary, Capabilities, Capability, Comment,
+    DomainError, Issue, IssueInFull, IssueKey, Provider, Query, User,
 };
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use time::OffsetDateTime;
 use tokio::sync::mpsc;
 
 /// What the TUI asks for.
@@ -45,7 +48,7 @@ pub enum Command {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct IssueDetail {
     pub issue: Issue,
     pub comments: Vec<Comment>,
@@ -54,6 +57,42 @@ pub struct IssueDetail {
     pub layout: Option<kolum_domain::FieldLayout>,
     /// The issues whose parent it is, beyond its sub-tasks.
     pub children: Vec<kolum_domain::IssueRef>,
+}
+
+/// What a bulk read gives: no layout (kept by issue type) and no children,
+/// which its opening reads.
+impl From<IssueInFull> for IssueDetail {
+    fn from(read: IssueInFull) -> Self {
+        IssueDetail {
+            issue: read.issue,
+            comments: read.comments,
+            activity: read.activity,
+            layout: None,
+            children: vec![],
+        }
+    }
+}
+
+/// The background read of a board's issues in full, so each opens whole:
+/// shared by the commands, which run side by side.
+#[derive(Default)]
+struct Prefetch {
+    /// When each issue kept was last updated, as kept: one updated since
+    /// is read again.
+    kept: Mutex<HashMap<IssueKey, OffsetDateTime>>,
+    /// Set by a refusal (a rate limit) or a failure: none for the rest of
+    /// the run, so that the user's own requests pass.
+    stopped: AtomicBool,
+    /// One at a time; what changes meanwhile is caught after the next sync.
+    running: AtomicBool,
+    /// Set once the issues of earlier runs are read: what is kept is known.
+    loaded: tokio::sync::watch::Sender<bool>,
+}
+
+impl Prefetch {
+    fn keep(&self, issue: &Issue) {
+        self.kept.lock().unwrap().insert(issue.key.clone(), issue.updated);
+    }
 }
 
 /// The project and the issue type an issue's field layout belongs to:
@@ -75,6 +114,9 @@ pub enum Event {
     Boards(Vec<BoardSummary>),
     /// The field layouts kept from earlier runs, by `layout_key`, first of all.
     FieldLayouts(std::collections::BTreeMap<String, kolum_domain::FieldLayout>),
+    /// Issues read in full: those of earlier runs, right after the layouts,
+    /// then those a board prefetches.
+    ReadIssues(Vec<IssueDetail>),
     Sprints(Result<Vec<kolum_domain::Sprint>, DomainError>),
     IssueLoaded(Box<IssueDetail>),
     /// For the search with this id; stale ones were cancelled.
@@ -141,6 +183,17 @@ impl Service {
         if !kept.is_empty() {
             let _ = events.send(Event::FieldLayouts(kept));
         }
+        let prefetch = Arc::new(Prefetch::default());
+        // Every issue kept, read off the way of the board's first showing.
+        let (kept, sent, state) = (cache.clone(), events.clone(), prefetch.clone());
+        tokio::task::spawn_blocking(move || {
+            let read = kept.as_ref().map(Cache::issues).unwrap_or_default();
+            read.iter().for_each(|d| state.keep(&d.issue));
+            if !read.is_empty() {
+                let _ = sent.send(Event::ReadIssues(read));
+            }
+            state.loaded.send_replace(true);
+        });
         let me = (provider.clone(), events.clone());
         tokio::spawn(async move {
             let event = match me.0.me().await {
@@ -157,6 +210,7 @@ impl Service {
                     cache.clone(),
                     command.clone(),
                     events.clone(),
+                    prefetch.clone(),
                 ));
                 if matches!(command, Command::Search { .. })
                     && let Some(previous) = search.replace(task)
@@ -193,15 +247,16 @@ async fn run(
     cache: Option<Cache>,
     command: Command,
     events: mpsc::UnboundedSender<Event>,
+    prefetched: Arc<Prefetch>,
 ) {
     let event = match command {
         Command::LoadBoard(id) => {
-            let cached = cache.as_ref().and_then(|c| c.load(&cache_key(&id)));
-            if let Some((snapshot, _)) = &cached {
-                let _ =
-                    events.send(Event::BoardLoaded { snapshot: snapshot.clone(), fresh: false });
+            // The cache first, then the whole board: a board filtered by date
+            // loses issues nobody touched, which no incremental sync reports.
+            if let Some((snapshot, _)) = cache.as_ref().and_then(|c| c.load(&cache_key(&id))) {
+                let _ = events.send(Event::BoardLoaded { snapshot, fresh: false });
             }
-            fetch_board(provider.as_ref(), cache.as_ref(), id, cached).await
+            fetch_board(provider.as_ref(), cache.as_ref(), id, None).await
         }
         Command::ReloadBoard(id) => fetch_board(provider.as_ref(), cache.as_ref(), id, None).await,
         Command::SyncBoard(id) => {
@@ -253,6 +308,12 @@ async fn run(
                 {
                     tracing::warn!("keeping the field layout of {key}: {e}");
                 }
+                prefetched.keep(&detail.issue);
+                if let Some(cache) = &cache
+                    && let Err(e) = cache.save_issue(&detail)
+                {
+                    tracing::warn!("keeping {key}: {e}");
+                }
                 Event::IssueLoaded(Box::new(detail))
             }
             Err(error) => Event::Failed { what: format!("loading {key}"), error },
@@ -261,7 +322,71 @@ async fn run(
     if let Event::Failed { what, error } = &event {
         tracing::warn!("{what}: {error}");
     }
+    if let Event::BoardLoaded { snapshot, fresh: true } = &event {
+        start_prefetch(&provider, &cache, snapshot, &events, prefetched);
+    }
     let _ = events.send(event);
+}
+
+/// A board just read from the provider: its issues read in full in the
+/// background, if the provider can.
+fn start_prefetch(
+    provider: &Arc<dyn Provider>,
+    cache: &Option<Cache>,
+    snapshot: &BoardSnapshot,
+    events: &mpsc::UnboundedSender<Event>,
+    state: Arc<Prefetch>,
+) {
+    if provider.capabilities().supports(Capability::BulkRead) {
+        let wanted = snapshot.issues.iter().map(|i| (i.key.clone(), i.updated)).collect();
+        tokio::spawn(prefetch(provider.clone(), cache.clone(), wanted, events.clone(), state));
+    }
+}
+
+/// The issues of `wanted` not kept as last updated, read in full a batch
+/// at a time, each kept and sent on as it comes.
+async fn prefetch(
+    provider: Arc<dyn Provider>,
+    cache: Option<Cache>,
+    wanted: Vec<(IssueKey, OffsetDateTime)>,
+    events: mpsc::UnboundedSender<Event>,
+    state: Arc<Prefetch>,
+) {
+    let _ = state.loaded.subscribe().wait_for(|loaded| *loaded).await;
+    if state.stopped.load(Ordering::Relaxed) || state.running.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let stale: Vec<IssueKey> = {
+        let kept = state.kept.lock().unwrap();
+        wanted.into_iter().filter(|(k, at)| kept.get(k) != Some(at)).map(|(k, _)| k).collect()
+    };
+    for batch in stale.chunks(BULK_READ_MAX) {
+        match provider.issues_in_full(batch).await {
+            Ok(read) => {
+                let mut read: Vec<IssueDetail> = read.into_iter().map(IssueDetail::from).collect();
+                for detail in &mut read {
+                    // A bulk read has no children nor layout: an opening's stay.
+                    if let Some(kept) = cache.as_ref().and_then(|c| c.issue(&detail.issue.key)) {
+                        detail.children = kept.children;
+                        detail.layout = kept.layout;
+                    }
+                    state.keep(&detail.issue);
+                    if let Some(cache) = &cache
+                        && let Err(e) = cache.save_issue(detail)
+                    {
+                        tracing::warn!("keeping {}: {e}", detail.issue.key);
+                    }
+                }
+                let _ = events.send(Event::ReadIssues(read));
+            }
+            Err(error) => {
+                tracing::info!("prefetching stopped for this run: {error}");
+                state.stopped.store(true, Ordering::Relaxed);
+                break;
+            }
+        }
+    }
+    state.running.store(false, Ordering::Release);
 }
 
 /// From the provider, synced from `cached` when there is one, and saved
@@ -344,21 +469,21 @@ mod tests {
         assert_eq!(me.display_name, "Colin Tenaguillo");
 
         service.send(Command::LoadBoard(None));
-        let Some(Event::BoardLoaded { snapshot, fresh: true }) = events.recv().await else {
+        let Some(Event::BoardLoaded { snapshot, fresh: true }) = next(&mut events).await else {
             panic!()
         };
         assert_eq!(snapshot.board.columns.len(), 5);
         service.send(Command::LoadBoards);
-        let Some(Event::Boards(boards)) = events.recv().await else { panic!() };
+        let Some(Event::Boards(boards)) = next(&mut events).await else { panic!() };
         assert_eq!(boards.len(), 1);
 
         service.send(Command::LoadIssue(IssueKey::new("ACME-5")));
-        let Some(Event::IssueLoaded(detail)) = events.recv().await else { panic!() };
+        let Some(Event::IssueLoaded(detail)) = next(&mut events).await else { panic!() };
         assert_eq!(detail.comments.len(), 3);
         let layout = detail.layout.as_ref().expect("the fake has a layout");
         assert!(detail.children.is_empty(), "ACME-5 is no epic");
         service.send(Command::LoadIssue(IssueKey::new("ACME-1")));
-        let Some(Event::IssueLoaded(epic)) = events.recv().await else { panic!() };
+        let Some(Event::IssueLoaded(epic)) = next(&mut events).await else { panic!() };
         assert_eq!(epic.children.len(), 6, "an epic comes with its children");
         assert_eq!(layout.body[0].as_str(), "description");
         assert!(!detail.activity.is_empty());
@@ -374,9 +499,20 @@ mod tests {
         assert!(matches!(error, DomainError::NotFound(_)));
     }
 
-    async fn next_board(events: &mut mpsc::UnboundedReceiver<Event>) -> (BoardSnapshot, bool) {
+    /// The next event but the issues a board prefetches, which come when
+    /// they come.
+    async fn next(events: &mut mpsc::UnboundedReceiver<Event>) -> Option<Event> {
         loop {
             match events.recv().await {
+                Some(Event::ReadIssues(_)) => continue,
+                other => return other,
+            }
+        }
+    }
+
+    async fn next_board(events: &mut mpsc::UnboundedReceiver<Event>) -> (BoardSnapshot, bool) {
+        loop {
+            match next(events).await {
                 Some(Event::BoardLoaded { snapshot, fresh }) => return (snapshot, fresh),
                 Some(Event::Me(_)) => continue,
                 other => panic!("expected a board, got {other:?}"),
@@ -436,6 +572,28 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// A board filtered by date (completed issues older than a week
+    /// hidden) loses issues nobody touched, which no incremental sync
+    /// reports: a warm start reads the whole board again.
+    #[tokio::test]
+    async fn a_warm_start_drops_what_left_the_board_since() {
+        let dir = crate::cache::tests::temp_dir("service-left");
+        let fake = Arc::new(FakeProvider::new());
+        let mut cached = load_board(fake.as_ref(), None).await.unwrap();
+        let mut gone = cached.issues[0].clone();
+        gone.key = IssueKey::new("ACME-999");
+        cached.issues.push(gone);
+        Cache::new(&dir).save("first", &cached, time::OffsetDateTime::now_utc()).unwrap();
+        let (service, mut events) = Service::spawn(fake, Some(Cache::new(&dir)));
+        service.send(Command::LoadBoard(None));
+        let has_gone = |b: &BoardSnapshot| b.issues.iter().any(|i| i.key.as_str() == "ACME-999");
+        let (warm, _) = next_board(&mut events).await;
+        assert!(has_gone(&warm), "the cache first, as it was");
+        let (loaded, fresh) = next_board(&mut events).await;
+        assert!(fresh && !has_gone(&loaded), "then the board as it is");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[tokio::test]
     async fn search_results_carry_their_request_id() {
         use kolum_domain::{Filter, UserSel};
@@ -477,6 +635,126 @@ mod tests {
         };
         assert_eq!(layouts.get(&layout_key(&detail.issue)), detail.layout.as_ref());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_issue_read_is_kept_for_the_next_run() {
+        let dir = crate::cache::tests::temp_dir("service-issues");
+        let fake = Arc::new(FakeProvider::new());
+        let (service, mut events) = Service::spawn(fake.clone(), Some(Cache::new(&dir)));
+        events.recv().await; // Me
+        service.send(Command::LoadIssue(IssueKey::new("ACME-5")));
+        let Some(Event::IssueLoaded(detail)) = events.recv().await else { panic!() };
+        let (_again, mut events) = Service::spawn(fake, Some(Cache::new(&dir)));
+        let read = loop {
+            match events.recv().await {
+                Some(Event::ReadIssues(read)) => break read,
+                Some(Event::FieldLayouts(_) | Event::Me(_)) => continue,
+                other => panic!("the issues read, not {other:?}"),
+            }
+        };
+        assert_eq!(read, [*detail]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The next `ReadIssues`, or `None` when none comes in a moment.
+    async fn next_read(events: &mut mpsc::UnboundedReceiver<Event>) -> Option<Vec<IssueDetail>> {
+        let wait = std::time::Duration::from_millis(300);
+        loop {
+            match tokio::time::timeout(wait, events.recv()).await {
+                Ok(Some(Event::ReadIssues(read))) => return Some(read),
+                Ok(Some(_)) => continue,
+                _ => return None,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_board_prefetches_its_issues_in_full_then_only_what_changed() {
+        use kolum_domain::{IssueUpdate, IssueWriter};
+        let dir = crate::cache::tests::temp_dir("service-prefetch");
+        let fake = Arc::new(FakeProvider::new());
+        let (service, mut events) = Service::spawn(fake.clone(), Some(Cache::new(&dir)));
+        service.send(Command::LoadBoard(None));
+        let read = next_read(&mut events).await.expect("the board's issues, read in full");
+        let board = load_board(fake.as_ref(), None).await.unwrap();
+        assert_eq!(read.len(), board.issues.len());
+        let five = read.iter().find(|d| d.issue.key.as_str() == "ACME-5").unwrap();
+        assert!(
+            !five.comments.is_empty() && !five.activity.is_empty(),
+            "with comments and history"
+        );
+        assert_eq!(Cache::new(&dir).issues().len(), board.issues.len(), "kept for the next run");
+
+        service.send(Command::SyncBoard(None));
+        assert_eq!(next_read(&mut events).await, None, "nothing changed, nothing read");
+
+        let key = IssueKey::new("ACME-12");
+        fake.update(&key, IssueUpdate { title: Some("Renamed".into()), ..Default::default() })
+            .await
+            .unwrap();
+        service.send(Command::SyncBoard(None));
+        let read = next_read(&mut events).await.expect("what changed");
+        assert_eq!(read.iter().map(|d| d.issue.key.clone()).collect::<Vec<_>>(), [key]);
+
+        // The next run starts from what is kept: nothing to read again.
+        let (service, mut events) = Service::spawn(fake.clone(), Some(Cache::new(&dir)));
+        service.send(Command::LoadBoard(None));
+        let kept = next_read(&mut events).await.expect("what the last run kept");
+        assert_eq!(kept.len(), board.issues.len());
+        assert_eq!(next_read(&mut events).await, None, "and no prefetch over it");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A prefetch reads no children nor layout: those an opening kept stay.
+    #[tokio::test]
+    async fn a_prefetch_keeps_the_children_an_opening_read() {
+        use kolum_domain::IssueReader;
+        let dir = crate::cache::tests::temp_dir("service-children");
+        let fake = Arc::new(FakeProvider::new());
+        // ACME-5 as an earlier opening kept it, since updated.
+        let key = IssueKey::new("ACME-5");
+        let mut issue = fake.issue(&key).await.unwrap();
+        issue.updated -= time::Duration::days(1);
+        let child = fake.issue(&IssueKey::new("ACME-6")).await.unwrap().as_ref();
+        let opened = IssueDetail {
+            issue,
+            comments: vec![],
+            activity: vec![],
+            layout: Some(fake.field_layout(&key).await.unwrap()),
+            children: vec![child],
+        };
+        Cache::new(&dir).save_issue(&opened).unwrap();
+        let (service, mut events) = Service::spawn(fake.clone(), Some(Cache::new(&dir)));
+        next_read(&mut events).await.expect("what the last run kept");
+        service.send(Command::LoadBoard(None));
+        let read = next_read(&mut events).await.expect("the board read in full");
+        let prefetched = read.iter().find(|d| d.issue.key == key).unwrap();
+        assert!(prefetched.issue.updated > opened.issue.updated, "read again");
+        assert_eq!(prefetched.children, opened.children);
+        assert_eq!(prefetched.layout, opened.layout);
+        let kept = Cache::new(&dir).issues();
+        let kept = kept.iter().find(|d| d.issue.key == key).unwrap();
+        assert_eq!(kept.children, opened.children, "on disk too");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A refusal, a rate limit most likely, stops the prefetch for the run:
+    /// the user's own requests come first.
+    #[tokio::test]
+    async fn a_failed_prefetch_stops_for_the_run() {
+        let fake: Arc<dyn Provider> = Arc::new(FakeProvider::new());
+        let (events, mut rx) = mpsc::unbounded_channel();
+        let state = Arc::new(Prefetch::default());
+        state.loaded.send_replace(true);
+        let at = time::OffsetDateTime::now_utc();
+        // Two batches, the first failing: the second is not asked either.
+        let mut wanted = vec![(IssueKey::new("ACME-999"), at)];
+        wanted.extend((0..BULK_READ_MAX).map(|_| (IssueKey::new("ACME-5"), at)));
+        prefetch(fake.clone(), None, wanted, events.clone(), state.clone()).await;
+        let five = vec![(IssueKey::new("ACME-5"), at)];
+        prefetch(fake, None, five, events, state).await;
+        assert!(rx.try_recv().is_err(), "nothing read after the failure");
     }
 
     #[tokio::test]

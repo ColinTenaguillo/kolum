@@ -3,6 +3,7 @@
 //! point; the provider stays the truth.
 
 use crate::board::BoardSnapshot;
+use crate::service::IssueDetail;
 use kolum_domain::{Board, FieldLayout, Issue};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -32,6 +33,23 @@ struct LayoutEntry {
 }
 
 const LAYOUT_FILE: &str = "layout-";
+
+/// An issue as last read in full, by its opening or a prefetch, one file
+/// each: the fields the board does not carry, its comments and history.
+#[derive(Serialize, Deserialize)]
+struct IssueEntry {
+    version: u32,
+    detail: IssueDetail,
+}
+
+const ISSUE_FILE: &str = "issue-";
+/// An issue not opened for this long is forgotten.
+const ISSUE_DAYS: u64 = 30;
+
+fn read_issue(path: &Path) -> Option<IssueDetail> {
+    let entry: IssueEntry = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    (entry.version == VERSION).then_some(entry.detail)
+}
 
 /// One directory per profile: two Jira instances can both have a board 42.
 #[derive(Debug, Clone)]
@@ -122,6 +140,37 @@ impl Cache {
             .collect()
     }
 
+    pub fn save_issue(&self, detail: &IssueDetail) -> std::io::Result<()> {
+        let entry = IssueEntry { version: VERSION, detail: detail.clone() };
+        self.write(&format!("{ISSUE_FILE}{}", detail.issue.key), &serde_json::to_vec(&entry)?)
+    }
+
+    /// Every issue kept; the files of those not opened for `ISSUE_DAYS`
+    /// are removed, what does not read is left out.
+    pub fn issues(&self) -> Vec<IssueDetail> {
+        let Ok(files) = std::fs::read_dir(&self.dir) else { return vec![] };
+        let max_age = std::time::Duration::from_secs(ISSUE_DAYS * 86_400);
+        files
+            .flatten()
+            .filter(|f| f.file_name().to_string_lossy().starts_with(ISSUE_FILE))
+            .filter(|f| {
+                let age =
+                    f.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
+                let old = age.is_some_and(|a| a > max_age);
+                if old {
+                    let _ = std::fs::remove_file(f.path());
+                }
+                !old
+            })
+            .filter_map(|f| read_issue(&f.path()))
+            .collect()
+    }
+
+    /// One issue kept, if it is and it reads.
+    pub fn issue(&self, key: &kolum_domain::IssueKey) -> Option<IssueDetail> {
+        read_issue(&self.path(&format!("{ISSUE_FILE}{key}")))
+    }
+
     pub fn dir(&self) -> &Path {
         &self.dir
     }
@@ -184,6 +233,35 @@ pub(crate) mod tests {
             ("ACME/Story".to_string(), story),
         ]);
         assert_eq!(cache.layouts(), wanted);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn issues_are_kept_one_file_each_for_thirty_days() {
+        let dir = temp_dir("cache-issues");
+        let cache = Cache::new(&dir);
+        assert!(cache.issues().is_empty(), "nothing yet");
+        let snapshot = load_board(&FakeProvider::new(), None).await.unwrap();
+        let detail = |issue: &Issue| crate::IssueDetail {
+            issue: issue.clone(),
+            comments: vec![],
+            activity: vec![],
+            layout: None,
+            children: vec![],
+        };
+        let (recent, old) = (detail(&snapshot.issues[0]), detail(&snapshot.issues[1]));
+        cache.save_issue(&recent).unwrap();
+        cache.save_issue(&old).unwrap();
+        let old_file = dir.join(file_name(&format!("{ISSUE_FILE}{}", old.issue.key)));
+        let days_ago = |file: &std::path::Path, days: u64| {
+            let at = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
+            std::fs::File::options().write(true).open(file).unwrap().set_modified(at).unwrap();
+        };
+        days_ago(&old_file, 31);
+        days_ago(&dir.join(file_name(&format!("{ISSUE_FILE}{}", recent.issue.key))), 29);
+        std::fs::write(dir.join("1.json"), "a board, not an issue").unwrap();
+        assert_eq!(cache.issues(), [recent]);
+        assert!(!old_file.exists(), "an issue not opened for a month goes");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
