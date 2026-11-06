@@ -1488,7 +1488,7 @@ async fn editing_sends_only_what_changed() {
         IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
     app.on_event(Event::IssueLoaded(Box::new(detail)));
     let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else { panic!() };
-    assert_eq!(purpose, EditPurpose::Describe(key));
+    assert!(matches!(&purpose, EditPurpose::Describe { key: k, .. } if *k == key), "{purpose:?}");
     assert!(text.starts_with("# Enforce SSO per organisation\n\nAn admin switch"), "{text}");
     assert!(!screen(&mut app, 120, 30).contains("Reading ACME-9…"));
 
@@ -1506,7 +1506,15 @@ async fn editing_sends_only_what_changed() {
         "the detail shows it at once"
     );
 
+    // Edited again, from the title as it is now.
+    press(&mut app, "e");
+    let Some(Effect::Edit { purpose, .. }) = app.take_effects().pop() else { panic!() };
     app.on_edited(purpose, Ok("# Require SSO per organisation\n\nNew *body*".into()));
+    assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(key.clone()))], "read first");
+    let issue = FakeProvider::new().issue(&key).await.unwrap();
+    let detail =
+        IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
+    app.on_event(Event::IssueLoaded(Box::new(detail)));
     let sent = writes(app.take_effects());
     let kolum_app::Write::Update(update) = &sent[0].2 else { panic!() };
     assert_eq!(
@@ -1538,16 +1546,107 @@ async fn an_edit_starts_from_a_read_as_new_as_the_board() {
     assert!(text.contains("An admin switch"), "{text}");
     assert!(text.contains("Markdown cannot keep"), "the loss is said: {text}");
 
-    // The issue changed on Jira since: what is kept is not saved over it.
+    // The issue changed on Jira since, a comment say: it is read again,
+    // and the description, which did not move, is saved.
     let mut snapshot = load_board(&fake, None).await.unwrap();
     let on_board = snapshot.issues.iter_mut().find(|i| i.key == key).unwrap();
     on_board.updated = read.updated + time::Duration::minutes(1);
     app.on_event(Event::BoardLoaded { snapshot, fresh: true });
     app.on_edited(purpose, Ok(text.replace("An admin switch", "A switch")));
-    assert!(writes(app.take_effects()).is_empty(), "nothing saved");
-    assert!(screen(&mut app, 120, 30).contains("changed meanwhile"));
+    assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(key.clone()))], "read again");
+    let mut commented = read.clone();
+    commented.updated = read.updated + time::Duration::minutes(1);
+    app.on_event(Event::IssueLoaded(Box::new(detail(commented))));
+    let sent = writes(app.take_effects());
+    let kolum_app::Write::Update(update) = &sent[0].2 else { panic!("{sent:?}") };
+    let saved = update.description.as_ref().map(|d| d.plain_text()).unwrap_or_default();
+    assert!(saved.starts_with("A switch"), "{saved}");
     press(&mut app, "e");
-    assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(key))], "read again");
+    assert!(
+        matches!(app.take_effects().pop(), Some(Effect::Edit { .. })),
+        "no read left waiting: the editor opens"
+    );
+}
+
+/// Someone else rewrote the description since the last sync: the save
+/// reads the issue right before writing, and does not write over theirs,
+/// nor lose the text; the editor opens again on it, theirs below for
+/// reference, and saving that goes through.
+#[tokio::test]
+async fn a_description_changed_meanwhile_reopens_the_editor_on_the_text() {
+    let fake = FakeProvider::new();
+    let mut app = loaded().await;
+    let key = IssueKey::new("ACME-9");
+    let read = fake.issue(&key).await.unwrap();
+    let detail = |issue| IssueDetail {
+        issue,
+        comments: vec![],
+        activity: vec![],
+        layout: None,
+        children: vec![],
+    };
+    app.on_event(Event::ReadIssues(vec![detail(read.clone())]));
+    app.take_effects();
+    press(&mut app, "e");
+    let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else { panic!() };
+
+    let mut theirs = read.clone();
+    theirs.description = kolum_domain::RichText::from_markdown("Their rewrite");
+    theirs.updated = read.updated + time::Duration::minutes(1);
+    app.on_edited(purpose, Ok(text.replace("An admin switch", "My switch")));
+    let read_first = [Effect::Send(Command::LoadIssue(key.clone()))];
+    assert_eq!(app.take_effects(), read_first, "read right before writing");
+    app.on_event(Event::IssueLoaded(Box::new(detail(theirs.clone()))));
+    let effects = app.take_effects();
+    assert!(writes(effects.clone()).is_empty(), "not saved over theirs");
+    let Some(Effect::Edit { purpose, text }) = effects.into_iter().last() else {
+        panic!("the editor again")
+    };
+    let (mine, below) = text.split_once("<!-- kolum:").unwrap();
+    assert!(mine.contains("My switch"), "{mine}");
+    assert!(below.contains("Their rewrite"), "{below}");
+    assert!(screen(&mut app, 120, 30).contains("changed meanwhile"));
+
+    app.on_edited(purpose, Ok(text));
+    assert_eq!(app.take_effects(), read_first);
+    app.on_event(Event::IssueLoaded(Box::new(detail(theirs))));
+    let sent = writes(app.take_effects());
+    let kolum_app::Write::Update(update) = &sent[0].2 else { panic!("{sent:?}") };
+    let saved = update.description.as_ref().map(|d| d.plain_text()).unwrap_or_default();
+    assert!(saved.contains("My switch") && !saved.contains("Their rewrite"), "{saved}");
+}
+
+/// The open issue shows a saved description at once, though the save
+/// waited on a read; and while it waits, `e` waits too, rather than
+/// dropping the text being saved.
+#[tokio::test]
+async fn a_saved_description_shows_at_once_and_e_waits_for_the_save() {
+    let fake = FakeProvider::new();
+    let mut app = loaded().await;
+    let key = IssueKey::new("ACME-9");
+    let read = fake.issue(&key).await.unwrap();
+    let detail = |issue| IssueDetail {
+        issue,
+        comments: vec![],
+        activity: vec![],
+        layout: None,
+        children: vec![],
+    };
+    press(&mut app, "<CR>");
+    app.on_event(Event::IssueLoaded(Box::new(detail(read.clone()))));
+    app.take_effects();
+    press(&mut app, "e");
+    let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else { panic!() };
+    app.on_edited(purpose, Ok(text.replace("An admin switch", "My switch")));
+    assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(key.clone()))]);
+    press(&mut app, "e");
+    assert!(app.take_effects().is_empty(), "`e` waits for the save");
+    assert!(screen(&mut app, 120, 40).contains("ACME-9 is still being saved"));
+
+    app.on_event(Event::IssueLoaded(Box::new(detail(read))));
+    assert_eq!(writes(app.take_effects()).len(), 1);
+    let shown = screen(&mut app, 120, 40);
+    assert!(shown.contains("My switch"), "{shown}");
 }
 
 /// The board's copy has no description on Jira Cloud: the picker's preview

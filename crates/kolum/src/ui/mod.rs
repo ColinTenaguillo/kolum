@@ -54,8 +54,12 @@ pub enum Effect {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditPurpose {
     Comment(IssueKey),
-    /// The title and the description, as `# Title` then Markdown.
-    Describe(IssueKey),
+    /// The title and the description, as `# Title` then Markdown, edited
+    /// from `from`, the same: what moved is sent against it.
+    Describe {
+        key: IssueKey,
+        from: String,
+    },
     /// A new issue of this type in this project.
     Create {
         project: String,
@@ -66,6 +70,15 @@ pub enum EditPurpose {
         key: IssueKey,
         field: kolum_domain::EditableField,
     },
+}
+
+/// What waits on the read of an issue, to know its description as it is.
+enum AfterRead {
+    /// `e`: its editor opens.
+    Describe,
+    /// A description back from `$EDITOR`, edited from `from`: saved, unless
+    /// it moved meanwhile.
+    Save { from: String, text: String },
 }
 
 /// An issue's pictures, and the one on screen.
@@ -246,9 +259,9 @@ pub struct App {
     /// there, comments and history included, rather than from the board's
     /// copy, which lacks fields.
     read: std::collections::HashMap<IssueKey, IssueDetail>,
-    /// `e` on an issue with no read as new as the board's copy: its editor
-    /// opens once it has been read.
-    describe_after: Option<IssueKey>,
+    /// Waiting on a read of this issue: `e` with none as new as the board's
+    /// copy, or a description's save, which reads the issue right before.
+    describe_after: Option<(IssueKey, AfterRead)>,
     remote_debounce: std::time::Duration,
     /// The time of the key being handled, for the debounce.
     now: Instant,
@@ -500,18 +513,10 @@ impl App {
     }
 
     pub fn on_event(&mut self, event: Event) {
-        if let Event::IssueLoaded(detail) = &event {
-            if let Some(layout) = &detail.layout {
-                self.layouts.insert(kolum_app::layout_key(&detail.issue), layout.clone());
-            }
-            self.read.insert(detail.issue.key.clone(), (**detail).clone());
-            if self.describe_after.as_ref() == Some(&detail.issue.key) {
-                let key = detail.issue.key.clone();
-                self.describe_after = None;
-                self.said_done(&reading(&key));
-                self.edit(EditPurpose::Describe(key));
-            }
-        }
+        let waited = match &event {
+            Event::IssueLoaded(detail) => self.keep_read(detail),
+            _ => None,
+        };
         match event {
             Event::FieldLayouts(kept) => self.layouts.extend(kept),
             // Only a newer copy replaces one: a prefetch has no children,
@@ -639,6 +644,28 @@ impl App {
             Event::Failed { what, error } => {
                 self.say(format!("{what} failed: {error}"), Level::Error)
             }
+        }
+        // Once the detail shows the read: a save shows over it.
+        if let Some((key, after)) = waited {
+            self.read_done(key, after);
+        }
+    }
+
+    /// An issue read whole, kept; and what waited on its read, if anything.
+    fn keep_read(&mut self, detail: &IssueDetail) -> Option<(IssueKey, AfterRead)> {
+        if let Some(layout) = &detail.layout {
+            self.layouts.insert(kolum_app::layout_key(&detail.issue), layout.clone());
+        }
+        self.read.insert(detail.issue.key.clone(), detail.clone());
+        self.describe_after.take_if(|(key, _)| *key == detail.issue.key)
+    }
+
+    /// What waited on the read of this issue goes on.
+    fn read_done(&mut self, key: IssueKey, after: AfterRead) {
+        self.said_done(&reading(&key));
+        match after {
+            AfterRead::Describe => self.describe(key),
+            AfterRead::Save { from, text } => self.save_read(key, from, text),
         }
     }
 
@@ -1024,7 +1051,7 @@ impl App {
                 None => self.say("Still finding out who you are", Level::Warn),
             },
             Action::Comment => self.edit(EditPurpose::Comment(keys[0].clone())),
-            Action::Edit => self.edit(EditPurpose::Describe(keys[0].clone())),
+            Action::Edit => self.describe(keys[0].clone()),
             Action::EditField => {
                 self.effects.push(Effect::Send(Command::EditableFields(keys[0].clone())));
             }
@@ -1410,21 +1437,6 @@ impl App {
             self.effects.push(Effect::Edit { purpose, text });
             return;
         }
-        if let EditPurpose::Describe(key) = &purpose {
-            let Some(issue) = self.issue_in_full(key) else {
-                self.describe_after = Some(key.clone());
-                self.say(reading(key), Level::Info);
-                return self.effects.push(Effect::Send(Command::LoadIssue(key.clone())));
-            };
-            let flattened = if issue.description.lossy { LOSSY } else { "" };
-            let text = format!(
-                "# {}\n\n{}\n{MARKER} {}: the first `# ` line is the title, the rest the description, in Markdown. {flattened}-->\n",
-                issue.title,
-                issue.description.to_markdown(),
-                issue.key
-            );
-            return self.effects.push(Effect::Edit { purpose, text });
-        }
         let EditPurpose::Comment(key) = &purpose else { return };
         let Some(issue) = self.issue(key) else { return };
         let text = format!(
@@ -1432,6 +1444,41 @@ impl App {
             issue.key, issue.title
         );
         self.effects.push(Effect::Edit { purpose, text });
+    }
+
+    /// `e`: the title and the description in `$EDITOR`, from the issue read
+    /// whole, read first when no read is as new as the board's copy.
+    fn describe(&mut self, key: IssueKey) {
+        if let Some((saving, AfterRead::Save { .. })) = &self.describe_after {
+            let why = format!("{saving} is still being saved: `e` once it is");
+            return self.say(why, Level::Warn);
+        }
+        match self.issue_in_full(&key) {
+            Some(issue) => self.edit_description(&issue, None),
+            None => self.read_then(key, AfterRead::Describe),
+        }
+    }
+
+    fn read_then(&mut self, key: IssueKey, after: AfterRead) {
+        self.say(reading(&key), Level::Info);
+        self.effects.push(Effect::Send(Command::LoadIssue(key.clone())));
+        self.describe_after = Some((key, after));
+    }
+
+    /// `$EDITOR` on the issue's title and description, or on `mine` in
+    /// their place, theirs then shown below it.
+    fn edit_description(&mut self, issue: &kolum_domain::Issue, mine: Option<&str>) {
+        let from = format!("# {}\n\n{}", issue.title, issue.description.to_markdown());
+        let flattened = if issue.description.lossy { LOSSY } else { "" };
+        let key = issue.key.clone();
+        let help = format!(
+            "{MARKER} {key}: the first `# ` line is the title, the rest the description, in Markdown. {flattened}-->\n"
+        );
+        let text = match mine {
+            None => format!("{from}\n{help}"),
+            Some(mine) => format!("{mine}\n{help}\nAs it is now, changed meanwhile:\n\n{from}\n"),
+        };
+        self.effects.push(Effect::Edit { purpose: EditPurpose::Describe { key, from }, text });
     }
 
     /// What came back from `$EDITOR`.
@@ -1470,7 +1517,7 @@ impl App {
                 self.say("Creating…", Level::Info);
             }
             EditPurpose::Field { key, field } => self.save_field(key, field, &text),
-            EditPurpose::Describe(key) => self.save_description(key, &text),
+            EditPurpose::Describe { key, from } => self.save_description(key, from, text),
         }
     }
 
@@ -1483,18 +1530,30 @@ impl App {
         }
     }
 
-    /// The title and the description back from `$EDITOR`.
-    fn save_description(&mut self, key: IssueKey, text: &str) {
-        let Some(issue) = self.issue_in_full(&key) else {
-            let why = format!("{key} changed meanwhile: nothing saved; `e` reads it again");
-            return self.say(why, Level::Warn);
-        };
-        let issue = &issue;
-        let update = description_update(issue, text);
+    /// The title and the description back from `$EDITOR`. A description is
+    /// written only over the one the editing began from: the issue is read
+    /// right before, to know.
+    fn save_description(&mut self, key: IssueKey, from: String, text: String) {
+        let update = description_update(&from, &text);
         if update == kolum_domain::IssueUpdate::default() {
             return self.say("No change", Level::Info);
         }
-        self.save(key, update);
+        if update.description.is_none() {
+            return self.save(key, update);
+        }
+        self.read_then(key, AfterRead::Save { from, text });
+    }
+
+    /// The description saved, now the issue is read: one that moved since
+    /// the editing began goes back to the editor, with the text.
+    fn save_read(&mut self, key: IssueKey, from: String, text: String) {
+        let Some(issue) = self.read.get(&key).map(|d| d.issue.clone()) else { return };
+        if issue.description.to_markdown().trim() != split_title(&from).1 {
+            self.edit_description(&issue, Some(&text));
+            let why = format!("{key}: the description changed meanwhile; yours is in the editor");
+            return self.say(why, Level::Warn);
+        }
+        self.save(key, description_update(&from, &text));
     }
 
     /// One rich text field back from `$EDITOR`: empty or unchanged leaves it.
@@ -2213,15 +2272,15 @@ fn refresh_detail(shown: &mut kolum_domain::Issue, fresh: &kolum_domain::Issue) 
     shown.description = description;
 }
 
-/// `# Title` then Markdown, against the issue as it is: only what moved is
-/// sent. The description is compared as Markdown, so a rich text that does
-/// not survive the round trip exactly is not rewritten for nothing.
-fn description_update(issue: &kolum_domain::Issue, text: &str) -> kolum_domain::IssueUpdate {
+/// `# Title` then Markdown, against the same it was edited from: only what
+/// moved is sent. The description is compared as Markdown, so a rich text
+/// that does not survive the round trip exactly is not rewritten for nothing.
+fn description_update(from: &str, text: &str) -> kolum_domain::IssueUpdate {
+    let (was_title, was) = split_title(from);
     let (title, body) = split_title(text);
     kolum_domain::IssueUpdate {
-        title: title.filter(|t| !t.is_empty() && *t != issue.title).map(String::from),
-        description: (body != issue.description.to_markdown().trim())
-            .then(|| kolum_domain::RichText::from_markdown(body)),
+        title: title.filter(|t| !t.is_empty() && Some(*t) != was_title).map(String::from),
+        description: (body != was).then(|| kolum_domain::RichText::from_markdown(body)),
         ..Default::default()
     }
 }
