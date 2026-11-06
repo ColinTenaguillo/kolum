@@ -1292,9 +1292,7 @@ impl App {
             .snapshot
             .as_ref()
             .and_then(|s| s.board.project.as_ref().map(|p| p.key.clone()))
-            .or_else(|| {
-                selected.map(|i| i.key.as_str().split('-').next().unwrap_or_default().to_string())
-            });
+            .or_else(|| selected.and_then(|i| i.key.project()).map(String::from));
         let Some(project) = project else {
             return self.say("No project to create the issue in", Level::Warn);
         };

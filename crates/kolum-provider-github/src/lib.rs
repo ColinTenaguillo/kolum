@@ -127,6 +127,19 @@ fn no_status() -> Status {
     Status { id: StatusId::new(""), name: "No Status".into(), category: StatusCategory::Todo }
 }
 
+/// GitHub's own key, `repo#12`, of an issue or a pull request: numbered
+/// in its repository. A draft has neither.
+fn numbered(content: &Value) -> Option<IssueKey> {
+    let repo = content["repository"]["name"].as_str()?;
+    Some(IssueKey::new(repo, "#", content["number"].as_u64()?))
+}
+
+/// A draft's key, in no repository: `draft-` and the end of its id.
+fn draft_key(id: &str) -> IssueKey {
+    let start = id.char_indices().rev().nth(5).map_or(0, |(at, _)| at);
+    IssueKey::parse(format!("draft-{}", &id[start..]))
+}
+
 /// An issue, pull request or draft as the domain has it. `fields` are the
 /// project item's values, absent for a search hit, whose status then
 /// comes from open or closed.
@@ -138,23 +151,7 @@ fn issue_of(
 ) -> Option<Known> {
     let kind = content["__typename"].as_str()?.to_string();
     let content_id = content["id"].as_str()?.to_string();
-    let repo = content["repository"]["name"].as_str().unwrap_or("");
-    let number = content["number"].as_u64();
-    let key = match (&*kind, number) {
-        ("DraftIssue", _) | (_, None) => {
-            let tail: String = item
-                .unwrap_or(&content_id)
-                .chars()
-                .rev()
-                .take(6)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            format!("draft-{tail}")
-        }
-        (_, Some(n)) => format!("{repo}#{n}"),
-    };
+    let key = numbered(content).unwrap_or_else(|| draft_key(item.unwrap_or(&content_id)));
     let labels: Vec<String> = content["labels"]["nodes"]
         .as_array()
         .into_iter()
@@ -217,12 +214,9 @@ fn issue_of(
         }
     }
     let created = datetime(&content["createdAt"])?;
-    let parent = content["parent"].as_object().map(|p| IssueRef {
-        key: IssueKey::new(format!(
-            "{}#{}",
-            p["repository"]["name"].as_str().unwrap_or(""),
-            p["number"]
-        )),
+    let p = &content["parent"];
+    let parent = numbered(p).map(|key| IssueRef {
+        key,
         title: p["title"].as_str().unwrap_or("").into(),
         kind: IssueKind::Epic,
         status: None,
@@ -230,7 +224,7 @@ fn issue_of(
     let author = content.get("author").or(content.get("creator"));
     let issue = Issue {
         id: IssueId::new(item.unwrap_or(&content_id)),
-        key: IssueKey::new(&key),
+        key,
         title: content["title"].as_str().unwrap_or("").into(),
         kind: issue_type,
         status,
@@ -279,6 +273,14 @@ impl GithubProvider {
     pub fn from_profile(table: &toml::Table) -> std::result::Result<Self, String> {
         let env = std::env::var("KOLUM_TOKEN").or_else(|_| std::env::var("GITHUB_TOKEN")).ok();
         Ok(Self::new(settings::parse(table, env)?))
+    }
+
+    /// The project itself, `owner/12`, as the profile names it: it holds
+    /// the board but numbers no issue, each is numbered in its repository.
+    /// Its owner would not do: a repository can be named as its owner is.
+    fn board_project(&self, p: &ProjectInfo) -> Project {
+        let key = format!("{}/{}", p.owner, self.settings.number);
+        Project { key, name: p.owner.clone() }
     }
 
     async fn graphql(&self, query: &str, variables: Value) -> Result<Value> {
@@ -351,7 +353,7 @@ impl GithubProvider {
 impl BoardSource for GithubProvider {
     async fn boards(&self) -> Result<Vec<BoardSummary>> {
         let p = self.project().await?;
-        let project = Project { key: p.owner.clone(), name: p.owner.clone() };
+        let project = self.board_project(p);
         Ok(vec![BoardSummary {
             id: BoardId::new(&p.id),
             name: p.title.clone(),
@@ -379,7 +381,7 @@ impl BoardSource for GithubProvider {
             id: id.clone(),
             name: p.title.clone(),
             kind: BoardKind::Kanban,
-            project: Some(Project { key: p.owner.clone(), name: p.owner.clone() }),
+            project: Some(self.board_project(p)),
             columns,
         })
     }

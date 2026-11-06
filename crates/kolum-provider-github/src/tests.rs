@@ -118,6 +118,11 @@ async fn the_project_is_a_board_and_its_status_options_are_columns() {
     assert_eq!(names, ["No Status", "Todo", "In Progress", "Done"]);
     assert_eq!(board.columns[2].statuses, [StatusId::new("o_prog")]);
     assert!(p.board(&BoardId::new("other")).await.is_err());
+    // The project itself, which numbers no issue: its cards are numbered
+    // in their repositories, even one named as its owner is.
+    let project = board.project.as_ref().map(|p| p.key.as_str());
+    assert_eq!(project, Some("ColinTenaguillo/12"));
+    assert_eq!(boards[0].project, board.project);
     let seen = gh.seen.lock().unwrap();
     assert_eq!(seen.len(), 1, "the project is read once");
     assert_eq!(seen[0]["authorization"], "bearer gho_test");
@@ -131,7 +136,8 @@ async fn items_become_issues_with_their_project_fields() {
     let page = p.board_issues(&BoardId::new("PVT_1"), None, None).await.unwrap();
     assert_eq!(page.next, Some(PageToken("Y3Vyc29yOjM=".into())));
     let [issue, pr, draft] = &page.items[..] else { panic!("{:?}", page.items) };
-    assert_eq!(issue.key.as_str(), "kolum#42");
+    let in_repo = (issue.key.as_str(), issue.key.project());
+    assert_eq!(in_repo, ("kolum#42", Some("kolum")), "its repository");
     assert_eq!(issue.id.as_str(), "PVTI_aaa111", "the project item, which the fields belong to");
     assert_eq!(
         (issue.status.name.as_str(), issue.status.category),
@@ -143,11 +149,12 @@ async fn items_become_issues_with_their_project_fields() {
     assert_eq!(issue.sprint.as_ref().unwrap().name, "Iteration 4");
     assert_eq!(issue.assignee.as_ref().unwrap().display_name, "Colin Tenaguillo");
     assert_eq!(issue.reporter.as_ref().unwrap().display_name, "anasilva", "no name: the login");
-    assert_eq!(issue.parent.as_ref().unwrap().key.as_str(), "kolum#10");
+    let parent = &issue.parent.as_ref().unwrap().key;
+    assert_eq!((parent.as_str(), parent.project()), ("kolum#10", Some("kolum")));
     assert_eq!(issue.description.plain_text(), "It takes 2 s.\non Jira\nwith 2k issues");
     assert_eq!(issue.fields[0].name, "Team");
     assert_eq!(pr.kind.name, "Pull request");
-    assert_eq!(draft.key.as_str(), "draft-ccc333");
+    assert_eq!((draft.key.as_str(), draft.key.project()), ("draft-ccc333", None), "no repository");
     assert_eq!((draft.status.name.as_str(), draft.kind.name.as_str()), ("No Status", "Draft"));
 }
 
@@ -155,14 +162,14 @@ async fn items_become_issues_with_their_project_fields() {
 async fn an_issue_reads_again_by_its_item_and_its_comments_by_its_content() {
     let gh = fake_github(200, None).await;
     let (p, _) = loaded(&gh).await;
-    let key = IssueKey::new("kolum#42");
+    let key = IssueKey::parse("kolum#42");
     assert_eq!(p.issue(&key).await.unwrap().title, "Picker opens slowly");
     let comments = p.comments(&key).await.unwrap();
     assert_eq!(comments[0].body.plain_text(), "Seen with --release too.");
     assert_eq!(comments[1].author.display_name, "ghost", "a deleted account");
-    assert!(p.comments(&IssueKey::new("draft-ccc333")).await.unwrap().is_empty());
+    assert!(p.comments(&IssueKey::parse("draft-ccc333")).await.unwrap().is_empty());
     assert!(p.activity(&key).await.unwrap().is_empty());
-    assert!(matches!(p.issue(&IssueKey::new("kolum#999")).await, Err(DomainError::NotFound(_))));
+    assert!(matches!(p.issue(&IssueKey::parse("kolum#999")).await, Err(DomainError::NotFound(_))));
     let seen = gh.seen.lock().unwrap();
     assert!(seen.iter().any(|r| r["variables"]["id"] == "PVTI_aaa111"));
     assert!(seen.iter().any(|r| r["variables"]["id"] == "I_42"));
@@ -172,7 +179,7 @@ async fn an_issue_reads_again_by_its_item_and_its_comments_by_its_content() {
 async fn writes_are_the_mutations_github_expects() {
     let gh = fake_github(200, None).await;
     let (p, _) = loaded(&gh).await;
-    let key = IssueKey::new("kolum#42");
+    let key = IssueKey::parse("kolum#42");
     let ts = p.transitions(&key).await.unwrap();
     assert_eq!(
         ts.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
@@ -187,7 +194,7 @@ async fn writes_are_the_mutations_github_expects() {
         .await
         .unwrap();
     p.update(
-        &IssueKey::new("draft-ccc333"),
+        &IssueKey::parse("draft-ccc333"),
         IssueUpdate { description: Some(RichText::from_markdown("x")), ..Default::default() },
     )
     .await
@@ -198,7 +205,7 @@ async fn writes_are_the_mutations_github_expects() {
     let refused = p.update(&key, rich).await;
     assert_eq!(refused, Err(DomainError::Unsupported(Capability::CustomFields)), "rich fields");
     assert_eq!(
-        p.assign(&IssueKey::new("draft-ccc333"), None).await,
+        p.assign(&IssueKey::parse("draft-ccc333"), None).await,
         Err(DomainError::Unsupported(Capability::Write))
     );
 
@@ -227,7 +234,7 @@ async fn writes_are_the_mutations_github_expects() {
 async fn creating_and_cloning_add_a_draft_to_the_project() {
     let gh = fake_github(200, None).await;
     let (p, _) = loaded(&gh).await;
-    let clone = p.clone_issue(&IssueKey::new("kolum#42")).await.unwrap();
+    let clone = p.clone_issue(&IssueKey::parse("kolum#42")).await.unwrap();
     assert_eq!(clone.key.as_str(), "draft-new999");
     assert_eq!(clone.title, "CLONE - Picker opens slowly");
     let seen = gh.seen.lock().unwrap();
@@ -256,7 +263,7 @@ async fn search_runs_inside_the_project_and_keeps_what_the_board_knows() {
         "not on it: open or closed"
     );
     assert_eq!(
-        p.issue(&IssueKey::new("kolum#50")).await.unwrap().title,
+        p.issue(&IssueKey::parse("kolum#50")).await.unwrap().title,
         "Crash on empty board",
         "remembered to open"
     );
@@ -348,7 +355,7 @@ async fn ranking_places_the_item_after_another_in_the_projects_order() {
     let gh = fake_github(200, None).await;
     let (p, _) = loaded(&gh).await; // items aaa111 (#42), bbb222 (#43), ccc333 (draft)
     let (issue, pr, draft) =
-        (IssueKey::new("kolum#42"), IssueKey::new("kolum#43"), IssueKey::new("draft-ccc333"));
+        (IssueKey::parse("kolum#42"), IssueKey::parse("kolum#43"), IssueKey::parse("draft-ccc333"));
     p.rank(&issue, &Rank::After(pr.clone())).await.unwrap();
     p.rank(&draft, &Rank::Before(pr.clone())).await.unwrap();
     p.rank(&pr, &Rank::Before(issue.clone())).await.unwrap();
@@ -375,8 +382,31 @@ async fn a_sync_drops_an_item_the_project_no_longer_holds() {
     let fresh = kolum_app::load_board(&p, None).await.unwrap();
     let mut cached = fresh.clone();
     let mut gone = cached.issues[0].clone();
-    gone.key = IssueKey::new("python-language-server#199");
+    gone.key = IssueKey::parse("python-language-server#199");
     cached.issues.insert(0, gone);
     let synced = kolum_app::sync_board(&p, cached, OffsetDateTime::now_utc()).await.unwrap();
     assert_eq!(synced, fresh, "the cards and their order are the project's");
+}
+
+#[test]
+fn a_parent_with_no_number_is_no_parent() {
+    let content = |parent: Value| {
+        json!({ "__typename": "Issue", "id": "I_1", "number": 3, "title": "t",
+                "repository": { "name": "loki" }, "createdAt": "2026-01-01T00:00:00Z",
+                "parent": parent })
+    };
+    let numbered =
+        content(json!({ "number": 9, "title": "Epic", "repository": { "name": "tempo" } }));
+    let issue = issue_of(&numbered, &[], None, "Status").unwrap().issue;
+    assert_eq!(issue.parent.map(|p| p.key.to_string()).as_deref(), Some("tempo#9"));
+    let unnumbered = content(json!({ "title": "Epic", "repository": { "name": "tempo" } }));
+    assert_eq!(issue_of(&unnumbered, &[], None, "Status").unwrap().issue.parent, None);
+}
+
+#[tokio::test]
+async fn a_github_issue_has_no_field_layout_to_keep() {
+    let gh = fake_github(200, None).await;
+    let (p, issues) = loaded(&gh).await;
+    let layout = p.field_layout(&issues[0].key).await;
+    assert!(matches!(layout, Err(DomainError::Unsupported(_))), "{layout:?}");
 }

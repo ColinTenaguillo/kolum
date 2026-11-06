@@ -3,14 +3,11 @@
 use kolum_domain::{Filter, IssueKey};
 use time::OffsetDateTime;
 
-/// `ic-12983` read as the key `IC-12983`: a project key (a letter, then
-/// letters, digits or `_`), a dash and a number.
+/// `ic-12983` read as the key `IC-12983`: typed text, trimmed and in
+/// capitals, when it reads as a Jira key (not GitHub's `repo#12`).
 pub fn issue_key(text: &str) -> Option<IssueKey> {
-    let (project, number) = text.trim().split_once('-')?;
-    let project_ok = project.starts_with(|c: char| c.is_ascii_alphabetic())
-        && project.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-    let number_ok = !number.is_empty() && number.chars().all(|c| c.is_ascii_digit());
-    (project_ok && number_ok).then(|| IssueKey::new(format!("{project}-{number}").to_uppercase()))
+    let key = IssueKey::parse(text.trim().to_uppercase());
+    (key.project().is_some() && !key.as_str().contains('#')).then_some(key)
 }
 
 /// A JQL string literal: always quoted, so a value with a space, a dash or
@@ -138,9 +135,10 @@ mod tests {
 
     #[test]
     fn an_issue_key_is_told_from_text() {
-        assert_eq!(issue_key(" ic-12983 "), Some(IssueKey::new("IC-12983")));
-        assert_eq!(issue_key("MY_P2-7"), Some(IssueKey::new("MY_P2-7")));
-        for text in ["login", "IC-", "-12", "2FA-1", "IC-12a", "IC-1 timeout", "IC-1-2"] {
+        assert_eq!(issue_key(" ic-12983 "), Some(IssueKey::parse("IC-12983")));
+        assert_eq!(issue_key("MY_P2-7"), Some(IssueKey::parse("MY_P2-7")));
+        assert_eq!(issue_key("my_p2-7").unwrap().project(), Some("MY_P2"));
+        for text in ["login", "IC-", "-12", "2FA-1", "IC-12a", "IC-1 timeout", "IC-1-2", "web#12"] {
             assert_eq!(issue_key(text), None, "{text}");
         }
     }

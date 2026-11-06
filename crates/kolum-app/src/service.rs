@@ -96,10 +96,10 @@ impl Prefetch {
 }
 
 /// The project and the issue type an issue's field layout belongs to:
-/// every issue of a type in a project has the same.
+/// every issue of a type in a project has the same. A key in no project
+/// (a GitHub draft) has an empty one, which no project's name is.
 pub fn layout_key(issue: &Issue) -> String {
-    let project = issue.key.as_str().split(['-', '#']).next().unwrap_or_default();
-    format!("{project}/{}", issue.kind.name)
+    format!("{}/{}", issue.key.project().unwrap_or_default(), issue.kind.name)
 }
 
 /// What comes back, in whatever order the requests finish.
@@ -489,12 +489,12 @@ mod tests {
         let Some(Event::Boards(boards)) = next(&mut events).await else { panic!() };
         assert_eq!(boards.len(), 1);
 
-        service.send(Command::LoadIssue(IssueKey::new("ACME-5")));
+        service.send(Command::LoadIssue(IssueKey::parse("ACME-5")));
         let Some(Event::IssueLoaded(detail)) = next(&mut events).await else { panic!() };
         assert_eq!(detail.comments.len(), 3);
         let layout = detail.layout.as_ref().expect("the fake has a layout");
         assert!(detail.children.is_empty(), "ACME-5 is no epic");
-        service.send(Command::LoadIssue(IssueKey::new("ACME-1")));
+        service.send(Command::LoadIssue(IssueKey::parse("ACME-1")));
         let Some(Event::IssueLoaded(epic)) = next(&mut events).await else { panic!() };
         assert_eq!(epic.children.len(), 6, "an epic comes with its children");
         assert_eq!(layout.body[0].as_str(), "description");
@@ -505,9 +505,9 @@ mod tests {
     async fn a_failure_names_what_failed() {
         let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), None);
         events.recv().await; // Me
-        service.send(Command::LoadIssue(IssueKey::new("ACME-999")));
+        service.send(Command::LoadIssue(IssueKey::parse("ACME-999")));
         let Some(Event::IssueLoadFailed { key, error }) = events.recv().await else { panic!() };
-        assert_eq!(key, IssueKey::new("ACME-999"));
+        assert_eq!(key, IssueKey::parse("ACME-999"));
         assert!(matches!(error, DomainError::NotFound(_)));
     }
 
@@ -542,7 +542,7 @@ mod tests {
         let (service, mut events) = Service::spawn(fake.clone(), Some(Cache::new(&dir)));
         service.send(Command::LoadBoard(None));
         next_board(&mut events).await;
-        let key = IssueKey::new("ACME-12");
+        let key = IssueKey::parse("ACME-12");
         let update = IssueUpdate { title: Some("By an automation".into()), ..Default::default() };
         fake.update(&key, update).await.unwrap();
         service.send(Command::SyncBoard(None));
@@ -564,7 +564,7 @@ mod tests {
         assert!(fresh, "nothing cached: straight from the provider");
         assert!(dir.join("first.json").exists());
 
-        let key = IssueKey::new("ACME-12");
+        let key = IssueKey::parse("ACME-12");
         fake.update(&key, IssueUpdate { title: Some("Renamed".into()), ..Default::default() })
             .await
             .unwrap();
@@ -593,7 +593,7 @@ mod tests {
         let fake = Arc::new(FakeProvider::new());
         let mut cached = load_board(fake.as_ref(), None).await.unwrap();
         let mut gone = cached.issues[0].clone();
-        gone.key = IssueKey::new("ACME-999");
+        gone.key = IssueKey::parse("ACME-999");
         cached.issues.push(gone);
         Cache::new(&dir).save("first", &cached, time::OffsetDateTime::now_utc()).unwrap();
         let (service, mut events) = Service::spawn(fake, Some(Cache::new(&dir)));
@@ -628,9 +628,11 @@ mod tests {
     #[tokio::test]
     async fn a_layout_is_the_project_and_the_type_of_an_issue() {
         use kolum_domain::IssueReader;
-        let mut issue = FakeProvider::new().issue(&IssueKey::new("ACME-12")).await.unwrap();
+        let mut issue = FakeProvider::new().issue(&IssueKey::parse("ACME-12")).await.unwrap();
         issue.kind.name = "Bug".into();
         assert_eq!(layout_key(&issue), "ACME/Bug");
+        issue.key = IssueKey::parse("python-language-server#199");
+        assert_eq!(layout_key(&issue), "python-language-server/Bug", "a repository's own dashes");
     }
 
     #[tokio::test]
@@ -639,7 +641,7 @@ mod tests {
         let fake = Arc::new(FakeProvider::new());
         let (service, mut events) = Service::spawn(fake.clone(), Some(Cache::new(&dir)));
         events.recv().await; // Me
-        service.send(Command::LoadIssue(IssueKey::new("ACME-5")));
+        service.send(Command::LoadIssue(IssueKey::parse("ACME-5")));
         let Some(Event::IssueLoaded(detail)) = events.recv().await else { panic!() };
         let (_again, mut events) = Service::spawn(fake, Some(Cache::new(&dir)));
         let Some(Event::FieldLayouts(layouts)) = events.recv().await else {
@@ -655,7 +657,7 @@ mod tests {
         let fake = Arc::new(FakeProvider::new());
         let (service, mut events) = Service::spawn(fake.clone(), Some(Cache::new(&dir)));
         events.recv().await; // Me
-        service.send(Command::LoadIssue(IssueKey::new("ACME-5")));
+        service.send(Command::LoadIssue(IssueKey::parse("ACME-5")));
         let Some(Event::IssueLoaded(detail)) = events.recv().await else { panic!() };
         let (_again, mut events) = Service::spawn(fake, Some(Cache::new(&dir)));
         let read = loop {
@@ -701,7 +703,7 @@ mod tests {
         service.send(Command::SyncBoard(None));
         assert_eq!(next_read(&mut events).await, None, "nothing changed, nothing read");
 
-        let key = IssueKey::new("ACME-12");
+        let key = IssueKey::parse("ACME-12");
         fake.update(&key, IssueUpdate { title: Some("Renamed".into()), ..Default::default() })
             .await
             .unwrap();
@@ -725,10 +727,10 @@ mod tests {
         let dir = crate::cache::tests::temp_dir("service-children");
         let fake = Arc::new(FakeProvider::new());
         // ACME-5 as an earlier opening kept it, since updated.
-        let key = IssueKey::new("ACME-5");
+        let key = IssueKey::parse("ACME-5");
         let mut issue = fake.issue(&key).await.unwrap();
         issue.updated -= time::Duration::days(1);
-        let child = fake.issue(&IssueKey::new("ACME-6")).await.unwrap().as_ref();
+        let child = fake.issue(&IssueKey::parse("ACME-6")).await.unwrap().as_ref();
         let opened = IssueDetail {
             issue,
             comments: vec![],
@@ -761,10 +763,10 @@ mod tests {
         state.loaded.send_replace(true);
         let at = time::OffsetDateTime::now_utc();
         // Two batches, the first failing: the second is not asked either.
-        let mut wanted = vec![(IssueKey::new("ACME-999"), at)];
-        wanted.extend((0..BULK_READ_MAX).map(|_| (IssueKey::new("ACME-5"), at)));
+        let mut wanted = vec![(IssueKey::parse("ACME-999"), at)];
+        wanted.extend((0..BULK_READ_MAX).map(|_| (IssueKey::parse("ACME-5"), at)));
         prefetch(fake.clone(), None, wanted, events.clone(), state.clone()).await;
-        let five = vec![(IssueKey::new("ACME-5"), at)];
+        let five = vec![(IssueKey::parse("ACME-5"), at)];
         prefetch(fake, None, five, events, state).await;
         assert!(rx.try_recv().is_err(), "nothing read after the failure");
     }
@@ -773,7 +775,7 @@ mod tests {
     async fn the_fields_an_issue_lets_set_come_back_for_it() {
         let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), None);
         events.recv().await; // Me
-        let key = IssueKey::new("ACME-9");
+        let key = IssueKey::parse("ACME-9");
         service.send(Command::EditableFields(key.clone()));
         let Some(Event::EditableFields { key: k, result: Ok(fields) }) = events.recv().await else {
             panic!()
@@ -786,7 +788,7 @@ mod tests {
     async fn a_write_comes_back_with_the_issue_as_the_provider_has_it() {
         let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), None);
         events.recv().await; // Me
-        let key = IssueKey::new("ACME-9");
+        let key = IssueKey::parse("ACME-9");
         service.send(Command::Transitions(key.clone()));
         let Some(Event::Transitions { result: Ok(ts), .. }) = events.recv().await else { panic!() };
         let to_done = ts.iter().find(|t| t.name == "Done").unwrap().id.clone();
@@ -812,7 +814,7 @@ mod tests {
     async fn a_transition_to_a_status_goes_by_the_issues_own() {
         let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), None);
         events.recv().await; // Me
-        let key = IssueKey::new("ACME-9");
+        let key = IssueKey::parse("ACME-9");
         service.send(Command::Transitions(key.clone()));
         let Some(Event::Transitions { result: Ok(ts), .. }) = events.recv().await else { panic!() };
         let t = ts.iter().find(|t| t.name == "Done").unwrap();
@@ -835,7 +837,7 @@ mod tests {
     async fn create_and_clone_answer_with_the_new_issue() {
         let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), None);
         events.recv().await; // Me
-        service.send(Command::Clone(IssueKey::new("ACME-5")));
+        service.send(Command::Clone(IssueKey::parse("ACME-5")));
         let Some(Event::Created(clone)) = events.recv().await else { panic!() };
         assert_eq!(clone.title, "CLONE - Login times out after SSO redirect");
         let kind =
@@ -850,7 +852,7 @@ mod tests {
         service.send(Command::Create(new));
         let Some(Event::Created(created)) = events.recv().await else { panic!() };
         assert_eq!(created.title, "T");
-        service.send(Command::Clone(IssueKey::new("NOPE-1")));
+        service.send(Command::Clone(IssueKey::parse("NOPE-1")));
         assert!(
             matches!(events.recv().await, Some(Event::Failed { what, .. }) if what == "cloning NOPE-1")
         );

@@ -194,7 +194,7 @@ fn an_issue_maps_every_field() {
     let versions = issue.fields.iter().find(|f| f.id.as_str() == "fixVersions").unwrap();
     let released = FieldValue::Options(vec!["3.1.0".into()]);
     assert_eq!((versions.name.as_str(), &versions.value), ("Fix versions", &released));
-    assert_eq!(issue.key.as_str(), "ACME-5");
+    assert_eq!((issue.key.as_str(), issue.key.project()), ("ACME-5", Some("ACME")));
     assert_eq!(issue.id.as_str(), "10005");
     assert_eq!(issue.kind, IssueType { name: "Bug".into(), kind: IssueKind::Bug });
     assert_eq!(issue.status.category, StatusCategory::Doing);
@@ -209,6 +209,7 @@ fn an_issue_maps_every_field() {
     assert_eq!(issue.labels, ["auth", "backend"]);
     let parent = issue.parent.as_ref().unwrap();
     assert_eq!((parent.key.as_str(), parent.kind), ("ACME-1", IssueKind::Epic));
+    assert_eq!(parent.key.project(), Some("ACME"));
     assert_eq!(issue.subtasks[0].kind, IssueKind::Subtask);
     assert_eq!(issue.links[0].relation, "blocks");
     assert_eq!(issue.links[0].issue.key.as_str(), "ACME-34");
@@ -610,7 +611,7 @@ async fn issues_are_read_in_full_with_their_comments_and_history_in_one_request(
     let jira = fake_jira(None).await;
     let p = provider(&jira);
     assert!(p.capabilities().supports(Capability::BulkRead));
-    let read = p.issues_in_full(&[IssueKey::new("ACME-5")]).await.unwrap();
+    let read = p.issues_in_full(&[IssueKey::parse("ACME-5")]).await.unwrap();
     assert_eq!(read.len(), 1);
     assert_eq!(read[0].issue.title, "Login times out after SSO redirect");
     assert_eq!(read[0].comments[0].body.plain_text(), "I can reproduce with MFA on.");
@@ -630,7 +631,7 @@ async fn issues_are_read_in_full_with_their_comments_and_history_in_one_request(
 async fn the_provider_reads_an_issue_its_comments_and_history() {
     let jira = fake_jira(None).await;
     let p = provider(&jira);
-    let key = IssueKey::new("ACME-5");
+    let key = IssueKey::parse("ACME-5");
     assert_eq!(p.issue(&key).await.unwrap().title, "Login times out after SSO redirect");
     let comments = p.comments(&key).await.unwrap();
     assert_eq!(comments[0].body.plain_text(), "I can reproduce with MFA on.");
@@ -654,7 +655,7 @@ async fn the_provider_reads_an_issue_its_comments_and_history() {
     let transitions = p.transitions(&key).await.unwrap();
     assert_eq!(transitions[1].required_fields, [FieldId::new("resolution")]);
     assert_eq!(p.me().await.unwrap().display_name, "Colin Tenaguillo");
-    let missing = p.issue(&IssueKey::new("ACME-404")).await;
+    let missing = p.issue(&IssueKey::parse("ACME-404")).await;
     assert_eq!(missing, Err(DomainError::NotFound("No such thing".into())));
 }
 
@@ -729,7 +730,7 @@ async fn writes_send_what_jira_expects() {
     let jira = fake_jira(None).await;
     let p = provider(&jira);
     assert!(p.capabilities().supports(Capability::Write));
-    let key = IssueKey::new("ACME-5");
+    let key = IssueKey::parse("ACME-5");
     p.transition(&key, &TransitionId::new("21")).await.unwrap();
     p.assign(&key, Some(&UserId::new("557058:ana"))).await.unwrap();
     p.assign(&key, None).await.unwrap();
@@ -790,7 +791,7 @@ async fn writes_send_what_jira_expects() {
 async fn creating_and_cloning_read_the_new_issue_back() {
     let jira = fake_jira(None).await;
     let p = provider(&jira);
-    let clone = p.clone_issue(&IssueKey::new("ACME-5")).await.unwrap();
+    let clone = p.clone_issue(&IssueKey::parse("ACME-5")).await.unwrap();
     assert_eq!(clone.key.as_str(), "ACME-5", "read back by the key Jira gave");
     let posts = sent(&jira, "POST");
     let (line, body) = parts(&posts[0]);
@@ -807,7 +808,7 @@ async fn creating_and_cloning_read_the_new_issue_back() {
 async fn a_refused_write_is_a_typed_error() {
     let jira = fake_jira(None).await;
     let p = provider(&jira);
-    let refused = p.transition(&IssueKey::new("ACME-404"), &TransitionId::new("21")).await;
+    let refused = p.transition(&IssueKey::parse("ACME-404"), &TransitionId::new("21")).await;
     assert_eq!(refused, Err(DomainError::NotFound("No such thing".into())));
 }
 
@@ -828,8 +829,8 @@ async fn ranking_puts_the_issue_before_or_after_another() {
     use serde_json::json;
     let jira = fake_jira(None).await;
     let p = provider(&jira);
-    p.rank(&IssueKey::new("ACME-5"), &Rank::After(IssueKey::new("ACME-6"))).await.unwrap();
-    p.rank(&IssueKey::new("ACME-5"), &Rank::Before(IssueKey::new("ACME-6"))).await.unwrap();
+    p.rank(&IssueKey::parse("ACME-5"), &Rank::After(IssueKey::parse("ACME-6"))).await.unwrap();
+    p.rank(&IssueKey::parse("ACME-5"), &Rank::Before(IssueKey::parse("ACME-6"))).await.unwrap();
     let puts = sent(&jira, "PUT");
     assert_eq!(
         parts(&puts[0]),

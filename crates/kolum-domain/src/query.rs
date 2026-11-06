@@ -95,7 +95,7 @@ mod tests {
             User { id: UserId::new("ana"), display_name: "Ana Silva".into(), avatar_url: None };
         Issue {
             id: IssueId::new("1"),
-            key: IssueKey::new("PROJ-1"),
+            key: IssueKey::parse("PROJ-1"),
             title: "Login times out".into(),
             kind: IssueType { name: "Bug".into(), kind: IssueKind::Bug },
             status: Status {
@@ -108,7 +108,7 @@ mod tests {
             reporter: None,
             labels: vec!["backend".into()],
             parent: Some(IssueRef {
-                key: IssueKey::new("PROJ-10"),
+                key: IssueKey::parse("PROJ-10"),
                 title: "Single sign-on".into(),
                 kind: IssueKind::Epic,
                 status: None,

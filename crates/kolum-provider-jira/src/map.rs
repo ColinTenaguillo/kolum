@@ -298,7 +298,7 @@ pub fn priority(name: &str) -> Option<Priority> {
 
 fn issue_ref(dto: &RefDto) -> IssueRef {
     IssueRef {
-        key: IssueKey::new(&dto.key),
+        key: IssueKey::parse(&dto.key),
         title: dto.fields.summary.clone(),
         kind: dto.fields.issuetype.as_ref().map_or(IssueKind::Other, kind),
         status: dto.fields.status.as_ref().map(status),
@@ -388,7 +388,7 @@ pub fn issue(dto: &IssueDto, ctx: &Ctx) -> Result<Issue> {
     let parent = get::<RefDto>(f, "parent").map(|p| issue_ref(&p)).or_else(|| {
         let key: String = get(f, ctx.fields.epic_link.as_deref()?)?;
         Some(IssueRef {
-            key: IssueKey::new(key),
+            key: IssueKey::parse(key),
             title: String::new(),
             kind: IssueKind::Epic,
             status: None,
@@ -416,7 +416,7 @@ pub fn issue(dto: &IssueDto, ctx: &Ctx) -> Result<Issue> {
         .collect();
     Ok(Issue {
         id: IssueId::new(&dto.id),
-        key: IssueKey::new(&dto.key),
+        key: IssueKey::parse(&dto.key),
         title: get(f, "summary").unwrap_or_default(),
         kind: IssueType { kind: kind(&issuetype), name: issuetype.name },
         status: status(&status_dto),

@@ -272,7 +272,7 @@ impl BoardSource for JiraProvider {
                 self.client.get(&format!("{AGILE}/board/{id}/issue"), &query).await?;
             let next = page.start_at + page.issues.len() as u64;
             let last = page.issues.is_empty() || next >= page.total;
-            keys.extend(page.issues.into_iter().map(|i| IssueKey::new(i.key)));
+            keys.extend(page.issues.into_iter().map(|i| IssueKey::parse(i.key)));
             if last {
                 return Ok(keys);
             }
@@ -361,7 +361,7 @@ impl IssueReader for JiraProvider {
                 })
             })
             .await?;
-        let project = key.as_str().split('-').next().unwrap_or_default();
+        let project = key.project().unwrap_or_default();
         let body = json!({
             "operationName": "KolumFieldLayout",
             "query": LAYOUT_QUERY,
@@ -570,7 +570,7 @@ impl IssueWriter for JiraProvider {
         let key = created["key"]
             .as_str()
             .ok_or_else(|| DomainError::Transport("Jira created an issue with no key".into()))?;
-        self.issue(&IssueKey::new(key)).await
+        self.issue(&IssueKey::parse(key)).await
     }
 
     /// Jira's own rank, the board's order. It answers 207 when it refuses
@@ -593,9 +593,8 @@ impl IssueWriter for JiraProvider {
 
     async fn clone_issue(&self, key: &IssueKey) -> Result<Issue> {
         let source = self.issue(key).await?;
-        let project = key.as_str().split('-').next().unwrap_or_default().to_string();
         let new = NewIssue {
-            project,
+            project: key.project().unwrap_or_default().into(),
             kind: source.kind,
             title: format!("CLONE - {}", source.title),
             description: source.description,

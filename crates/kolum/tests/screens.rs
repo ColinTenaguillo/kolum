@@ -141,7 +141,7 @@ async fn enter_in_the_picker_opens_the_issue() {
     press(&mut app, "<CR>");
     assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-29"));
     assert_eq!(selected(&app), "ACME-29", "the board follows");
-    assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(IssueKey::new("ACME-29")))]);
+    assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(IssueKey::parse("ACME-29")))]);
 }
 
 #[tokio::test]
@@ -165,7 +165,7 @@ async fn the_issue_detail() {
     press(&mut app, "ll<CR>");
     assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-5"));
     let fake = FakeProvider::new();
-    let key = IssueKey::new("ACME-5");
+    let key = IssueKey::parse("ACME-5");
     let detail = IssueDetail {
         issue: fake.issue(&key).await.unwrap(),
         comments: fake.comments(&key).await.unwrap(),
@@ -306,7 +306,7 @@ async fn every_screen_survives_a_tiny_terminal() {
 
 async fn detail_of(app: &mut App, key: &str) {
     let fake = FakeProvider::new();
-    let key = IssueKey::new(key);
+    let key = IssueKey::parse(key);
     let detail = IssueDetail {
         issue: fake.issue(&key).await.unwrap(),
         comments: fake.comments(&key).await.unwrap(),
@@ -381,7 +381,7 @@ async fn a_board_sync_keeps_the_fields_only_the_detail_loaded() {
     let fake = FakeProvider::new();
     let mut app = loaded().await;
     press(&mut app, "/ACME-10<CR><CR>");
-    let key = IssueKey::new("ACME-10");
+    let key = IssueKey::parse("ACME-10");
     let issue = fake.issue(&key).await.unwrap();
     let detail =
         IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
@@ -406,7 +406,7 @@ async fn an_issue_opened_again_starts_from_what_it_last_read() {
     }
     app.on_event(Event::BoardLoaded { snapshot, fresh: true });
     press(&mut app, "/ACME-10<CR><CR>");
-    let issue = fake.issue(&IssueKey::new("ACME-10")).await.unwrap();
+    let issue = fake.issue(&IssueKey::parse("ACME-10")).await.unwrap();
     let detail =
         IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
     app.on_event(Event::IssueLoaded(Box::new(detail)));
@@ -427,7 +427,7 @@ async fn an_issue_read_on_an_earlier_run_opens_with_its_fields() {
         issue.fields.clear();
     }
     app.on_event(Event::BoardLoaded { snapshot, fresh: true });
-    let issue = fake.issue(&IssueKey::new("ACME-10")).await.unwrap();
+    let issue = fake.issue(&IssueKey::parse("ACME-10")).await.unwrap();
     let comments = fake.comments(&issue.key).await.unwrap();
     assert!(!comments.is_empty());
     let detail = IssueDetail { issue, comments, activity: vec![], layout: None, children: vec![] };
@@ -443,7 +443,7 @@ async fn an_issue_read_on_an_earlier_run_opens_with_its_fields() {
 async fn an_older_copy_does_not_replace_what_was_read() {
     let fake = FakeProvider::new();
     let mut app = loaded().await;
-    let issue = fake.issue(&IssueKey::new("ACME-10")).await.unwrap();
+    let issue = fake.issue(&IssueKey::parse("ACME-10")).await.unwrap();
     let with = |n: usize, issue: &kolum_domain::Issue| IssueDetail {
         issue: issue.clone(),
         comments: (0..n)
@@ -480,7 +480,7 @@ async fn a_board_sync_keeps_the_description_the_detail_loaded() {
     let fake = FakeProvider::new();
     let mut app = loaded().await;
     press(&mut app, "/ACME-10<CR><CR>");
-    let key = IssueKey::new("ACME-10");
+    let key = IssueKey::parse("ACME-10");
     let issue = fake.issue(&key).await.unwrap();
     let detail =
         IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
@@ -503,7 +503,7 @@ async fn a_board_sync_brings_a_newer_description() {
     let fake = FakeProvider::new();
     let mut app = loaded().await;
     press(&mut app, "/ACME-10<CR><CR>");
-    let key = IssueKey::new("ACME-10");
+    let key = IssueKey::parse("ACME-10");
     let issue = fake.issue(&key).await.unwrap();
     let updated = issue.updated;
     let detail =
@@ -552,7 +552,7 @@ async fn the_detail_follows_the_providers_layout() {
     let open = |settings| async move {
         let mut app = loaded_with(settings).await;
         press(&mut app, "/ACME-10<CR><CR>");
-        let mut issue = FakeProvider::new().issue(&IssueKey::new("ACME-10")).await.unwrap();
+        let mut issue = FakeProvider::new().issue(&IssueKey::parse("ACME-10")).await.unwrap();
         issue.due = Some(time::macros::date!(2026 - 12 - 01));
         let ids = |ids: &[&str]| ids.iter().map(|id| kolum_domain::FieldId::new(*id)).collect();
         let named = |rows: &[(&str, &str)]| {
@@ -618,7 +618,7 @@ async fn the_detail_follows_the_providers_layout() {
 #[tokio::test]
 async fn an_issue_opens_with_the_layout_its_type_had() {
     use kolum_domain::{FieldId, FieldLayout, LayoutField};
-    let issue = FakeProvider::new().issue(&IssueKey::new("ACME-10")).await.unwrap();
+    let issue = FakeProvider::new().issue(&IssueKey::parse("ACME-10")).await.unwrap();
     let layout = |name: &str| FieldLayout {
         side: vec![LayoutField {
             id: FieldId::new("customfield_10020"),
@@ -740,7 +740,10 @@ async fn picker_actions_reach_the_highlighted_issue() {
     settle(&mut app);
     app.take_effects();
     press(&mut app, "<C-t>");
-    assert_eq!(app.take_effects(), [Effect::Send(Command::Transitions(IssueKey::new("ACME-29")))]);
+    assert_eq!(
+        app.take_effects(),
+        [Effect::Send(Command::Transitions(IssueKey::parse("ACME-29")))]
+    );
     press(&mut app, "<Space>fstripe");
     settle(&mut app);
     press(&mut app, "<C-d><C-u><Esc>Gggkj");
@@ -762,7 +765,7 @@ async fn the_command_palette_runs_what_it_lists() {
 async fn an_action_runs_from_the_command_line() {
     use kolum_domain::IssueReader;
     let parent =
-        FakeProvider::new().issue(&IssueKey::new("ACME-5")).await.unwrap().parent.unwrap().key;
+        FakeProvider::new().issue(&IssueKey::parse("ACME-5")).await.unwrap().parent.unwrap().key;
     let mut app = loaded().await;
     press(&mut app, "ll"); // ACME-5
     app.take_effects();
@@ -882,7 +885,7 @@ async fn a_message_of_waiting_goes_once_it_is_done() {
     press(&mut app, "r");
     assert!(screen(&mut app, 150, 30).contains("Refreshing…"));
     // The epic of ACME-9 off the board: `gp` waits for it to be read.
-    let epic = IssueKey::new("ACME-1");
+    let epic = IssueKey::parse("ACME-1");
     let mut snapshot = load_board(&fake, None).await.unwrap();
     snapshot.issues.retain(|i| i.key != epic);
     app.on_event(Event::BoardLoaded { snapshot: snapshot.clone(), fresh: true });
@@ -1100,13 +1103,13 @@ async fn one_field_is_edited_at_a_time() {
     let sent: Vec<_> = sent.into_iter().map(|(_, k, w)| (k, w)).collect();
     assert_eq!(sent, [("ACME-10".to_string(), kolum_app::Write::Update(update))]);
     assert!(screen(&mut app, 140, 40).contains("Tokens rotate before they expire"), "at once");
-    let key = IssueKey::new("ACME-10");
+    let key = IssueKey::parse("ACME-10");
     let error = kolum_domain::DomainError::Conflict("stale".into());
     app.on_event(Event::WriteFailed { op, key: key.clone(), error });
     assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(key))], "read back");
 
     // A field Jira had to flatten says so before it is overwritten.
-    let mut issue = FakeProvider::new().issue(&IssueKey::new("ACME-10")).await.unwrap();
+    let mut issue = FakeProvider::new().issue(&IssueKey::parse("ACME-10")).await.unwrap();
     for field in &mut issue.fields {
         if let FieldValue::RichText(text) = &mut field.value {
             text.lossy = true;
@@ -1136,7 +1139,7 @@ async fn one_field_is_edited_at_a_time() {
 /// What the provider says the issue lets kolum set, as the service would.
 async fn editable(key: &str) -> Event {
     use kolum_domain::IssueWriter;
-    let key = IssueKey::new(key);
+    let key = IssueKey::parse(key);
     let result = FakeProvider::new().editable_fields(&key).await;
     Event::EditableFields { key, result }
 }
@@ -1171,7 +1174,7 @@ async fn e_edits_every_field_the_issue_lets_set() {
     app.take_effects();
     press(&mut app, "E");
     let asked = app.take_effects();
-    assert_eq!(asked, [Effect::Send(Command::EditableFields(IssueKey::new("ACME-10")))]);
+    assert_eq!(asked, [Effect::Send(Command::EditableFields(IssueKey::parse("ACME-10")))]);
     app.on_event(editable("ACME-10").await);
     settle(&mut app);
     let shown = screen(&mut app, 140, 40);
@@ -1254,13 +1257,13 @@ async fn e_edits_every_field_the_issue_lets_set() {
     assert!(screen(&mut app, 140, 40).contains("The board's sprints: transport: kanban"));
 
     press(&mut app, "E");
-    let key = IssueKey::new("ACME-10");
+    let key = IssueKey::parse("ACME-10");
     let error = kolum_domain::DomainError::Transport("timed out".into());
     app.on_event(Event::EditableFields { key, result: Err(error) });
     assert!(screen(&mut app, 140, 40).contains("Reading the fields of ACME-10: transport"));
 
     edit_field(&mut app, "status").await;
-    let asked = Effect::Send(Command::Transitions(IssueKey::new("ACME-10")));
+    let asked = Effect::Send(Command::Transitions(IssueKey::parse("ACME-10")));
     assert!(app.take_effects().contains(&asked), "the transitions, as t asks");
 }
 
@@ -1270,7 +1273,7 @@ async fn e_edits_every_field_the_issue_lets_set() {
 async fn e_falls_back_to_the_description_and_the_status() {
     let mut app = loaded().await;
     press(&mut app, "/ACME-10<CR><CR>E");
-    let key = IssueKey::new("ACME-10");
+    let key = IssueKey::parse("ACME-10");
     let unsupported =
         kolum_domain::DomainError::Unsupported(kolum_domain::Capability::CustomFields);
     app.on_event(Event::EditableFields { key, result: Err(unsupported) });
@@ -1305,14 +1308,14 @@ async fn the_board_syncs_by_itself_and_soon_after_a_change() {
     wait_until(&mut app, due);
     assert!(!app.take_effects().contains(&sync), "not while the write is on its way");
     let saved = Instant::now();
-    app.on_event(Event::Written { op, key: IssueKey::new(&key), issue: None });
+    app.on_event(Event::Written { op, key: IssueKey::parse(&key), issue: None });
     let due = app.deadline().unwrap();
     assert!(due <= saved + Duration::from_secs(6), "soon after Jira has it");
     wait_until(&mut app, due);
     assert!(app.take_effects().contains(&sync));
 
     press(&mut app, ":board 7<CR>");
-    app.on_event(Event::Written { op: 99, key: IssueKey::new("ACME-5"), issue: None });
+    app.on_event(Event::Written { op: 99, key: IssueKey::parse("ACME-5"), issue: None });
     let due = app.deadline().unwrap();
     wait_until(&mut app, due);
     let seven = Effect::Send(Command::SyncBoard(Some(kolum_domain::BoardId::new("7"))));
@@ -1362,7 +1365,7 @@ async fn pickers_without_a_remote_say_so() {
 /// The transitions the fake has for `key`, as the service would answer.
 async fn transitions_event(key: &str) -> Event {
     use kolum_domain::IssueWriter;
-    let key = IssueKey::new(key);
+    let key = IssueKey::parse(key);
     let result = FakeProvider::new().transitions(&key).await;
     Event::Transitions { key, result }
 }
@@ -1415,7 +1418,7 @@ async fn l_moves_a_card_at_once_and_a_refusal_puts_it_back() {
     app.take_effects();
     assert_eq!(column_of(&mut app, "ACME-9"), 0);
     press(&mut app, "L");
-    assert_eq!(app.take_effects(), [Effect::Send(Command::Transitions(IssueKey::new("ACME-9")))]);
+    assert_eq!(app.take_effects(), [Effect::Send(Command::Transitions(IssueKey::parse("ACME-9")))]);
     app.on_event(transitions_event("ACME-9").await);
     let sent = writes(app.take_effects());
     assert_eq!(sent.len(), 1, "one transition leads to To Do: no question asked");
@@ -1424,7 +1427,7 @@ async fn l_moves_a_card_at_once_and_a_refusal_puts_it_back() {
     assert_eq!(selected(&app), "ACME-9", "the highlight follows the card");
 
     let error = kolum_domain::DomainError::Conflict("workflow changed".into());
-    app.on_event(Event::WriteFailed { op: sent[0].0, key: IssueKey::new("ACME-9"), error });
+    app.on_event(Event::WriteFailed { op: sent[0].0, key: IssueKey::parse("ACME-9"), error });
     assert_eq!(column_of(&mut app, "ACME-9"), 0, "undone");
     assert!(screen(&mut app, 150, 60).contains("ACME-9: conflict: workflow changed; undone"));
 }
@@ -1436,7 +1439,7 @@ async fn a_move_into_a_column_of_two_statuses_asks_which() {
     press(&mut app, "jL"); // ACME-16 is in the Backlog; To Do first
     app.on_event(transitions_event("ACME-16").await);
     let first = writes(app.take_effects());
-    app.on_event(Event::Written { op: first[0].0, key: IssueKey::new("ACME-16"), issue: None });
+    app.on_event(Event::Written { op: first[0].0, key: IssueKey::parse("ACME-16"), issue: None });
     press(&mut app, "L");
     app.on_event(transitions_event("ACME-16").await);
     settle(&mut app);
@@ -1476,10 +1479,10 @@ async fn transitions_that_cannot_be_done_here_say_why() {
     );
 
     press(&mut app, "L");
-    app.on_event(Event::Transitions { key: IssueKey::new("ACME-9"), result: Ok(vec![]) });
+    app.on_event(Event::Transitions { key: IssueKey::parse("ACME-9"), result: Ok(vec![]) });
     assert!(screen(&mut app, 150, 30).contains("No transition takes ACME-9 to To Do from here"));
     press(&mut app, "t");
-    app.on_event(Event::Transitions { key: IssueKey::new("ACME-1"), result: Ok(vec![]) });
+    app.on_event(Event::Transitions { key: IssueKey::parse("ACME-1"), result: Ok(vec![]) });
     assert!(
         !screen(&mut app, 150, 30).contains("No transition"),
         "a reply for another issue is ignored"
@@ -1516,7 +1519,7 @@ async fn a_comment_goes_through_the_editor() {
     let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else {
         panic!("expected the editor")
     };
-    assert_eq!(purpose, EditPurpose::Comment(IssueKey::new("ACME-9")));
+    assert_eq!(purpose, EditPurpose::Comment(IssueKey::parse("ACME-9")));
     assert!(text.contains("<!-- kolum:") && text.contains("ACME-9"));
 
     app.on_edited(purpose.clone(), Ok(text.clone()));
@@ -1539,7 +1542,7 @@ async fn editing_sends_only_what_changed() {
     app.take_effects();
     // The board's copy is no ground for an edit: the issue is read first.
     press(&mut app, "e");
-    let key = IssueKey::new("ACME-9");
+    let key = IssueKey::parse("ACME-9");
     assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(key.clone()))]);
     assert!(screen(&mut app, 120, 30).contains("Reading ACME-9…"));
     let issue = FakeProvider::new().issue(&key).await.unwrap();
@@ -1588,7 +1591,7 @@ async fn editing_sends_only_what_changed() {
 async fn an_edit_starts_from_a_read_as_new_as_the_board() {
     let fake = FakeProvider::new();
     let mut app = loaded().await;
-    let key = IssueKey::new("ACME-9");
+    let key = IssueKey::parse("ACME-9");
     let mut read = fake.issue(&key).await.unwrap();
     read.description = kolum_domain::RichText { lossy: true, ..read.description };
     let detail = |issue| IssueDetail {
@@ -1635,7 +1638,7 @@ async fn an_edit_starts_from_a_read_as_new_as_the_board() {
 async fn a_description_changed_meanwhile_reopens_the_editor_on_the_text() {
     let fake = FakeProvider::new();
     let mut app = loaded().await;
-    let key = IssueKey::new("ACME-9");
+    let key = IssueKey::parse("ACME-9");
     let read = fake.issue(&key).await.unwrap();
     let detail = |issue| IssueDetail {
         issue,
@@ -1682,7 +1685,7 @@ async fn a_description_changed_meanwhile_reopens_the_editor_on_the_text() {
 async fn a_saved_description_shows_at_once_and_e_waits_for_the_save() {
     let fake = FakeProvider::new();
     let mut app = loaded().await;
-    let key = IssueKey::new("ACME-9");
+    let key = IssueKey::parse("ACME-9");
     let read = fake.issue(&key).await.unwrap();
     let detail = |issue| IssueDetail {
         issue,
@@ -1715,7 +1718,7 @@ async fn a_saved_description_shows_at_once_and_e_waits_for_the_save() {
 async fn a_failed_read_leaves_nothing_waiting_on_it() {
     let fake = FakeProvider::new();
     let mut app = loaded().await;
-    let key = IssueKey::new("ACME-9");
+    let key = IssueKey::parse("ACME-9");
     let read = fake.issue(&key).await.unwrap();
     let detail = |issue| IssueDetail {
         issue,
@@ -1737,7 +1740,7 @@ async fn a_failed_read_leaves_nothing_waiting_on_it() {
     assert!(app.take_effects().is_empty(), "no editor out of the blue");
 
     // The epic of ACME-9 off the board: `gp` waits for it to be read.
-    let epic = IssueKey::new("ACME-1");
+    let epic = IssueKey::parse("ACME-1");
     let mut snapshot = load_board(&fake, None).await.unwrap();
     snapshot.issues.retain(|i| i.key != epic);
     app.on_event(Event::BoardLoaded { snapshot, fresh: true });
@@ -1777,7 +1780,7 @@ async fn the_picker_previews_the_description_read_whole() {
         issue.description = kolum_domain::RichText::default();
     }
     app.on_event(Event::BoardLoaded { snapshot, fresh: true });
-    let issue = fake.issue(&IssueKey::new("ACME-10")).await.unwrap();
+    let issue = fake.issue(&IssueKey::parse("ACME-10")).await.unwrap();
     let detail =
         IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
     app.on_event(Event::ReadIssues(vec![detail]));
@@ -1845,7 +1848,7 @@ async fn c_creates_through_the_editor_and_capital_c_clones() {
     assert!(screen(&mut app, 150, 40).contains("Created ACME-45"));
 
     press(&mut app, "C");
-    assert_eq!(app.take_effects(), [Effect::Send(Command::Clone(IssueKey::new("ACME-45")))]);
+    assert_eq!(app.take_effects(), [Effect::Send(Command::Clone(IssueKey::parse("ACME-45")))]);
 }
 
 #[tokio::test]
@@ -1861,7 +1864,10 @@ async fn visual_mode_acts_on_a_range_of_cards() {
     assert!(!screen(&mut app, 150, 50).contains("VISUAL"), "an action ends it");
 
     press(&mut app, "vkL");
-    assert_eq!(app.take_effects(), [Effect::Send(Command::Transitions(IssueKey::new("ACME-10")))]);
+    assert_eq!(
+        app.take_effects(),
+        [Effect::Send(Command::Transitions(IssueKey::parse("ACME-10")))]
+    );
     app.on_event(transitions_event("ACME-10").await);
     let sent = writes(app.take_effects());
     assert_eq!(
@@ -2014,7 +2020,7 @@ async fn gi_views_the_pictures_full_screen() {
 async fn gp_opens_the_parent() {
     use kolum_domain::IssueReader;
     let fake = FakeProvider::new();
-    let parent = fake.issue(&IssueKey::new("ACME-5")).await.unwrap().parent.unwrap().key;
+    let parent = fake.issue(&IssueKey::parse("ACME-5")).await.unwrap().parent.unwrap().key;
     let mut app = loaded().await;
     press(&mut app, "ll<CR>"); // ACME-5
     app.take_effects();
@@ -2112,11 +2118,11 @@ async fn a_search_hit_that_is_not_on_the_board_still_opens() {
     app.take_effects();
     // An epic: in the project, not a card on the board.
     let fake = FakeProvider::new();
-    let epic = fake.issue(&IssueKey::new("ACME-1")).await.unwrap();
+    let epic = fake.issue(&IssueKey::parse("ACME-1")).await.unwrap();
     app.on_event(Event::SearchResults { id: 1, result: Ok(vec![epic.clone()]) });
     settle(&mut app);
     press(&mut app, "<CR>");
-    assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(IssueKey::new("ACME-1")))]);
+    assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(IssueKey::parse("ACME-1")))]);
     assert!(screen(&mut app, 120, 30).contains("Opening ACME-1"));
     let children = kolum_domain::IssueReader::children(&fake, &epic.key).await.unwrap();
     let detail =
@@ -2332,13 +2338,13 @@ async fn shift_j_and_k_move_a_card_within_its_column() {
     assert_eq!(&column_order(&mut app, 2)[..3], ["ACME-10", "ACME-5", "ACME-11"], "moved at once");
     assert_eq!(selected(&app), "ACME-5", "the highlight follows it");
     let sent = writes(app.take_effects());
-    assert_eq!(sent[0].2, kolum_app::Write::Rank(Rank::After(K::new("ACME-10"))));
+    assert_eq!(sent[0].2, kolum_app::Write::Rank(Rank::After(K::parse("ACME-10"))));
 
     press(&mut app, "K");
     assert_eq!(column_order(&mut app, 2), start);
     assert_eq!(
         writes(app.take_effects())[0].2,
-        kolum_app::Write::Rank(Rank::Before(K::new("ACME-10")))
+        kolum_app::Write::Rank(Rank::Before(K::parse("ACME-10")))
     );
 
     press(&mut app, "2J");
@@ -2350,7 +2356,7 @@ async fn shift_j_and_k_move_a_card_within_its_column() {
     let op = writes(app.take_effects())[0].0;
     app.on_event(Event::WriteFailed {
         op,
-        key: K::new("ACME-5"),
+        key: K::parse("ACME-5"),
         error: kolum_domain::DomainError::Conflict("Rank is not configured".into()),
     });
     assert_eq!(column_order(&mut app, 2), start, "a refusal puts the order back");
@@ -2472,4 +2478,45 @@ async fn a_card_without_labels_has_no_labels_line() {
     let title = row("┃Enforce SSO per");
     assert!(lines[title + 3].contains("┃■ ACME-9 ↓ "), "the key line under the epic: {shown}");
     assert_eq!(row("▍Usage-based pricing"), title + 5, "after one blank line: {shown}");
+}
+
+/// The fake's board with GitHub's keys, `repo#12`, and no project of its own.
+async fn repository_board() -> App {
+    let fake = FakeProvider::new();
+    let mut snapshot = load_board(&fake, None).await.unwrap();
+    snapshot.board.project = None;
+    for (n, issue) in snapshot.issues.iter_mut().enumerate() {
+        issue.key = IssueKey::new("python-language-server", "#", n as u64);
+    }
+    let mut app = App::new(settings(), Arc::new(|| {}));
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true });
+    app.take_effects();
+    app
+}
+
+#[tokio::test]
+async fn c_on_a_board_without_a_project_creates_in_the_highlighted_cards_repository() {
+    use kolum::ui::EditPurpose;
+    let mut app = repository_board().await;
+    press(&mut app, "c");
+    let Some(Effect::Edit { purpose: EditPurpose::Create { project, .. }, .. }) =
+        app.take_effects().pop()
+    else {
+        panic!("expected the editor")
+    };
+    assert_eq!(project, "python-language-server");
+}
+
+#[tokio::test]
+async fn the_detail_names_the_repository_an_issue_is_in() {
+    let mut app = repository_board().await;
+    press(&mut app, "<CR>");
+    let key = app.open_issue().cloned().unwrap();
+    let mut issue = FakeProvider::new().issue(&IssueKey::parse("ACME-5")).await.unwrap();
+    (issue.key, issue.parent) = (key.clone(), None);
+    let detail =
+        IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
+    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    let shown = screen(&mut app, 150, 40);
+    assert!(shown.contains(&format!(" python-language-server · {key}")), "{shown}");
 }

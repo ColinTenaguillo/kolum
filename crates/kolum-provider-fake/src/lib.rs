@@ -102,7 +102,7 @@ fn status(id: &str) -> Status {
 }
 
 fn key(n: u32) -> IssueKey {
-    IssueKey::new(format!("{}-{n}", data::PROJECT_KEY))
+    IssueKey::new(data::PROJECT_KEY, "-", n.into())
 }
 
 fn type_name(kind: IssueKind) -> &'static str {
@@ -516,7 +516,7 @@ impl IssueWriter for FakeProvider {
         let now = OffsetDateTime::now_utc();
         let mut issue = issue(&data::ROWS[0]);
         issue.id = IssueId::new(format!("200{n}"));
-        issue.key = IssueKey::new(format!("{}-{n}", new.project));
+        issue.key = IssueKey::new(&new.project, "-", n.into());
         issue.title = new.title;
         issue.kind = new.kind;
         issue.description = new.description;

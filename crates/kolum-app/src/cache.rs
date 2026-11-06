@@ -180,6 +180,7 @@ impl Cache {
 pub(crate) mod tests {
     use super::*;
     use crate::load_board;
+    use kolum_domain::IssueKey;
     use kolum_provider_fake::FakeProvider;
 
     pub fn temp_dir(name: &str) -> PathBuf {
@@ -198,6 +199,22 @@ pub(crate) mod tests {
         cache.save("1", &snapshot, at).unwrap();
         assert_eq!(cache.load("1"), Some((snapshot, at)));
         assert!(!dir.join("1.json.tmp").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_key_is_kept_as_its_text_and_read_back_with_its_project() {
+        let dir = temp_dir("cache-keys");
+        let cache = Cache::new(&dir);
+        let snapshot = load_board(&FakeProvider::new(), None).await.unwrap();
+        cache.save("1", &snapshot, time::OffsetDateTime::now_utc()).unwrap();
+        let file = std::fs::read_to_string(dir.join("1.json")).unwrap();
+        assert!(file.contains(r#""key":"ACME-12""#), "a string, as files already on disk have");
+        let github = file.replace(r#""ACME-12""#, r#""python-language-server#12""#);
+        std::fs::write(dir.join("1.json"), github).unwrap();
+        let (loaded, _) = cache.load("1").unwrap();
+        let key = loaded.issues.iter().map(|i| &i.key).find(|k| k.as_str().ends_with("#12"));
+        assert_eq!(key.and_then(IssueKey::project), Some("python-language-server"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

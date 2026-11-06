@@ -62,13 +62,13 @@ async fn reads_a_real_board() {
             .unwrap_or("(none)");
         eprintln!(
             "  {:<8} {:<10} {:<12} {:<14} {:?} {:<30} parent {:?} est {:?} sprint {:?} labels {:?} files {}",
-            i.key.0,
+            i.key.as_str(),
             i.kind.name,
             i.status.name,
             column,
             i.priority,
             i.title.chars().take(30).collect::<String>(),
-            i.parent.as_ref().map(|p| &p.key.0),
+            i.parent.as_ref().map(|p| p.key.as_str()),
             i.estimate,
             i.sprint.as_ref().map(|s| &s.name),
             i.labels,
@@ -105,7 +105,7 @@ async fn reads_a_real_board() {
     eprintln!("search by text: {} hits", p.search(&text, None).await.unwrap().items.len());
     let mine = Query::Filter(Filter { assignees: vec![UserSel::Me], ..Default::default() });
     eprintln!("search @me: {} hits", p.search(&mine, None).await.unwrap().items.len());
-    let project = first.key.as_str().split('-').next().unwrap();
+    let project = first.key.project().unwrap();
     let native = p
         .search(&Query::Native(format!("project = {project} ORDER BY created DESC")), None)
         .await

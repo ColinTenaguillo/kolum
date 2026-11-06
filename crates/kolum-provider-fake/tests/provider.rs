@@ -35,7 +35,7 @@ async fn the_board_has_five_columns_and_about_forty_cards_across_pages() {
 #[tokio::test]
 async fn a_transition_moves_the_issue_and_is_recorded() {
     let p = FakeProvider::new();
-    let key = IssueKey::new("ACME-5");
+    let key = IssueKey::parse("ACME-5");
     let to_done = p
         .transitions(&key)
         .await
@@ -68,7 +68,7 @@ async fn search_filters_by_fields_and_text_and_refuses_native_queries() {
 #[tokio::test]
 async fn writes_change_what_reads_return() {
     let p = FakeProvider::new();
-    let key = IssueKey::new("ACME-9");
+    let key = IssueKey::parse("ACME-9");
     p.assign(&key, Some(&UserId::new("u-ana"))).await.unwrap();
     assert_eq!(p.issue(&key).await.unwrap().assignee.unwrap().display_name, "Ana Silva");
     p.assign(&key, None).await.unwrap();
@@ -86,7 +86,7 @@ async fn writes_change_what_reads_return() {
 #[tokio::test]
 async fn reading_does_not_touch_and_writing_stamps_updated() {
     let p = FakeProvider::new();
-    let key = IssueKey::new("ACME-12");
+    let key = IssueKey::parse("ACME-12");
     let before = p.issue(&key).await.unwrap().updated;
     p.transitions(&key).await.unwrap();
     assert_eq!(p.issue(&key).await.unwrap().updated, before);
@@ -116,7 +116,7 @@ async fn reading_does_not_touch_and_writing_stamps_updated() {
 #[tokio::test]
 async fn transitions_lead_away_from_the_current_status_by_its_name() {
     let p = FakeProvider::new();
-    let key = IssueKey::new("ACME-5");
+    let key = IssueKey::parse("ACME-5");
     let current = p.issue(&key).await.unwrap().status;
     let transitions = p.transitions(&key).await.unwrap();
     assert_eq!(transitions.len(), 5, "every status but the current one");
@@ -124,14 +124,14 @@ async fn transitions_lead_away_from_the_current_status_by_its_name() {
     assert!(transitions.iter().all(|t| t.name == t.to.name));
     let unknown = p.transition(&key, &TransitionId::new("to-nowhere")).await;
     assert_eq!(unknown, Err(DomainError::NotFound("transition to-nowhere".into())));
-    assert!(p.transition(&IssueKey::new("ACME-999"), &transitions[0].id).await.is_err());
+    assert!(p.transition(&IssueKey::parse("ACME-999"), &transitions[0].id).await.is_err());
 }
 
 #[tokio::test]
 async fn comments_come_after_their_issue() {
     let p = FakeProvider::new();
     for key in ["ACME-5", "ACME-13"] {
-        let key = IssueKey::new(key);
+        let key = IssueKey::parse(key);
         let created = p.issue(&key).await.unwrap().created;
         let comments = p.comments(&key).await.unwrap();
         assert!(!comments.is_empty());
@@ -158,14 +158,17 @@ async fn a_created_issue_starts_in_the_backlog_with_its_own_key() {
         kind: IssueType { name: "Task".into(), kind: IssueKind::Task },
         title: "Write the release notes".into(),
         description: RichText::from_markdown("For 0.1"),
-        parent: Some(IssueKey::new("ACME-1")),
+        parent: Some(IssueKey::parse("ACME-1")),
     };
     let issue = p.create(new).await.unwrap();
-    assert_eq!(issue.key.as_str(), "ACME-45");
+    assert_eq!((issue.key.as_str(), issue.key.project()), ("ACME-45", Some("ACME")));
     assert_eq!((issue.status.name.as_str(), issue.kind.kind), ("Backlog", IssueKind::Task));
     assert_eq!(issue.parent.unwrap().key.as_str(), "ACME-1");
     assert!(issue.assignee.is_none() && issue.labels.is_empty());
-    assert_eq!(p.issue(&IssueKey::new("ACME-45")).await.unwrap().title, "Write the release notes");
+    assert_eq!(
+        p.issue(&IssueKey::parse("ACME-45")).await.unwrap().title,
+        "Write the release notes"
+    );
 }
 
 #[tokio::test]
@@ -188,7 +191,7 @@ async fn the_demo_data_follows_its_rules() {
     let p = FakeProvider::new();
     let get = |n: u32| {
         let p = &p;
-        async move { p.issue(&IssueKey::new(format!("ACME-{n}"))).await.unwrap() }
+        async move { p.issue(&IssueKey::parse(format!("ACME-{n}"))).await.unwrap() }
     };
     let (five, six, nine, sso) = (get(5).await, get(6).await, get(9).await, get(1).await);
     let base = time::macros::datetime!(2026-09-01 09:00 UTC);
@@ -218,7 +221,7 @@ async fn the_demo_data_follows_its_rules() {
 
     let activity = |key: &str| {
         let p = &p;
-        let key = IssueKey::new(key);
+        let key = IssueKey::parse(key);
         async move { p.activity(&key).await.unwrap() }
     };
     let backlog = activity("ACME-9").await;
@@ -237,7 +240,7 @@ async fn the_demo_data_follows_its_rules() {
 #[tokio::test]
 async fn the_sso_bug_carries_a_screenshot_and_a_log() {
     let p = FakeProvider::new();
-    let bug = p.issue(&IssueKey::new("ACME-5")).await.unwrap();
+    let bug = p.issue(&IssueKey::parse("ACME-5")).await.unwrap();
     let names: Vec<&str> = bug.attachments.iter().map(|a| a.name.as_str()).collect();
     assert_eq!(names, ["session-expired.png", "callback.log"]);
     assert!(bug.attachments[0].is_image() && !bug.attachments[1].is_image());
@@ -245,7 +248,7 @@ async fn the_sso_bug_carries_a_screenshot_and_a_log() {
     assert!(shot.starts_with(b"P6\n48 27\n255\n"));
     assert_eq!(shot.len(), b"P6\n48 27\n255\n".len() + 48 * 27 * 3);
     assert!(p.image(&bug.attachments[1].url).await.is_err(), "a log is no picture");
-    assert!(p.issue(&IssueKey::new("ACME-6")).await.unwrap().attachments.is_empty());
+    assert!(p.issue(&IssueKey::parse("ACME-6")).await.unwrap().attachments.is_empty());
 }
 
 #[tokio::test]
@@ -254,18 +257,20 @@ async fn ranking_moves_an_issue_next_to_another() {
     let order = |issues: Vec<Issue>| issues.iter().map(|i| i.key.to_string()).collect::<Vec<_>>();
     let before = order(all_board_issues(&p).await);
     assert_eq!(&before[..3], ["ACME-5", "ACME-6", "ACME-7"]);
-    p.rank(&IssueKey::new("ACME-5"), &Rank::After(IssueKey::new("ACME-7"))).await.unwrap();
+    p.rank(&IssueKey::parse("ACME-5"), &Rank::After(IssueKey::parse("ACME-7"))).await.unwrap();
     let after = order(all_board_issues(&p).await);
     assert_eq!(&after[..3], ["ACME-6", "ACME-7", "ACME-5"]);
-    p.rank(&IssueKey::new("ACME-5"), &Rank::Before(IssueKey::new("ACME-6"))).await.unwrap();
+    p.rank(&IssueKey::parse("ACME-5"), &Rank::Before(IssueKey::parse("ACME-6"))).await.unwrap();
     assert_eq!(order(all_board_issues(&p).await), before, "and back");
-    assert!(p.rank(&IssueKey::new("ACME-5"), &Rank::After(IssueKey::new("NOPE-1"))).await.is_err());
+    assert!(
+        p.rank(&IssueKey::parse("ACME-5"), &Rank::After(IssueKey::parse("NOPE-1"))).await.is_err()
+    );
     assert!(p.capabilities().supports(Capability::Rank));
 }
 
 #[tokio::test]
 async fn the_fake_says_which_fields_can_be_set() {
-    let fields = FakeProvider::new().editable_fields(&IssueKey::new("ACME-10")).await.unwrap();
+    let fields = FakeProvider::new().editable_fields(&IssueKey::parse("ACME-10")).await.unwrap();
     let team = fields.iter().find(|f| f.name == "Team").unwrap();
     let options = vec!["Platform".to_string(), "Mobile".to_string()];
     assert_eq!(team.kind, FieldKind::Choice { options, many: false });

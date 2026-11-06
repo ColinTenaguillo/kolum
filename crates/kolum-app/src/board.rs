@@ -29,20 +29,23 @@ impl BoardSnapshot {
         self.issues = keys.iter().filter_map(|k| by_key.remove(k)).collect();
     }
 
-    /// A number alone, `12983`, read as the key of this board's project:
-    /// `ACME-12983`. Only when the board's keys read that way; GitHub's
-    /// `repo#12` do not.
+    /// A number alone, `12983`, read as that issue of the board's project,
+    /// `ACME-12983`, written as its cards' keys are. Only when the board's
+    /// project numbers its cards: a Jira board's does, a GitHub project
+    /// board (`owner/7`) numbers none, its cards are in their repositories.
     pub fn qualify(&self, query: Query) -> Query {
         let Query::Filter(mut filter) = query else { return query };
         let number = filter
             .text
             .as_deref()
             .map(str::trim)
-            .filter(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()));
-        let prefix = self.board.project.as_ref().map(|p| format!("{}-", p.key));
-        let prefix = prefix.filter(|p| self.issues.iter().any(|i| i.key.as_str().starts_with(p)));
-        if let (Some(number), Some(prefix)) = (number, prefix) {
-            filter.text = Some(format!("{prefix}{number}"));
+            .filter(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()))
+            .and_then(|t| t.parse().ok());
+        let project = self.board.project.as_ref().map(|p| p.key.as_str());
+        let sibling = project
+            .and_then(|p| self.issues.iter().map(|i| &i.key).find(|k| k.project() == Some(p)));
+        if let Some(key) = number.zip(sibling).and_then(|(n, sibling)| sibling.with_number(n)) {
+            filter.text = Some(key.to_string());
         }
         Query::Filter(filter)
     }
@@ -153,9 +156,28 @@ mod tests {
         no_project.board.project = None;
         assert_eq!(text(&no_project, "12"), Some("12".into()), "no project");
         for key in snapshot.issues.iter_mut() {
-            key.key = kolum_domain::IssueKey::new(format!("web#{}", key.key.as_str().len()));
+            key.key = kolum_domain::IssueKey::parse(format!("web#{}", key.key.as_str().len()));
         }
         assert_eq!(text(&snapshot, "12"), Some("12".into()), "keys not of the project's form");
+    }
+
+    #[tokio::test]
+    async fn a_bare_number_on_a_github_project_board_is_left_as_typed() {
+        let mut snapshot = load_board(&FakeProvider::new(), None).await.unwrap();
+        // An org's project board, as the GitHub adapter has it, with cards
+        // of its repositories grafana and loki: 12 is both grafana#12 and
+        // loki#12.
+        let owner = kolum_domain::Project { key: "grafana/7".into(), name: "grafana".into() };
+        snapshot.board.project = Some(owner);
+        for (n, issue) in snapshot.issues.iter_mut().enumerate() {
+            let repo = if n % 2 == 0 { "grafana" } else { "loki" };
+            issue.key = kolum_domain::IssueKey::new(repo, "#", n as u64);
+        }
+        let qualified = match snapshot.qualify(crate::parse_query("12")) {
+            Query::Filter(f) => f.text,
+            Query::Native(n) => Some(n),
+        };
+        assert_eq!(qualified.as_deref(), Some("12"));
     }
 
     #[tokio::test]
@@ -174,7 +196,7 @@ mod tests {
         let fake = FakeProvider::new();
         let cached = load_board(&fake, None).await.unwrap();
         let since = time::OffsetDateTime::now_utc();
-        let key = IssueKey::new("ACME-12");
+        let key = IssueKey::parse("ACME-12");
         fake.update(
             &key,
             IssueUpdate { title: Some("Export as CSV and XLSX".into()), ..Default::default() },
@@ -195,7 +217,7 @@ mod tests {
 
         let mut cached = cached;
         let mut gone = cached.issues[0].clone();
-        gone.key = IssueKey::new("ACME-999");
+        gone.key = IssueKey::parse("ACME-999");
         cached.issues.push(gone);
         // A rank changed elsewhere: no issue is updated by it.
         cached.issues.reverse();
@@ -221,7 +243,7 @@ mod tests {
     fn merging_twice_is_merging_once() {
         let fake_issue = |key: &str, title: &str| {
             let mut i = sample_issue();
-            i.key = kolum_domain::IssueKey::new(key);
+            i.key = kolum_domain::IssueKey::parse(key);
             i.title = title.into();
             i
         };

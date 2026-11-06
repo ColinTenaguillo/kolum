@@ -299,8 +299,7 @@ const HEADER_ROWS: u16 = 7;
 fn header(issue: &Issue, theme: &Theme, cols: u16) -> Vec<Line<'static>> {
     let muted = Style::new().fg(theme.muted);
     let mut crumbs = vec![Span::raw(" ")];
-    let project = issue.key.as_str().split('-').next().unwrap_or_default().to_string();
-    crumbs.push(Span::styled(project, muted));
+    crumbs.extend(issue.key.project().map(|p| Span::styled(p.to_string(), muted)));
     if let Some(parent) = &issue.parent {
         crumbs.push(Span::styled(" › ", muted));
         crumbs.push(Span::styled(

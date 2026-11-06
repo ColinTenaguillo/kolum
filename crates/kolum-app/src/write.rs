@@ -189,7 +189,7 @@ mod tests {
     async fn the_transitions_into_a_column_are_those_to_its_statuses() {
         let fake = FakeProvider::new();
         let board = load_board(&fake, None).await.unwrap().board;
-        let ts = fake.transitions(&IssueKey::new("ACME-12")).await.unwrap(); // To Do
+        let ts = fake.transitions(&IssueKey::parse("ACME-12")).await.unwrap(); // To Do
         let into =
             |c| transitions_into(&board, c, &ts).into_iter().map(|t| t.to.name).collect::<Vec<_>>();
         assert_eq!(into(2), ["In Progress", "Blocked"], "a column of two statuses: a choice");
@@ -261,7 +261,7 @@ mod tests {
     async fn a_change_shows_at_once_and_is_undone_on_refusal() {
         let mut snapshot = load_board(&FakeProvider::new(), None).await.unwrap();
         let original = snapshot.clone();
-        let key = IssueKey::new("ACME-12");
+        let key = IssueKey::parse("ACME-12");
         let done = Status {
             id: kolum_domain::StatusId::new("done"),
             name: "Done".into(),
@@ -291,8 +291,8 @@ mod tests {
         let mut ledger = Ledger::default();
         let op = ledger.begin(
             &mut snapshot,
-            &IssueKey::new("ACME-5"),
-            &Change::Rank(Rank::After(IssueKey::new("ACME-7"))),
+            &IssueKey::parse("ACME-5"),
+            &Change::Rank(Rank::After(IssueKey::parse("ACME-7"))),
         );
         assert_eq!(order(&snapshot), ["ACME-6", "ACME-7", "ACME-5"]);
         assert!(ledger.rollback(&mut snapshot, op).is_some());
@@ -300,20 +300,20 @@ mod tests {
         assert!(
             !move_issue(
                 &mut snapshot.issues,
-                &IssueKey::new("ACME-5"),
-                &Rank::After(IssueKey::new("ACME-5"))
+                &IssueKey::parse("ACME-5"),
+                &Rank::After(IssueKey::parse("ACME-5"))
             ),
             "next to itself"
         );
         assert!(!move_issue(
             &mut snapshot.issues,
-            &IssueKey::new("ACME-5"),
-            &Rank::Before(IssueKey::new("NOPE"))
+            &IssueKey::parse("ACME-5"),
+            &Rank::Before(IssueKey::parse("NOPE"))
         ));
         let nothing = ledger.begin(
             &mut snapshot,
-            &IssueKey::new("NOPE"),
-            &Change::Rank(Rank::Before(IssueKey::new("ACME-5"))),
+            &IssueKey::parse("NOPE"),
+            &Change::Rank(Rank::Before(IssueKey::parse("ACME-5"))),
         );
         assert_eq!(ledger.rollback(&mut snapshot, nothing), None, "nothing moved, nothing to undo");
         assert_eq!(snapshot, original);
@@ -323,7 +323,7 @@ mod tests {
     async fn an_update_sets_rich_custom_fields_by_id() {
         use kolum_domain::{FieldId, FieldValue};
         let mut snapshot = load_board(&FakeProvider::new(), None).await.unwrap();
-        let key = IssueKey::new("ACME-10");
+        let key = IssueKey::parse("ACME-10");
         let text = RichText::from_markdown("- Reviewed by two people");
         let update = IssueUpdate {
             fields: vec![
@@ -342,7 +342,7 @@ mod tests {
     #[tokio::test]
     async fn a_settled_change_stays() {
         let mut snapshot = load_board(&FakeProvider::new(), None).await.unwrap();
-        let key = IssueKey::new("ACME-9");
+        let key = IssueKey::parse("ACME-9");
         let mut ledger = Ledger::default();
         let update = IssueUpdate {
             title: Some("T".into()),
@@ -361,7 +361,7 @@ mod tests {
         assert_eq!(issue.description.plain_text(), "d");
         assert_eq!(ledger.rollback(&mut snapshot, op), None);
         let unknown =
-            ledger.begin(&mut snapshot, &IssueKey::new("NOPE-1"), &Change::Assignee(None));
+            ledger.begin(&mut snapshot, &IssueKey::parse("NOPE-1"), &Change::Assignee(None));
         assert_eq!(unknown, op + 1, "an issue off the board still gets an id");
         assert_eq!(ledger.pending(), 0);
     }
