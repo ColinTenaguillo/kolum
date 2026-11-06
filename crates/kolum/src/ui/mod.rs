@@ -1197,18 +1197,18 @@ impl App {
     /// A transition that asks for fields (a resolution on the way to Done)
     /// is left to the web app, which has the form for them.
     fn transition(&mut self, keys: Vec<IssueKey>, t: kolum_domain::Transition) {
-        if !t.required_fields.is_empty() {
-            let fields: Vec<&str> = t.required_fields.iter().map(|f| f.as_str()).collect();
-            let msg = format!(
-                "`{}` asks for {}: press o to do it in the browser",
-                t.name,
-                fields.join(", ")
-            );
-            return self.say(msg, Level::Warn);
+        if let Some(why) = kolum_app::asks_for(&t) {
+            return self.say(format!("{why}: press o to do it in the browser"), Level::Warn);
         }
+        // The transitions are those of the first.
+        let status = |app: &Self, key| app.issue(key).map(|i| i.status.id.clone());
+        let first = status(self, &keys[0]);
         for key in &keys {
+            let here = status(self, key);
+            let Some(write) = kolum_app::transition_write(&t, first.as_ref(), here.as_ref()) else {
+                continue;
+            };
             if let Some(op) = self.optimistic(key, kolum_app::Change::Status(t.to.clone())) {
-                let write = kolum_app::Write::Transition(t.id.clone());
                 self.effects.push(Effect::Send(Command::Write { op, key: key.clone(), write }));
             }
         }

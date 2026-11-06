@@ -432,6 +432,10 @@ async fn send_write(
 ) -> kolum_domain::Result<()> {
     match write {
         Write::Transition(t) => provider.transition(key, &t).await,
+        Write::TransitionTo { id, to } => {
+            let id = crate::write::transition_to(&provider.transitions(key).await?, &id, &to)?;
+            provider.transition(key, &id).await
+        }
         Write::Assign(user) => provider.assign(key, user.as_ref()).await,
         Write::Comment(body) => provider.comment(key, body).await.map(|_| ()),
         Write::Update(update) => provider.update(key, update).await,
@@ -800,6 +804,30 @@ mod tests {
             events.recv().await
         else {
             panic!()
+        };
+    }
+
+    /// A transition by its target status: the issue's own, read first.
+    #[tokio::test]
+    async fn a_transition_to_a_status_goes_by_the_issues_own() {
+        let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), None);
+        events.recv().await; // Me
+        let key = IssueKey::new("ACME-9");
+        service.send(Command::Transitions(key.clone()));
+        let Some(Event::Transitions { result: Ok(ts), .. }) = events.recv().await else { panic!() };
+        let t = ts.iter().find(|t| t.name == "Done").unwrap();
+        let done = t.to.clone();
+        let write = Write::TransitionTo { id: t.id.clone(), to: done.clone() };
+        service.send(Command::Write { op: 1, key: key.clone(), write: write.clone() });
+        let Some(Event::Written { op: 1, issue: Some(issue), .. }) = events.recv().await else {
+            panic!()
+        };
+        assert_eq!(issue.status, done);
+        service.send(Command::Write { op: 2, key, write });
+        let Some(Event::WriteFailed { op: 2, error: DomainError::Conflict(_), .. }) =
+            events.recv().await
+        else {
+            panic!("already there: no transition to it")
         };
     }
 

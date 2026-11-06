@@ -1869,6 +1869,12 @@ async fn visual_mode_acts_on_a_range_of_cards() {
         ["ACME-10", "ACME-11"],
         "both move"
     );
+    let picked = kolum_domain::TransitionId::new("to-review");
+    assert_eq!(sent[0].2, kolum_app::Write::Transition(picked.clone()));
+    let kolum_app::Write::TransitionTo { id, to } = &sent[1].2 else {
+        panic!("ACME-11 is in another status: it goes by its own transition: {sent:?}")
+    };
+    assert_eq!((id, to.name.as_str()), (&picked, "In Review"));
 
     press(&mut app, "vj<Esc>");
     assert!(!screen(&mut app, 150, 50).contains("VISUAL"));
@@ -1876,6 +1882,38 @@ async fn visual_mode_acts_on_a_range_of_cards() {
     assert!(!screen(&mut app, 150, 50).contains("VISUAL"), "another column ends it");
     press(&mut app, "vv");
     assert!(!screen(&mut app, 150, 50).contains("VISUAL"), "v again ends it");
+}
+
+/// In a selection, a card in the first's status goes by the transition
+/// picked, one in another by its own to the same status, and one already
+/// there stays, unwritten.
+#[tokio::test]
+async fn a_selection_moves_each_card_by_what_its_status_allows() {
+    let mut app = loaded().await;
+    app.take_effects();
+    press(&mut app, "llv2jL"); // ACME-5 in progress, ACME-10 blocked, ACME-11 in progress
+    app.on_event(transitions_event("ACME-5").await);
+    let sent: Vec<_> = writes(app.take_effects()).into_iter().map(|w| (w.1, w.2)).collect();
+    let picked = kolum_domain::TransitionId::new("to-review");
+    let by_it = kolum_app::Write::Transition(picked.clone());
+    let Some((_, kolum_app::Write::TransitionTo { id, .. })) = sent.get(1) else {
+        panic!("{sent:?}")
+    };
+    assert_eq!(id, &picked);
+    assert_eq!(
+        [&sent[0], &sent[2]],
+        [&("ACME-5".to_string(), by_it.clone()), &("ACME-11".to_string(), by_it)],
+        "no read for the cards in the first's status"
+    );
+
+    let mut app = loaded().await;
+    press(&mut app, "llvjt");
+    app.on_event(transitions_event("ACME-5").await);
+    press(&mut app, "blocked");
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    let sent = writes(app.take_effects());
+    assert_eq!(sent.iter().map(|w| w.1.as_str()).collect::<Vec<_>>(), ["ACME-5"], "{sent:?}");
 }
 
 #[tokio::test]

@@ -4,8 +4,8 @@
 
 use crate::board::BoardSnapshot;
 use kolum_domain::{
-    Board, Issue, IssueKey, IssueUpdate, Rank, RichText, Status, Transition, TransitionId, User,
-    UserId,
+    Board, Issue, IssueKey, IssueUpdate, Rank, RichText, Status, StatusId, Transition,
+    TransitionId, User, UserId,
 };
 use std::collections::BTreeMap;
 
@@ -25,6 +25,12 @@ pub fn transitions_into(
 #[derive(Debug, Clone, PartialEq)]
 pub enum Write {
     Transition(TransitionId),
+    /// By whichever transition takes the issue to this status from where it
+    /// is: each issue of a selection may be in another status.
+    TransitionTo {
+        id: TransitionId,
+        to: Status,
+    },
     Assign(Option<UserId>),
     Comment(RichText),
     Update(IssueUpdate),
@@ -50,6 +56,49 @@ pub fn apply(issue: &mut Issue, change: &Change) {
         Change::Assignee(user) => issue.assignee = user.clone(),
         Change::Update(u) => u.apply_to(issue),
     }
+}
+
+/// Why a transition is not done here: it asks for fields, which the web
+/// app has the form for.
+pub fn asks_for(t: &Transition) -> Option<String> {
+    let fields: Vec<&str> = t.required_fields.iter().map(|f| f.as_str()).collect();
+    (!fields.is_empty()).then(|| format!("`{}` asks for {}", t.name, fields.join(", ")))
+}
+
+/// Among an issue's transitions, `id`, the one picked, when it has it, else
+/// the first to `status`: refused when there is none, or it asks for fields.
+pub fn transition_to(
+    transitions: &[Transition],
+    id: &TransitionId,
+    status: &Status,
+) -> kolum_domain::Result<TransitionId> {
+    let refused = |why: String| Err(kolum_domain::DomainError::Conflict(why));
+    let to_status = |t: &&Transition| t.to.id == status.id;
+    let picked = transitions.iter().filter(to_status).find(|t| t.id == *id);
+    let Some(t) = picked.or_else(|| transitions.iter().find(to_status)) else {
+        return refused(format!("no transition to {} from here", status.name));
+    };
+    match asks_for(t) {
+        Some(why) => refused(why),
+        None => Ok(t.id.clone()),
+    }
+}
+
+/// How one issue of a selection moves by `t`, picked among the transitions
+/// of the first, in status `first`: by it from the same status, by its own
+/// from another; not at all when it is there already.
+pub fn transition_write(
+    t: &Transition,
+    first: Option<&StatusId>,
+    here: Option<&StatusId>,
+) -> Option<Write> {
+    if here == Some(&t.to.id) {
+        return None;
+    }
+    Some(match here == first {
+        true => Write::Transition(t.id.clone()),
+        false => Write::TransitionTo { id: t.id.clone(), to: t.to.clone() },
+    })
 }
 
 /// Takes the issue out of the list and puts it back next to the other.
@@ -147,6 +196,65 @@ mod tests {
         assert_eq!(into(3), ["In Review"]);
         assert!(into(1).is_empty(), "already there");
         assert!(into(9).is_empty(), "no such column");
+    }
+
+    /// Each issue of a selection goes by its own transition to the status
+    /// picked: their statuses, and so their transitions, may differ.
+    #[test]
+    fn the_transition_to_a_status_is_the_issues_own() {
+        use kolum_domain::{DomainError, FieldId, StatusCategory, StatusId};
+        let status = |id: &str| Status {
+            id: StatusId::new(id),
+            name: format!("In {id}"),
+            category: StatusCategory::Doing,
+        };
+        let t = |id: &str, to: &str, required: &[&str]| Transition {
+            id: TransitionId::new(id),
+            name: format!("Go {to}"),
+            to: status(to),
+            required_fields: required.iter().map(|f| FieldId::new(*f)).collect(),
+        };
+        let from_todo = [t("11", "review", &[]), t("21", "done", &[]), t("22", "done", &[])];
+        let from_doing = [t("31", "review", &[]), t("41", "done", &["resolution"])];
+        let to =
+            |id: &str, to: &str| transition_to(&from_todo, &TransitionId::new(id), &status(to));
+        assert_eq!(to("22", "done"), Ok(TransitionId::new("22")), "the one picked, Won't Do say");
+        assert_eq!(to("31", "review"), Ok(TransitionId::new("11")), "else the first to there");
+        let picked = TransitionId::new("11");
+        let review = transition_to(&from_doing, &picked, &status("review"));
+        assert_eq!(review, Ok(TransitionId::new("31")), "the issue's own");
+        let Err(DomainError::Conflict(none)) = to("11", "qa") else { panic!() };
+        assert!(none.contains("In qa"), "{none}");
+        let Err(DomainError::Conflict(asks)) = transition_to(&from_doing, &picked, &status("done"))
+        else {
+            panic!()
+        };
+        assert!(asks.contains("resolution"), "{asks}");
+    }
+
+    /// One issue of a selection moved by the transition picked among the
+    /// first's: by it when in the first's status, by its own when not, and
+    /// not at all when there already.
+    #[test]
+    fn each_issue_of_a_selection_moves_by_what_its_status_allows() {
+        use kolum_domain::{StatusCategory, StatusId};
+        let status = |id: &str| Status {
+            id: StatusId::new(id),
+            name: id.into(),
+            category: StatusCategory::Doing,
+        };
+        let t = Transition {
+            id: TransitionId::new("51"),
+            name: "Won't do".into(),
+            to: status("done"),
+            required_fields: vec![],
+        };
+        let (todo, doing, done) = (status("todo").id, status("doing").id, status("done").id);
+        let write = |here: &StatusId| transition_write(&t, Some(&todo), Some(here));
+        assert_eq!(write(&todo), Some(Write::Transition(t.id.clone())));
+        let by_its_own = Write::TransitionTo { id: t.id.clone(), to: t.to.clone() };
+        assert_eq!(write(&doing), Some(by_its_own));
+        assert_eq!(write(&done), None, "there already");
     }
 
     #[tokio::test]
