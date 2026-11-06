@@ -207,6 +207,8 @@ pub struct Settings {
     pub images: Option<ratatui_image::picker::Picker>,
     /// How long typing must pause before a remote search goes out.
     pub remote_debounce: std::time::Duration,
+    /// `ui.filter` is one applied in an earlier run, not the config's.
+    pub filter_applied: bool,
 }
 
 pub struct App {
@@ -263,6 +265,9 @@ pub struct App {
     /// copy, or a description's save, which reads the issue right before.
     describe_after: Option<(IssueKey, AfterRead)>,
     remote_debounce: std::time::Duration,
+    /// The board filter is one applied, kept for the next run; until then
+    /// the config's starts each.
+    filter_applied: bool,
     /// The time of the key being handled, for the debounce.
     now: Instant,
     /// Changes shown before the provider confirmed them.
@@ -350,6 +355,7 @@ impl App {
             read: Default::default(),
             describe_after: None,
             remote_debounce: settings.remote_debounce,
+            filter_applied: settings.filter_applied,
             now: Instant::now(),
             ledger: kolum_app::Ledger::default(),
             awaiting: None,
@@ -749,7 +755,7 @@ impl App {
                 if self.prompt.take().is_some_and(|p| p.kind == PromptKind::Filter) {
                     self.set_filter(String::new());
                     if self.help.is_none() {
-                        self.save_state();
+                        self.save_filter();
                     }
                 }
             }
@@ -790,7 +796,7 @@ impl App {
             Action::ClearFilter => {
                 b.filter.clear();
                 b.clamp();
-                self.save_state();
+                self.save_filter();
             }
             Action::Filter => {
                 let mut input = Input::default();
@@ -897,7 +903,7 @@ impl App {
         }
         self.board.filter = words.join(" ");
         self.board.clamp();
-        self.save_state();
+        self.save_filter();
         let msg = if everyone || tokens.is_empty() {
             "Everyone's cards".to_string()
         } else {
@@ -939,9 +945,15 @@ impl App {
         let state = crate::config::UiState {
             hide_empty_columns: self.board.hide_empty,
             swimlanes: self.board.swimlanes,
-            filter: self.board.filter.clone(),
+            applied_filter: self.filter_applied.then(|| self.board.filter.clone()),
         };
         self.effects.push(Effect::SaveState(state));
+    }
+
+    /// The board filter applied, or cleared: from now on it is kept.
+    fn save_filter(&mut self) {
+        self.filter_applied = true;
+        self.save_state();
     }
 
     fn detail_action(&mut self, action: Action, count: Option<u32>) {
@@ -1944,7 +1956,7 @@ impl App {
                     self.confirm_field(prompt.input.text());
                 }
                 if prompt.kind == PromptKind::Filter && self.help.is_none() {
-                    self.save_state();
+                    self.save_filter();
                 }
             }
             _ => {}

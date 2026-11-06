@@ -243,7 +243,10 @@ fn with_state(mut settings: Settings, state_file: Option<&std::path::Path>) -> S
     if let Some(state) = state_file.and_then(config::UiState::load) {
         settings.ui.hide_empty_columns = state.hide_empty_columns;
         settings.ui.swimlanes = state.swimlanes;
-        settings.ui.filter = state.filter;
+        if let Some(filter) = state.applied_filter {
+            settings.ui.filter = filter;
+            settings.filter_applied = true;
+        }
     }
     settings
 }
@@ -284,6 +287,7 @@ fn load(args: &Args, config_dir: Option<PathBuf>) -> (config::Config, Settings) 
         writable: false,
         images: None,
         remote_debounce: std::time::Duration::from_millis(config.picker.remote_debounce_ms),
+        filter_applied: false,
     };
     (config, settings)
 }
@@ -450,13 +454,35 @@ mod tests {
         let state = config::UiState {
             hide_empty_columns: true,
             swimlanes: config::Swimlanes::Priority,
-            filter: "@me #bug".into(),
+            applied_filter: Some("@me #bug".into()),
         };
         state.save(&path).unwrap();
         let restored = with_state(untouched, Some(&path));
         assert!(restored.ui.hide_empty_columns);
         assert_eq!(restored.ui.swimlanes, config::Swimlanes::Priority);
         assert_eq!(restored.ui.filter, "@me #bug");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The config's filter starts the board until one is applied: a state
+    /// from before, or one where none was ever applied, leaves it.
+    #[test]
+    fn the_configs_filter_wins_until_one_is_applied() {
+        let dir = std::env::temp_dir().join(format!("kolum-filter-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (config, path) = (dir.join("config.toml"), dir.join("state.toml"));
+        std::fs::write(&config, "[ui]\nfilter = \"@me\"\n").unwrap();
+        let args = Args { config: Some(config), ..Args::default() };
+        let toggles = "hide_empty_columns = true\nswimlanes = \"epic\"\n";
+        // A previous build wrote `filter = ""` whether one was applied or not.
+        for older in [toggles.to_string(), format!("{toggles}filter = \"\"")] {
+            std::fs::write(&path, older).unwrap();
+            let older = with_state(load(&args, None).1, Some(&path));
+            assert_eq!((older.ui.filter.as_str(), older.filter_applied), ("@me", false));
+        }
+        std::fs::write(&path, format!("{toggles}applied_filter = \"\"")).unwrap();
+        let cleared = with_state(load(&args, None).1, Some(&path));
+        assert_eq!((cleared.ui.filter.as_str(), cleared.filter_applied), ("", true), "cleared too");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

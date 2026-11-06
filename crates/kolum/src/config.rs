@@ -161,9 +161,11 @@ impl Default for PickerConfig {
 pub struct UiState {
     pub hide_empty_columns: bool,
     pub swimlanes: Swimlanes,
-    /// The board filter last applied, as typed after `/`.
+    /// The board filter last applied, as typed after `/`; `None` when none
+    /// ever was, and the config's starts the board. Not `filter`, which
+    /// earlier builds wrote empty whether one was applied or not.
     #[serde(default)]
-    pub filter: String,
+    pub applied_filter: Option<String>,
 }
 
 impl UiState {
@@ -300,12 +302,12 @@ mod tests {
         let state = UiState {
             hide_empty_columns: true,
             swimlanes: Swimlanes::Assignee,
-            filter: "@me".into(),
+            applied_filter: Some("@me".into()),
         };
         state.save(&path).unwrap();
         assert_eq!(UiState::load(&path), Some(state));
         std::fs::write(&path, "hide_empty_columns = true\nswimlanes = \"epic\"").unwrap();
-        assert_eq!(UiState::load(&path).map(|s| s.filter), Some(String::new()), "an older file");
+        assert_eq!(UiState::load(&path).map(|s| s.applied_filter), Some(None), "an older file");
         std::fs::write(&path, "swimlanes = 3").unwrap();
         assert_eq!(UiState::load(&path), None);
         std::fs::remove_dir_all(dir).unwrap();

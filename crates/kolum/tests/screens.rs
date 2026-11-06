@@ -26,6 +26,7 @@ fn settings() -> Settings {
         writable: true,
         images: None,
         remote_debounce: std::time::Duration::from_millis(250),
+        filter_applied: false,
     }
 }
 
@@ -780,7 +781,7 @@ fn saved_filters(app: &mut App) -> Vec<String> {
     app.take_effects()
         .into_iter()
         .filter_map(|e| match e {
-            Effect::SaveState(state) => Some(state.filter),
+            Effect::SaveState(state) => state.applied_filter,
             _ => None,
         })
         .collect()
@@ -813,6 +814,29 @@ async fn the_board_opens_with_the_kept_filter() {
     let mut app = loaded_with(settings).await;
     let shown = screen(&mut app, 150, 30);
     assert!(shown.contains("/ACME-29") && shown.contains("No cards"), "{shown}");
+}
+
+/// A toggle kept for the next run keeps the config's filter as the
+/// config's: changed there, it is the new one that starts the next run.
+#[tokio::test]
+async fn a_toggle_does_not_keep_the_configs_filter_as_applied() {
+    let kept = |app: &mut App| -> Vec<Option<String>> {
+        app.take_effects()
+            .into_iter()
+            .filter_map(|e| match e {
+                Effect::SaveState(state) => Some(state.applied_filter),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut settings = settings();
+    settings.ui.filter = "@me".into();
+    let mut app = loaded_with(settings).await;
+    app.take_effects();
+    press(&mut app, "ze");
+    assert_eq!(kept(&mut app), [None]);
+    press(&mut app, "/<CR>ze");
+    assert_eq!(kept(&mut app), [Some("@me".into()), Some("@me".into())], "applied, then kept");
 }
 
 /// "Refreshing…" and "Opening…" go once what they wait for has come.
@@ -858,7 +882,7 @@ async fn empty_columns_can_be_hidden() {
     let saved = kolum::config::UiState {
         hide_empty_columns: true,
         swimlanes: kolum::config::Swimlanes::None,
-        filter: "ACME-29".into(),
+        applied_filter: Some("ACME-29".into()),
     };
     assert_eq!(app.take_effects(), [Effect::SaveState(saved)], "kept for the next run");
     let shown = screen(&mut app, 150, 30);
