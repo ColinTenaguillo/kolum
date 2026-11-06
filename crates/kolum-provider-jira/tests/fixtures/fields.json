@@ -16,6 +16,26 @@
     }
   },
   {
+    "id": "parent",
+    "key": "parent",
+    "name": "Parent",
+    "custom": false,
+    "schema": {
+      "type": "issuelink",
+      "system": "parent"
+    }
+  },
+  {
+    "id": "duedate",
+    "key": "duedate",
+    "name": "Due date",
+    "custom": false,
+    "schema": {
+      "type": "date",
+      "system": "duedate"
+    }
+  },
+  {
     "id": "customfield_10016",
     "key": "customfield_10016",
     "name": "Story point estimate",

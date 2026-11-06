@@ -416,28 +416,35 @@ impl IssueWriter for FakeProvider {
         self.issue(key).await?;
         let field = |id: &str, name: &str, kind| EditableField {
             id: FieldId::new(id),
+            provider_id: FieldId::new(id),
             name: name.into(),
             kind,
-            required: id == "summary",
+            required: id == FieldId::TITLE,
+            // The fake keeps every field it is given.
+            on_issue: true,
         };
         let words = |w: &[&str]| w.iter().map(|s| s.to_string()).collect();
         let priorities = Priority::ALL.iter().map(|p| p.name().to_string()).collect();
         Ok(vec![
-            field("summary", "Summary", FieldKind::Text),
-            field("description", "Description", FieldKind::RichText),
-            field("priority", "Priority", FieldKind::Choice { options: priorities, many: false }),
-            field("labels", "Labels", FieldKind::Words),
-            field("duedate", "Due date", FieldKind::Date),
-            field("assignee", "Assignee", FieldKind::User),
-            field("parent", "Parent", FieldKind::Issue),
-            field("customfield_10016", "Story points", FieldKind::Number),
+            field(FieldId::TITLE, "Summary", FieldKind::Text),
+            field(FieldId::DESCRIPTION, "Description", FieldKind::RichText),
+            field(
+                FieldId::PRIORITY,
+                "Priority",
+                FieldKind::Choice { options: priorities, many: false },
+            ),
+            field(FieldId::LABELS, "Labels", FieldKind::Words),
+            field(FieldId::DUE, "Due date", FieldKind::Date),
+            field(FieldId::ASSIGNEE, "Assignee", FieldKind::User),
+            field(FieldId::EPIC, "Parent", FieldKind::Issue),
+            field(FieldId::ESTIMATE, "Story points", FieldKind::Number),
             field(
                 "customfield_10020",
                 "Team",
                 FieldKind::Choice { options: words(&["Platform", "Mobile"]), many: false },
             ),
             field("customfield_10030", "Acceptance criteria", FieldKind::RichText),
-            field("customfield_10040", "Sprint", FieldKind::Sprint),
+            field(FieldId::SPRINT, "Sprint", FieldKind::Sprint),
             field("customfield_10050", "Reviewer", FieldKind::User),
             field(
                 "customfield_10060",

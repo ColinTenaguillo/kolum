@@ -17,8 +17,9 @@ pub use error::{DomainError, Result};
 pub use ids::{BoardId, FieldId, IssueId, IssueKey, StatusId, TransitionId, UserId};
 pub use issue::{
     ActivityEntry, Attachment, Comment, CustomField, EditableField, Estimate, FieldChange,
-    FieldKind, FieldLayout, FieldValue, Issue, IssueKind, IssueLink, IssueRef, IssueType,
-    IssueUpdate, LayoutField, NewIssue, Priority, Sprint, Status, StatusCategory, Transition, User,
+    FieldEdit, FieldKind, FieldLayout, FieldValue, Issue, IssueKind, IssueLink, IssueRef,
+    IssueType, IssueUpdate, LayoutField, NewIssue, Priority, Sprint, Status, StatusCategory,
+    Transition, User,
 };
 pub use ports::{
     BULK_READ_MAX, BoardSource, Capabilities, Capability, IssueInFull, IssueReader, IssueSearch,

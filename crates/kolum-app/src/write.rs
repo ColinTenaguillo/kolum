@@ -321,14 +321,20 @@ mod tests {
 
     #[tokio::test]
     async fn an_update_sets_rich_custom_fields_by_id() {
-        use kolum_domain::{FieldId, FieldValue};
+        use kolum_domain::{FieldEdit, FieldId, FieldValue};
         let mut snapshot = load_board(&FakeProvider::new(), None).await.unwrap();
         let key = IssueKey::parse("ACME-10");
         let text = RichText::from_markdown("- Reviewed by two people");
+        let edit = |id: &str, value| FieldEdit {
+            id: FieldId::new(id),
+            provider_id: FieldId::new(id),
+            name: Some(id.into()),
+            value,
+        };
         let update = IssueUpdate {
             fields: vec![
-                (FieldId::new("customfield_10030"), Some(FieldValue::RichText(text.clone()))),
-                (FieldId::new("customfield_10020"), None),
+                edit("customfield_10030", Some(FieldValue::RichText(text.clone()))),
+                edit("customfield_10020", None),
             ],
             ..Default::default()
         };

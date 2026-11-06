@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use time::OffsetDateTime;
 
 /// Bumped when the shape of what is stored changes: an older file is then
-/// ignored, not misread.
-const VERSION: u32 = 1;
+/// ignored, not misread. 2: fields by the domain's ids (`estimate`, `due`).
+const VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 struct Entry {
@@ -250,6 +250,19 @@ pub(crate) mod tests {
             ("ACME/Story".to_string(), story),
         ]);
         assert_eq!(cache.layouts(), wanted);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Version 1 kept Jira's own field ids (`customfield_10016` for the
+    /// story points): its layouts are dropped, not read with the old ids.
+    #[test]
+    fn a_layout_from_before_the_domains_field_ids_is_dropped() {
+        let dir = temp_dir("cache-old-layouts");
+        let cache = Cache::new(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = r#"{"version":1,"key":"ACME/Bug","layout":{"side":[],"body":[]}}"#;
+        std::fs::write(dir.join(file_name(&format!("{LAYOUT_FILE}ACME/Bug"))), old).unwrap();
+        assert!(cache.layouts().is_empty());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

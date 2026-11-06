@@ -201,7 +201,9 @@ async fn writes_are_the_mutations_github_expects() {
     .unwrap();
     let refused = p.update(&key, IssueUpdate { labels: Some(vec![]), ..Default::default() }).await;
     assert_eq!(refused, Err(DomainError::Unsupported(Capability::CustomFields)));
-    let rich = IssueUpdate { fields: vec![(FieldId::new("Notes"), None)], ..Default::default() };
+    let id = FieldId::new("Notes");
+    let notes = FieldEdit { id: id.clone(), provider_id: id, name: None, value: None };
+    let rich = IssueUpdate { fields: vec![notes], ..Default::default() };
     let refused = p.update(&key, rich).await;
     assert_eq!(refused, Err(DomainError::Unsupported(Capability::CustomFields)), "rich fields");
     assert_eq!(

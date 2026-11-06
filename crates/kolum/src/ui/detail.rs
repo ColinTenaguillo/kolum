@@ -5,7 +5,9 @@
 use super::{glyph, rich};
 use crate::theme::Theme;
 use kolum_app::IssueDetail;
-use kolum_domain::{CustomField, FieldLayout, FieldValue, Issue, IssueRef, RichText, UserId};
+use kolum_domain::{
+    CustomField, FieldId, FieldLayout, FieldValue, Issue, IssueRef, Priority, RichText, UserId,
+};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -410,11 +412,15 @@ pub struct Shown<'a> {
     pub layout: Option<&'a FieldLayout>,
 }
 
-/// The fields of the right-hand column, in the order kolum shows them by default.
-const BUILTIN_FIELDS: [&str; 11] = [
-    "status", "assignee", "reporter", "priority", "sprint", "epic", "labels", "estimate", "due",
-    "created", "updated",
-];
+/// The fields of the right-hand column, in the order kolum shows them by
+/// default: the members, but the title and the description, which have
+/// their own places.
+fn builtin_fields() -> impl Iterator<Item = String> {
+    let beside = FieldId::members()
+        .map(|(id, _)| id)
+        .filter(|id| ![FieldId::TITLE, FieldId::DESCRIPTION].contains(id));
+    std::iter::once("status").chain(beside).chain(["created", "updated"]).map(String::from)
+}
 
 /// The `wanted` fields, or the built-in ones then every custom field the
 /// issue fills that is not rich text (that shows under the description).
@@ -443,24 +449,39 @@ fn field_names(
         .fields
         .iter()
         .filter(|f| !matches!(f.value, FieldValue::RichText(_)) && !blank(&f.value));
-    let builtin = BUILTIN_FIELDS.map(String::from).into_iter();
+    let builtin = builtin_fields();
     builtin.chain(custom.map(|f| f.id.to_string())).map(|n| (n, None)).collect()
 }
 
-/// Whether the issue holds something in a field: by kolum's name for the
+/// Whether the issue holds something in a field: by kolum's id for the
 /// ones it reads into the issue itself, by id or name for the others.
 fn filled(issue: &Issue, field: &str) -> bool {
     match field {
         "status" | "created" | "updated" => true,
-        "assignee" => issue.assignee.is_some(),
-        "reporter" => issue.reporter.is_some(),
-        "priority" => issue.priority.is_some(),
-        "labels" => !issue.labels.is_empty(),
-        "due" => issue.due.is_some(),
-        "epic" => issue.parent.is_some(),
-        "estimate" => issue.estimate.is_some(),
-        "sprint" => issue.sprint.is_some(),
-        other => find_field(issue, other).is_some_and(|f| !blank(&f.value)),
+        // A time estimate is no field value, but it is an estimate.
+        FieldId::ESTIMATE => issue.estimate.is_some(),
+        other => value_of(issue, other).is_some_and(|v| !blank(&v)),
+    }
+}
+
+/// A member's label, when the field is one.
+fn member_label(field: &str) -> Option<&'static str> {
+    FieldId::members().find(|(id, _)| *id == field).map(|(_, label)| label)
+}
+
+/// A field's value: a member's from the member alone, a custom field's by
+/// id or name.
+fn value_of(issue: &Issue, field: &str) -> Option<FieldValue> {
+    match member_label(field) {
+        Some(_) => issue.value(&FieldId::new(field)),
+        None => find_field(issue, field).map(|f| f.value.clone()),
+    }
+}
+
+fn label_of(issue: &Issue, field: &str) -> String {
+    match member_label(field) {
+        Some(label) => label.to_string(),
+        None => find_field(issue, field).map_or_else(|| field.to_string(), |f| f.name.clone()),
     }
 }
 
@@ -519,63 +540,19 @@ fn field_lines(
 ) -> Vec<Line<'static>> {
     let muted = Style::new().fg(theme.muted);
     let none = || vec![Span::styled("None", muted)];
-    let user = |u: &Option<kolum_domain::User>| match u {
-        Some(u) => {
-            let mut s = vec![Span::raw(u.display_name.clone())];
-            if me.is_some_and(|m| *m == u.id) {
-                s.push(Span::styled(" ★", Style::new().fg(theme.warn)));
-            }
-            s
-        }
-        None => vec![Span::styled("Unassigned", muted)],
-    };
     let mut lines = vec![];
     for (name, shown_as) in fields {
         let (label, value): (String, Vec<Span<'static>>) = match name.as_str() {
             "status" => ("Status".into(), glyph::status_badge(issue, theme).into()),
-            "assignee" => ("Assignee".into(), user(&issue.assignee)),
-            "reporter" => ("Reporter".into(), user(&issue.reporter)),
-            "priority" => (
-                "Priority".into(),
-                match issue.priority {
-                    Some(p) => {
-                        vec![glyph::priority_span(p, theme), Span::raw(format!(" {}", p.name()))]
-                    }
-                    None => none(),
-                },
-            ),
-            "sprint" => (
-                "Sprint".into(),
-                issue.sprint.as_ref().map_or_else(none, |s| vec![Span::raw(s.name.clone())]),
-            ),
-            "epic" => (
-                "Parent".into(),
-                issue.parent.as_ref().map_or_else(none, |p| {
-                    vec![Span::styled(format!("◆ {}", p.title), Style::new().fg(theme.type_epic))]
-                }),
-            ),
-            "labels" if issue.labels.is_empty() => ("Labels".into(), none()),
-            "labels" => (
-                "Labels".into(),
-                issue
-                    .labels
-                    .iter()
-                    .flat_map(|l| glyph::label_badge(l, theme).into_iter().chain([Span::raw(" ")]))
-                    .collect(),
-            ),
-            "estimate" => (
-                "Estimate".into(),
+            FieldId::ESTIMATE => (
+                label_of(issue, FieldId::ESTIMATE),
                 issue.estimate.as_ref().map_or_else(none, |e| vec![Span::raw(glyph::estimate(e))]),
             ),
-            "due" => {
-                ("Due date".into(), issue.due.map_or_else(none, |d| vec![Span::raw(d.to_string())]))
-            }
             "created" => ("Created".into(), vec![Span::raw(glyph::datetime(issue.created))]),
             "updated" => ("Updated".into(), vec![Span::raw(glyph::datetime(issue.updated))]),
-            other => match find_field(issue, other) {
-                Some(f) => (f.name.clone(), vec![Span::raw(field_value(&f.value))]),
-                None => (other.to_string(), none()),
-            },
+            other => {
+                (label_of(issue, other), value_spans(other, value_of(issue, other), theme, me))
+            }
         };
         let label = shown_as.clone().unwrap_or(label);
         lines.push(Line::from(Span::styled(label, muted.add_modifier(Modifier::BOLD))));
@@ -585,14 +562,61 @@ fn field_lines(
     lines
 }
 
+/// A field's value as the column shows it: the members each their way
+/// (a priority with its glyph, labels as badges, you starred), any other
+/// as text.
+fn value_spans(
+    field: &str,
+    value: Option<FieldValue>,
+    theme: &Theme,
+    me: Option<&UserId>,
+) -> Vec<Span<'static>> {
+    let muted = Style::new().fg(theme.muted);
+    match (field, value) {
+        (FieldId::ASSIGNEE | FieldId::REPORTER, None) => vec![Span::styled("Unassigned", muted)],
+        (_, None) => vec![Span::styled("None", muted)],
+        (FieldId::ASSIGNEE | FieldId::REPORTER, Some(FieldValue::User(u))) => {
+            user_spans(&u, theme, me)
+        }
+        (FieldId::PRIORITY, Some(FieldValue::Text(name))) => priority_spans(name, theme),
+        (FieldId::LABELS, Some(FieldValue::Options(labels))) => label_spans(&labels, theme),
+        (FieldId::EPIC, Some(FieldValue::Issue(p))) => {
+            vec![Span::styled(format!("◆ {}", p.title), Style::new().fg(theme.type_epic))]
+        }
+        (_, Some(value)) => vec![Span::raw(field_value(&value))],
+    }
+}
+
+fn priority_spans(name: String, theme: &Theme) -> Vec<Span<'static>> {
+    match Priority::from_name(&name) {
+        Some(p) => vec![glyph::priority_span(p, theme), Span::raw(format!(" {}", p.name()))],
+        None => vec![Span::raw(name)],
+    }
+}
+
+/// A person, starred when it is you.
+fn user_spans(u: &kolum_domain::User, theme: &Theme, me: Option<&UserId>) -> Vec<Span<'static>> {
+    let mut s = vec![Span::raw(u.display_name.clone())];
+    if me.is_some_and(|m| *m == u.id) {
+        s.push(Span::styled(" ★", Style::new().fg(theme.warn)));
+    }
+    s
+}
+
+fn label_spans(labels: &[String], theme: &Theme) -> Vec<Span<'static>> {
+    if labels.is_empty() {
+        return vec![Span::styled("None", Style::new().fg(theme.muted))];
+    }
+    labels
+        .iter()
+        .flat_map(|l| glyph::label_badge(l, theme).into_iter().chain([Span::raw(" ")]))
+        .collect()
+}
+
 fn field_value(value: &FieldValue) -> String {
     match value {
-        FieldValue::Text(t) => t.clone(),
-        FieldValue::Number(n) => n.to_string(),
-        FieldValue::Date(d) => d.to_string(),
-        FieldValue::User(u) => u.display_name.clone(),
         FieldValue::Options(o) => o.join(", "),
-        FieldValue::RichText(r) => r.plain_text(),
+        other => other.to_input(),
     }
 }
 
@@ -607,6 +631,26 @@ mod tests {
         assert_eq!(size(1_900_000), "1.8 MB");
     }
     use kolum_domain::{RichText, User};
+
+    /// A member reads its member alone: a custom field of the same name
+    /// (a GitHub single-select "Epic", a "Due") is not its value.
+    #[tokio::test]
+    async fn a_member_reads_only_its_member() {
+        use kolum_domain::IssueReader;
+        let key = kolum_domain::IssueKey::parse("ACME-10");
+        let mut issue = kolum_provider_fake::FakeProvider::new().issue(&key).await.unwrap();
+        let text = |t: &str| FieldValue::Text(t.into());
+        for (name, value) in [("Epic", "Q4 launch"), ("Due", "Friday")] {
+            let id = FieldId::new(name);
+            issue.fields.push(CustomField { id, name: name.into(), value: text(value) });
+        }
+        assert_eq!((issue.parent.as_ref(), issue.due), (None, None));
+        assert!(!filled(&issue, FieldId::EPIC) && !filled(&issue, FieldId::DUE));
+        assert_eq!(value_of(&issue, FieldId::EPIC), None);
+        assert_eq!(value_of(&issue, "epic "), None, "no such field");
+        assert_eq!(value_of(&issue, "Epic"), Some(text("Q4 launch")), "the custom one, by name");
+        assert_eq!(value_of(&issue, "due"), None);
+    }
 
     #[test]
     fn every_custom_field_value_reads_as_text() {

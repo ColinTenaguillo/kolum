@@ -78,6 +78,33 @@ impl JiraProvider {
         }
     }
 
+    /// How this Jira names a user: Cloud by account id, Data Center by
+    /// user name.
+    fn user_key(&self) -> &'static str {
+        match self.settings.flavor {
+            JiraFlavor::Cloud => "accountId",
+            JiraFlavor::DataCenter => "name",
+        }
+    }
+
+    /// The members of an edit, each in the field Jira writes it by.
+    fn member_fields(&self, update: &IssueUpdate) -> serde_json::Map<String, serde_json::Value> {
+        let mut fields = serde_json::Map::new();
+        if let Some(title) = &update.title {
+            fields.insert("summary".into(), json!(title));
+        }
+        if let Some(description) = &update.description {
+            fields.insert("description".into(), self.rich(description));
+        }
+        if let Some(labels) = &update.labels {
+            fields.insert("labels".into(), json!(labels));
+        }
+        if let Some(priority) = update.priority {
+            fields.insert("priority".into(), json!({ "name": priority.name() }));
+        }
+        fields
+    }
+
     fn api(&self) -> &'static str {
         self.settings.flavor.api()
     }
@@ -96,6 +123,16 @@ impl JiraProvider {
                 })
             })
             .await
+    }
+
+    /// The fields read into the issue's members, without failing: what the
+    /// profile forces when Jira's list of fields cannot be read, so moving a
+    /// card or `E` still work.
+    async fn known(&self) -> map::FieldIds {
+        match self.ctx().await {
+            Ok(ctx) => ctx.fields.clone(),
+            Err(_) => map::detect_fields(&[], &self.settings.fields),
+        }
     }
 
     /// What the board shows of its filter: as last read with the board, or
@@ -473,14 +510,15 @@ impl IssueWriter for JiraProvider {
     async fn editable_fields(&self, key: &IssueKey) -> Result<Vec<EditableField>> {
         let meta: EditMetaDto =
             self.client.get(&format!("{}/issue/{key}/editmeta", self.api()), &[]).await?;
-        Ok(map::editable_fields(&meta))
+        Ok(map::editable_fields(&meta, &self.known().await, self.settings.flavor))
     }
 
     async fn transitions(&self, key: &IssueKey) -> Result<Vec<Transition>> {
         let query = [("expand", "transitions.fields".to_string())];
         let page: TransitionPage =
             self.client.get(&format!("{}/issue/{key}/transitions", self.api()), &query).await?;
-        Ok(page.transitions.iter().map(map::transition).collect())
+        let known = self.known().await;
+        Ok(page.transitions.iter().map(|t| map::transition(t, &known)).collect())
     }
 
     async fn transition(&self, key: &IssueKey, transition: &TransitionId) -> Result<()> {
@@ -494,11 +532,7 @@ impl IssueWriter for JiraProvider {
     /// Cloud names a user by account id, Data Center by user name; `null`
     /// unassigns either way.
     async fn assign(&self, key: &IssueKey, user: Option<&UserId>) -> Result<()> {
-        let field = match self.settings.flavor {
-            JiraFlavor::Cloud => "accountId",
-            JiraFlavor::DataCenter => "name",
-        };
-        let body = json!({ field: user.map(|u| u.as_str()) });
+        let body = json!({ self.user_key(): user.map(|u| u.as_str()) });
         self.client
             .send(Method::PUT, &format!("{}/issue/{key}/assignee", self.api()), &body)
             .await
@@ -518,31 +552,17 @@ impl IssueWriter for JiraProvider {
     }
 
     async fn update(&self, key: &IssueKey, update: IssueUpdate) -> Result<()> {
-        let mut fields = serde_json::Map::new();
-        if let Some(title) = update.title {
-            fields.insert("summary".into(), json!(title));
-        }
-        if let Some(description) = &update.description {
-            fields.insert("description".into(), self.rich(description));
-        }
-        if let Some(labels) = update.labels {
-            fields.insert("labels".into(), json!(labels));
-        }
-        if let Some(priority) = update.priority {
-            fields.insert("priority".into(), json!({ "name": priority.name() }));
-        }
+        let mut fields = self.member_fields(&update);
         let ctx = self.ctx().await?;
-        let user_key = match self.settings.flavor {
-            JiraFlavor::Cloud => "accountId",
-            JiraFlavor::DataCenter => "name",
-        };
-        for (id, value) in &update.fields {
+        let user_key = self.user_key();
+        for edit in &update.fields {
+            let id = edit.provider_id.to_string();
             let schema = ctx
                 .schemas
-                .get(id.as_str())
+                .get(&id)
                 .ok_or_else(|| DomainError::Transport(format!("Jira lists no field {id}")))?;
             let rich = |t: &RichText| self.rich(t);
-            fields.insert(id.to_string(), map::field_json(schema, value.as_ref(), user_key, &rich));
+            fields.insert(id, map::field_json(schema, edit.value.as_ref(), user_key, &rich));
         }
         if fields.is_empty() {
             return Ok(());

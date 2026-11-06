@@ -2,6 +2,7 @@
 //! word (statusCategory, hierarchyLevel, customfield_10020) stops here.
 
 use crate::dto::*;
+use crate::settings::JiraFlavor;
 use crate::{adf, wiki};
 use kolum_domain::*;
 use serde::de::DeserializeOwned;
@@ -69,28 +70,42 @@ pub fn field_json(
     user_key: &str,
     rich: &dyn Fn(&RichText) -> Value,
 ) -> Value {
-    let one = |kind: &str, v: &str| match kind {
-        "option" => json!({ "value": v }),
-        "priority" | "version" | "component" => json!({ "name": v }),
-        "issuelink" => json!({ "key": v }),
-        _ => json!(v),
-    };
-    let Some(value) = value else {
-        return if schema.kind == "array" { json!([]) } else { Value::Null };
-    };
+    let Some(value) = value else { return empty(schema) };
     match value {
         FieldValue::Text(t) => one(&schema.kind, t),
         FieldValue::Options(all) => {
             let item = schema.items.as_deref().unwrap_or("string");
             Value::Array(all.iter().map(|v| one(item, v)).collect())
         }
-        // A sprint id, a count of points: whole numbers stay whole.
-        FieldValue::Number(n) if n.fract() == 0.0 => json!(*n as i64),
-        FieldValue::Number(n) => json!(n),
+        // A count of points: whole numbers stay whole.
+        FieldValue::Number(n) => whole(*n),
         FieldValue::Date(d) => json!(d.to_string()),
         FieldValue::User(u) => json!({ user_key: u.id.as_str() }),
         FieldValue::RichText(t) => rich(t),
+        // A sprint by its number.
+        FieldValue::Sprint(s) => s.id.parse().map_or_else(|_| json!(s.id), whole),
+        FieldValue::Issue(i) => one(&schema.kind, i.key.as_str()),
     }
+}
+
+/// An emptied field: a list takes none, but a sprint is left by null.
+fn empty(schema: &FieldSchemaDto) -> Value {
+    let sprint = schema.custom.as_deref().is_some_and(|c| c.ends_with(":gh-sprint"));
+    if schema.kind == "array" && !sprint { json!([]) } else { Value::Null }
+}
+
+/// One value of a field of this kind, by what Jira names it by.
+fn one(kind: &str, v: &str) -> Value {
+    match kind {
+        "option" => json!({ "value": v }),
+        "priority" | "version" | "component" => json!({ "name": v }),
+        "issuelink" => json!({ "key": v }),
+        _ => json!(v),
+    }
+}
+
+fn whole(n: f64) -> Value {
+    if n.fract() == 0.0 { json!(n as i64) } else { json!(n) }
 }
 
 /// The web issue view's layout, from the GraphQL answer to `LAYOUT_QUERY`:
@@ -135,7 +150,7 @@ pub fn field_layout(response: &Value, known: &FieldIds) -> Result<FieldLayout> {
     };
     let mut side: Vec<LayoutField> = vec![];
     let mut add = |id: &FieldId, name: String, only_filled: bool| {
-        let id = kolum_name(id, known);
+        let id = domain_id(id.as_str(), known);
         if !side.iter().any(|f| f.id == id) {
             side.push(LayoutField { id, name, only_filled });
         }
@@ -151,29 +166,51 @@ pub fn field_layout(response: &Value, known: &FieldIds) -> Result<FieldLayout> {
     Ok(FieldLayout { side, body })
 }
 
-/// The name kolum gives a Jira field it reads into the issue itself.
-fn kolum_name(id: &FieldId, known: &FieldIds) -> FieldId {
-    let is = |field: &Option<String>| field.as_deref() == Some(id.as_str());
-    let name = match id.as_str() {
-        "duedate" => "due",
-        "parent" => "epic",
-        _ if is(&known.estimate) => "estimate",
-        _ if is(&known.sprint) => "sprint",
-        _ if is(&known.epic_link) => "epic",
-        _ => return id.clone(),
-    };
-    FieldId::new(name)
+/// Jira's system fields the domain names otherwise, with the domain's
+/// name; the others (`description`, `labels`, `assignee`) read the same.
+const NATIVE: [(&str, &str); 3] =
+    [("summary", FieldId::TITLE), ("duedate", FieldId::DUE), ("parent", FieldId::EPIC)];
+
+/// A Jira field by the domain's id: the system fields above, and the
+/// custom ones the issue reads into its members (the story points, the
+/// sprint, the old Epic Link, which says the same as Parent).
+pub fn domain_id(jira: &str, known: &FieldIds) -> FieldId {
+    let is = |field: &Option<String>| field.as_deref() == Some(jira);
+    let native = NATIVE.iter().find(|(j, _)| *j == jira).map(|(_, domain)| *domain);
+    FieldId::new(match native {
+        _ if is(&known.estimate) => FieldId::ESTIMATE,
+        _ if is(&known.sprint) => FieldId::SPRINT,
+        _ if is(&known.epic_link) => FieldId::EPIC,
+        native => native.unwrap_or(jira),
+    })
 }
 
 /// The fields editmeta lets kolum set, by name, each with how it is
-/// edited. What kolum cannot edit (attachments, a date and time) is left out.
-pub fn editable_fields(meta: &EditMetaDto) -> Vec<EditableField> {
+/// edited. What kolum cannot edit (attachments, a date and time) is left
+/// out, and so is the one of Parent and Epic Link that says the same as
+/// the other: Cloud sets an epic by Parent, Data Center by Epic Link.
+pub fn editable_fields(
+    meta: &EditMetaDto,
+    known: &FieldIds,
+    flavor: JiraFlavor,
+) -> Vec<EditableField> {
+    let offered = |id: Option<&str>| id.is_some_and(|id| meta.fields.contains_key(id));
+    let (epic_link, parent) = (known.epic_link.as_deref(), Some("parent"));
+    let other = match flavor {
+        JiraFlavor::Cloud => offered(parent).then_some(epic_link).flatten(),
+        JiraFlavor::DataCenter => offered(epic_link).then_some(parent).flatten(),
+    };
     let mut out: Vec<EditableField> = meta
         .fields
         .iter()
+        .filter(|(id, _)| Some(id.as_str()) != other)
         .filter_map(|(id, f)| {
+            let kolum = domain_id(id, known);
+            let member = FieldId::members().any(|(m, _)| m == kolum.as_str());
             Some(EditableField {
-                id: FieldId::new(id),
+                provider_id: FieldId::new(id),
+                on_issue: member || read_as_field(id),
+                id: kolum,
                 name: f.name.clone(),
                 kind: edit_kind(id, f)?,
                 required: f.required,
@@ -224,6 +261,11 @@ pub fn schemas(fields: &[FieldDto]) -> BTreeMap<String, FieldSchemaDto> {
 /// System fields the issue holds as a list of names, read like custom ones
 /// since the domain has no member for them.
 const SYSTEM_LISTS: [&str; 2] = ["fixVersions", "components"];
+
+/// A field the issue is read for into its custom fields.
+fn read_as_field(id: &str) -> bool {
+    id.starts_with("customfield_") || SYSTEM_LISTS.contains(&id)
+}
 
 pub fn custom_names(fields: &[FieldDto]) -> BTreeMap<String, String> {
     let read = |f: &&FieldDto| f.custom || SYSTEM_LISTS.contains(&f.id.as_str());
@@ -405,8 +447,7 @@ pub fn issue(dto: &IssueDto, ctx: &Ctx) -> Result<Issue> {
     let fields = f
         .iter()
         .filter(|(id, _)| {
-            (id.starts_with("customfield_") || SYSTEM_LISTS.contains(&id.as_str()))
-                && !known.iter().any(|k| k.as_deref() == Some(id.as_str()))
+            read_as_field(id) && !known.iter().any(|k| k.as_deref() == Some(id.as_str()))
         })
         .filter_map(|(id, v)| {
             let value = field_value(v)?;
@@ -531,7 +572,7 @@ pub fn activity(dto: &HistoryDto) -> Option<ActivityEntry> {
     })
 }
 
-pub fn transition(dto: &TransitionDto) -> Transition {
+pub fn transition(dto: &TransitionDto, known: &FieldIds) -> Transition {
     Transition {
         id: TransitionId::new(&dto.id),
         name: dto.name.clone(),
@@ -540,7 +581,7 @@ pub fn transition(dto: &TransitionDto) -> Transition {
             .fields
             .iter()
             .filter(|(_, f)| f.required)
-            .map(|(id, _)| FieldId::new(id))
+            .map(|(id, _)| domain_id(id, known))
             .collect(),
     }
 }

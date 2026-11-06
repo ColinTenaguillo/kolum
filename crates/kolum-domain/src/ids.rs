@@ -124,6 +124,24 @@ id!(
     FieldId
 );
 
+/// The fields an issue holds as members, by the id every provider gives
+/// them: an adapter names its own so (Jira's `duedate` is `due`). Any
+/// other id is a custom field's.
+impl FieldId {
+    pub const TITLE: &'static str = "title";
+    pub const DESCRIPTION: &'static str = "description";
+    pub const LABELS: &'static str = "labels";
+    pub const PRIORITY: &'static str = "priority";
+    pub const DUE: &'static str = "due";
+    pub const ASSIGNEE: &'static str = "assignee";
+    pub const REPORTER: &'static str = "reporter";
+    /// The parent issue, an epic or another.
+    pub const EPIC: &'static str = "epic";
+    /// The estimate in points.
+    pub const ESTIMATE: &'static str = "estimate";
+    pub const SPRINT: &'static str = "sprint";
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

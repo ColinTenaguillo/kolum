@@ -565,6 +565,7 @@ async fn the_detail_follows_the_providers_layout() {
         };
         let layout = kolum_domain::FieldLayout {
             side: named(&[
+                ("title", "Summary"),
                 ("due", "Due date"),
                 ("customfield_10020", "Team"),
                 ("assignee", "Assignee"),
@@ -591,6 +592,7 @@ async fn the_detail_follows_the_providers_layout() {
     let at = |label: &str| shown.find(label).unwrap_or_else(|| panic!("{label}: {shown}"));
     let side = [
         "Status",
+        "Summary",
         "Due date",
         "Team",
         "Assignee",
@@ -602,6 +604,9 @@ async fn the_detail_follows_the_providers_layout() {
     ];
     let places: Vec<usize> = side.iter().map(|l| at(l)).collect();
     assert!(places.is_sorted(), "{side:?} in this order: {shown}");
+    let lines: Vec<&str> = shown.lines().collect();
+    let summary = lines.iter().position(|l| l.contains("│Summary")).unwrap();
+    assert!(lines[summary + 1].contains("Search API returns"), "a pinned title shows: {shown}");
     assert!(!shown.contains("Reporter") && !shown.contains("Updated"), "only the layout's");
     assert!(!shown.contains("customfield_"), "an empty field goes by its name too: {shown}");
     assert!(!shown.contains("Platforms"), "shown only once filled, and it is empty");
@@ -1079,7 +1084,7 @@ async fn a_remote_search_for_a_number_asks_for_that_issue_of_the_board() {
 /// `E` picks one rich text field; only that one goes to `$EDITOR` and back.
 #[tokio::test]
 async fn one_field_is_edited_at_a_time() {
-    use kolum_domain::{FieldId, FieldValue, IssueUpdate, RichText};
+    use kolum_domain::{FieldValue, IssueUpdate, RichText};
     let mut app = loaded().await;
     press(&mut app, "/ACME-10<CR><CR>");
     app.take_effects();
@@ -1095,7 +1100,11 @@ async fn one_field_is_edited_at_a_time() {
     app.on_edited(purpose, Ok(text.replacen("refresh", "rotate", 1)));
     let rotate = RichText::from_markdown("- Tokens rotate before they expire");
     let update = IssueUpdate {
-        fields: vec![(FieldId::new("customfield_10030"), Some(FieldValue::RichText(rotate)))],
+        fields: vec![edit(
+            "customfield_10030",
+            "Acceptance criteria",
+            FieldValue::RichText(rotate),
+        )],
         ..Default::default()
     };
     let sent = writes(app.take_effects());
@@ -1134,6 +1143,17 @@ async fn one_field_is_edited_at_a_time() {
     };
     assert_eq!((update.title, update.fields), (None, vec![]), "the description alone");
     assert!(update.description.unwrap().plain_text().starts_with("Rewritten"));
+}
+
+/// A field set by id, as `E` sends it.
+fn edit(id: &str, name: &str, value: kolum_domain::FieldValue) -> kolum_domain::FieldEdit {
+    let id = kolum_domain::FieldId::new(id);
+    kolum_domain::FieldEdit {
+        provider_id: id.clone(),
+        id,
+        name: Some(name.into()),
+        value: Some(value),
+    }
 }
 
 /// What the provider says the issue lets kolum set, as the service would.
@@ -1188,13 +1208,16 @@ async fn e_edits_every_field_the_issue_lets_set() {
     press(&mut app, "mobile");
     settle(&mut app);
     press(&mut app, "<CR>");
-    let team = (FieldId::new("customfield_10020"), Some(FieldValue::Text("Mobile".into())));
-    assert_eq!(updates(&mut app), [IssueUpdate { fields: vec![team], ..Default::default() }]);
+    let team = edit("customfield_10020", "Team", FieldValue::Text("Mobile".into()));
+    assert_eq!(
+        updates(&mut app),
+        [IssueUpdate { fields: vec![team.clone()], ..Default::default() }]
+    );
 
     edit_field(&mut app, "story").await;
-    assert!(screen(&mut app, 140, 40).contains("Story points: "), "the bottom line");
-    press(&mut app, "5<CR>");
-    let points = (FieldId::new("customfield_10016"), Some(FieldValue::Number(5.0)));
+    assert!(screen(&mut app, 140, 40).contains("Story points: 3"), "the bottom line");
+    press(&mut app, "<C-u>5<CR>");
+    let points = edit(FieldId::ESTIMATE, "Story points", FieldValue::Number(5.0));
     assert_eq!(updates(&mut app), [IssueUpdate { fields: vec![points], ..Default::default() }]);
 
     edit_field(&mut app, "due").await;
@@ -1221,20 +1244,23 @@ async fn e_edits_every_field_the_issue_lets_set() {
     settle(&mut app);
     press(&mut app, "<CR>");
     let [IssueUpdate { fields, .. }] = &updates(&mut app)[..] else { panic!() };
-    let [(id, Some(FieldValue::User(ana)))] = &fields[..] else { panic!("{fields:?}") };
+    let [kolum_domain::FieldEdit { id, value: Some(FieldValue::User(ana)), .. }] = &fields[..]
+    else {
+        panic!("{fields:?}")
+    };
     assert_eq!((id.as_str(), ana.display_name.as_str()), ("customfield_10050", "Ana Silva"));
 
     edit_field(&mut app, "platforms").await;
     press(&mut app, "<Tab><Tab><CR>");
     let both = FieldValue::Options(vec!["Web".into(), "iOS".into()]);
-    let platforms = (FieldId::new("customfield_10060"), Some(both));
+    let platforms = edit("customfield_10060", "Platforms", both);
     assert_eq!(updates(&mut app), [IssueUpdate { fields: vec![platforms], ..Default::default() }]);
 
     edit_field(&mut app, "team").await;
     press(&mut app, "none");
     settle(&mut app);
     press(&mut app, "<CR>");
-    let emptied = (FieldId::new("customfield_10020"), None);
+    let emptied = kolum_domain::FieldEdit { value: None, ..team };
     assert_eq!(updates(&mut app), [IssueUpdate { fields: vec![emptied], ..Default::default() }]);
 
     edit_field(&mut app, "sprint").await;
@@ -1247,7 +1273,8 @@ async fn e_edits_every_field_the_issue_lets_set() {
     press(&mut app, "15");
     settle(&mut app);
     press(&mut app, "<CR>");
-    let sprint = (FieldId::new("customfield_10040"), Some(FieldValue::Number(15.0)));
+    let fifteen = kolum_domain::Sprint { id: "15".into(), name: "Sprint 15".into() };
+    let sprint = edit(FieldId::SPRINT, "Sprint", FieldValue::Sprint(fifteen));
     assert_eq!(updates(&mut app), [IssueUpdate { fields: vec![sprint], ..Default::default() }]);
     let error = kolum_domain::DomainError::Transport("kanban".into());
     app.on_event(Event::Sprints(Err(error.clone())));
@@ -1265,6 +1292,109 @@ async fn e_edits_every_field_the_issue_lets_set() {
     edit_field(&mut app, "status").await;
     let asked = Effect::Send(Command::Transitions(IssueKey::parse("ACME-10")));
     assert!(app.take_effects().contains(&asked), "the transitions, as t asks");
+}
+
+/// A field set with `E` shows at once, before the provider answers: a
+/// field the issue holds as a member (the due date), set then emptied,
+/// and a custom field the issue had nothing in yet.
+#[tokio::test]
+async fn a_field_set_with_e_shows_at_once() {
+    let mut app = loaded().await;
+    press(&mut app, "/ACME-10<CR><CR>");
+    let due_line = |app: &mut App| {
+        let shown = screen(app, 140, 40);
+        let lines: Vec<&str> = shown.lines().collect();
+        let at = lines.iter().position(|l| l.contains("Due date")).expect("a due date line");
+        lines[at + 1].to_string()
+    };
+    assert!(!due_line(&mut app).contains("2026-12-01"));
+
+    edit_field(&mut app, "due").await;
+    press(&mut app, "2026-12-01<CR>");
+    assert!(due_line(&mut app).contains("2026-12-01"), "set: {}", due_line(&mut app));
+
+    edit_field(&mut app, "due").await;
+    assert!(screen(&mut app, 140, 40).contains("Due date: 2026-12-01"), "the value to edit");
+    press(&mut app, "<C-u><CR>");
+    assert!(due_line(&mut app).contains("None"), "emptied: {}", due_line(&mut app));
+
+    assert!(!screen(&mut app, 140, 60).contains("Reviewer"), "empty, so not shown");
+    edit_field(&mut app, "reviewer").await;
+    press(&mut app, "ana");
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    let shown = screen(&mut app, 140, 60);
+    assert!(!shown.contains("customfield_10050"), "by its name: {shown}");
+    let lines: Vec<&str> = shown.lines().collect();
+    let at = lines.iter().position(|l| l.contains("Reviewer"));
+    let at = at.unwrap_or_else(|| panic!("{shown}"));
+    assert!(lines[at + 1].contains("Ana Silva"), "{shown}");
+}
+
+/// The line under a label in the detail's right-hand column.
+fn detail_value(app: &mut App, label: &str) -> String {
+    let shown = screen(app, 140, 60);
+    let lines: Vec<&str> = shown.lines().collect();
+    let at = lines.iter().position(|l| l.contains(&format!("│{label} ")));
+    let at = at.unwrap_or_else(|| panic!("{label}: {shown}"));
+    lines[at + 1].to_string()
+}
+
+/// What `E`'s preview on ACME-10 shows for the field whose name starts so.
+async fn preview(app: &mut App, field: &str) -> String {
+    press(app, "E");
+    app.on_event(editable("ACME-10").await);
+    press(app, field);
+    settle(app);
+    let shown = screen(app, 140, 40);
+    press(app, "<Esc><Esc>");
+    shown.lines().nth(4).unwrap_or("").rsplit("││").next().unwrap_or("").to_string()
+}
+
+/// The sprint and the story points are the issue's own: `E` shows them
+/// and sets them at once, with no custom field beside.
+#[tokio::test]
+async fn e_reads_and_sets_the_sprint_and_the_estimate_of_the_issue() {
+    let mut app = loaded().await;
+    press(&mut app, "/ACME-10<CR><CR>");
+    let sprint = preview(&mut app, "sprint").await;
+    assert!(sprint.starts_with("Sprint 14"), "{sprint:?}");
+    let points = preview(&mut app, "story").await;
+    assert!(points.starts_with("3 "), "{points:?}");
+
+    edit_field(&mut app, "story").await;
+    press(&mut app, "<C-u>5<CR>");
+    assert!(
+        detail_value(&mut app, "Estimate").contains('5'),
+        "{}",
+        detail_value(&mut app, "Estimate")
+    );
+    edit_field(&mut app, "sprint").await;
+    let board = kolum_domain::BoardId::new("1");
+    let sprints = kolum_domain::BoardSource::sprints(&FakeProvider::new(), &board).await;
+    app.on_event(Event::Sprints(sprints));
+    press(&mut app, "15");
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    assert!(detail_value(&mut app, "Sprint").contains("Sprint 15"));
+    let shown = screen(&mut app, 140, 60);
+    assert!(!shown.contains("customfield_") && !shown.contains("Story points"), "{shown}");
+}
+
+/// A parent set by key shows whole when the board has that issue; one it
+/// does not have waits for the read-back rather than show a blank.
+#[tokio::test]
+async fn a_parent_set_with_e_shows_the_issue_the_board_knows() {
+    let mut app = loaded().await;
+    press(&mut app, "/ACME-10<CR><CR>");
+    assert!(detail_value(&mut app, "Parent").contains("None"));
+    edit_field(&mut app, "parent").await;
+    press(&mut app, "ACME-1<CR>");
+    assert!(detail_value(&mut app, "Parent").contains("None"), "not on the board: as it was");
+    edit_field(&mut app, "parent").await;
+    press(&mut app, "<C-u>acme-13<CR>");
+    let parent = detail_value(&mut app, "Parent");
+    assert!(parent.contains("◆ Webhooks for invoice events"), "{parent}");
 }
 
 /// A provider that cannot list its fields still lets `E` edit the

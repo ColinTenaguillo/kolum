@@ -92,6 +92,11 @@ fn a_value_is_written_in_the_shape_its_field_takes() {
             Some(FieldValue::Number(42.0)),
             json!(42),
         ),
+        (
+            schema("array", Some("json"), Some("com.pyxis.greenhopper.jira:gh-sprint")),
+            None,
+            json!(null),
+        ),
         (schema("array", Some("option"), None), None, json!([])),
         (schema("option", None, None), None, json!(null)),
     ];
@@ -106,7 +111,7 @@ fn a_value_is_written_in_the_shape_its_field_takes() {
 #[test]
 fn the_editable_fields_say_how_each_is_edited() {
     let meta: dto::EditMetaDto = serde_json::from_str(fixture!("editmeta.json")).unwrap();
-    let fields = map::editable_fields(&meta);
+    let fields = map::editable_fields(&meta, &ctx().fields, JiraFlavor::Cloud);
     let shown: Vec<(&str, &FieldKind, bool)> =
         fields.iter().map(|f| (f.name.as_str(), &f.kind, f.required)).collect();
     let choice = |o: &[&str], many| FieldKind::Choice {
@@ -122,7 +127,6 @@ fn the_editable_fields_say_how_each_is_edited() {
             ("Description", &FieldKind::RichText, false),
             ("Documentation Link", &FieldKind::Text, false),
             ("Due date", &FieldKind::Date, false),
-            ("Epic Link", &FieldKind::Issue, false),
             ("Fix versions", &choice(&["3.1.0", "3.2.0"], true), false),
             ("Labels", &FieldKind::Words, false),
             ("Parent", &FieldKind::Issue, false),
@@ -135,6 +139,68 @@ fn the_editable_fields_say_how_each_is_edited() {
         ]
     );
     assert_eq!(fields[0].id, FieldId::new("assignee"));
+    // The ones the issue holds as members go by the domain's ids; the old
+    // Epic Link says the same as Parent, which Cloud writes.
+    let id = |name: &str| fields.iter().find(|f| f.name == name).unwrap().id.as_str();
+    assert_eq!(
+        ["Summary", "Due date", "Parent", "Story Points", "Sprint"].map(id),
+        [FieldId::TITLE, FieldId::DUE, FieldId::EPIC, FieldId::ESTIMATE, FieldId::SPRINT]
+    );
+    let by_name = |name: &str| fields.iter().find(|f| f.name == name).unwrap();
+    let jira = |name: &str| by_name(name).provider_id.as_str();
+    assert_eq!(
+        ["Due date", "Parent", "Sprint"].map(jira),
+        ["duedate", "parent", "customfield_10020"]
+    );
+    assert!(["Due date", "Team", "Fix versions", "Labels"].iter().all(|n| by_name(n).on_issue));
+}
+
+/// The parent goes by Parent on Cloud, by the Epic Link on Data Center;
+/// by whichever of the two the issue offers when it offers only one.
+#[test]
+fn the_parent_is_set_by_the_field_the_issue_offers() {
+    let meta: serde_json::Value = serde_json::from_str(fixture!("editmeta.json")).unwrap();
+    let epic = |flavor, without: Option<&str>| {
+        let mut meta = meta.clone();
+        if let Some(id) = without {
+            meta["fields"].as_object_mut().unwrap().remove(id);
+        }
+        let meta: dto::EditMetaDto = serde_json::from_value(meta).unwrap();
+        let fields = map::editable_fields(&meta, &ctx().fields, flavor);
+        let epics = fields.iter().filter(|f| f.id.as_str() == FieldId::EPIC);
+        epics.map(|f| f.provider_id.to_string()).collect::<Vec<_>>()
+    };
+    assert_eq!(epic(JiraFlavor::Cloud, None), ["parent"]);
+    assert_eq!(epic(JiraFlavor::Cloud, Some("parent")), ["customfield_10014"]);
+    assert_eq!(epic(JiraFlavor::DataCenter, None), ["customfield_10014"]);
+    assert_eq!(epic(JiraFlavor::DataCenter, Some("customfield_10014")), ["parent"]);
+}
+
+/// A system field Jira's issue is not read for is offered, not shown on
+/// the issue before the read-back, where it would not come back.
+#[test]
+fn a_field_the_issue_is_not_read_for_is_not_on_it() {
+    let mut meta: serde_json::Value = serde_json::from_str(fixture!("editmeta.json")).unwrap();
+    meta["fields"]["environment"] = serde_json::json!({
+        "required": false, "name": "Environment", "key": "environment", "operations": ["set"],
+        "schema": {"type": "string", "system": "environment"}
+    });
+    let meta: dto::EditMetaDto = serde_json::from_value(meta).unwrap();
+    let fields = map::editable_fields(&meta, &ctx().fields, JiraFlavor::Cloud);
+    let environment = fields.iter().find(|f| f.name == "Environment").unwrap();
+    assert!(!environment.on_issue);
+}
+
+/// A transition asks for its fields by the ids the domain gives them.
+#[test]
+fn a_transition_asks_for_fields_by_the_domains_ids() {
+    let mut page: serde_json::Value = serde_json::from_str(fixture!("transitions.json")).unwrap();
+    page["transitions"][1]["fields"]["duedate"] = serde_json::json!({"required": true});
+    page["transitions"][1]["fields"]["customfield_10016"] = serde_json::json!({"required": true});
+    let page: dto::TransitionPage = serde_json::from_value(page).unwrap();
+    let transition = map::transition(&page.transitions[1], &ctx().fields);
+    let asked: Vec<&str> = transition.required_fields.iter().map(FieldId::as_str).collect();
+    assert_eq!(asked, [FieldId::ESTIMATE, FieldId::DUE, "resolution"]);
 }
 
 /// The web's issue view, the same for every issue of a type: pinned fields
@@ -423,6 +489,11 @@ fn route(method: &str, target: &str) -> Option<(&'static str, &'static str)> {
 }
 
 async fn fake_jira(fail_once: Option<&'static str>) -> FakeJira {
+    fake_jira_with(fail_once, None).await
+}
+
+/// `broken`: what every request under that path gets is a server error.
+async fn fake_jira_with(fail_once: Option<&'static str>, broken: Option<&'static str>) -> FakeJira {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let seen = Arc::new(Mutex::new(vec![]));
@@ -473,6 +544,9 @@ async fn fake_jira(fail_once: Option<&'static str>) -> FakeJira {
                 let first_hit = fail_once.is_some_and(|p| target.starts_with(p))
                     && !std::mem::replace(&mut *failed.lock().unwrap(), true);
                 let (status, extra, body) = match route(&method, &target) {
+                    _ if broken.is_some_and(|p| target.starts_with(p)) => {
+                        ("500 Internal Server Error", "", String::new())
+                    }
                     _ if first_hit => {
                         ("429 Too Many Requests", "Retry-After: 0\r\n", String::new())
                     }
@@ -699,6 +773,20 @@ async fn a_search_for_an_issue_key_finds_that_issue() {
     assert_eq!(keys, ["ACME-6"], "a key that is not there is only text");
 }
 
+/// Moving a card and `E` do without Jira's list of fields: when it
+/// fails, the fields kolum could not detect go by Jira's own ids.
+#[tokio::test]
+async fn transitions_and_editable_fields_do_without_the_field_list() {
+    let jira = fake_jira_with(None, Some("/rest/api/3/field")).await;
+    let p = provider(&jira);
+    let key = IssueKey::parse("ACME-5");
+    let transitions = p.transitions(&key).await.unwrap();
+    assert_eq!(transitions[1].required_fields, [FieldId::new("resolution")]);
+    let fields = p.editable_fields(&key).await.unwrap();
+    let id = |name: &str| fields.iter().find(|f| f.name == name).unwrap().id.to_string();
+    assert_eq!(["Due date", "Story Points"].map(id), [FieldId::DUE, "customfield_10016"]);
+}
+
 #[tokio::test]
 async fn a_rate_limit_is_waited_out() {
     let jira = fake_jira(Some("/rest/api/3/myself")).await;
@@ -725,6 +813,11 @@ fn parts(entry: &str) -> (&str, serde_json::Value) {
     (line, serde_json::from_str(lines.next().unwrap()).unwrap())
 }
 
+/// An edit of the Jira field `id`, which kolum may call otherwise.
+fn edit(id: &str, value: Option<FieldValue>) -> FieldEdit {
+    FieldEdit { id: FieldId::new("kolum"), provider_id: FieldId::new(id), name: None, value }
+}
+
 #[tokio::test]
 async fn writes_send_what_jira_expects() {
     let jira = fake_jira(None).await;
@@ -742,14 +835,28 @@ async fn writes_send_what_jira_expects() {
         labels: Some(vec!["a".into()]),
         description: None,
         fields: vec![
-            (FieldId::new("customfield_10050"), Some(FieldValue::Text("Mobile".into()))),
-            (FieldId::new("customfield_10060"), None),
+            edit("customfield_10050", Some(FieldValue::Text("Mobile".into()))),
+            edit("customfield_10060", None),
+            edit("duedate", Some(FieldValue::Date(time::macros::date!(2026 - 12 - 01)))),
+            edit("customfield_10016", Some(FieldValue::Number(5.0))),
+            edit(
+                "customfield_10020",
+                Some(FieldValue::Sprint(Sprint { id: "15".into(), name: "S".into() })),
+            ),
+            edit(
+                "parent",
+                Some(FieldValue::Issue(IssueRef {
+                    key: IssueKey::parse("ACME-1"),
+                    title: "Epic".into(),
+                    kind: IssueKind::Epic,
+                    status: None,
+                })),
+            ),
         ],
     };
     p.update(&key, update).await.unwrap();
     p.update(&key, IssueUpdate::default()).await.unwrap();
-    let unknown =
-        IssueUpdate { fields: vec![(FieldId::new("customfield_9"), None)], ..Default::default() };
+    let unknown = IssueUpdate { fields: vec![edit("customfield_9", None)], ..Default::default() };
     assert_eq!(
         p.update(&key, unknown).await,
         Err(DomainError::Transport("Jira lists no field customfield_9".into()))
@@ -782,6 +889,10 @@ async fn writes_send_what_jira_expects() {
         "labels": ["a"],
         "customfield_10050": {"value": "Mobile"},
         "customfield_10060": [],
+        "duedate": "2026-12-01",
+        "customfield_10016": 5,
+        "customfield_10020": 15,
+        "parent": {"key": "ACME-1"},
     }});
     assert_eq!(parts(&puts[2]), ("PUT /rest/api/3/issue/ACME-5", fields));
     assert_eq!(puts.len(), 3, "an empty update sends nothing");

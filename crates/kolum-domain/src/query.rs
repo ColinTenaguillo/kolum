@@ -86,11 +86,12 @@ impl Filter {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::*;
 
-    fn issue() -> Issue {
+    /// An issue to test on: PROJ-1, assigned to Ana, in an epic.
+    pub(crate) fn issue() -> Issue {
         let ana =
             User { id: UserId::new("ana"), display_name: "Ana Silva".into(), avatar_url: None };
         Issue {

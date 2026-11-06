@@ -1316,10 +1316,12 @@ impl App {
         let fields = match result {
             Ok(fields) => fields,
             Err(kolum_domain::DomainError::Unsupported(_)) => vec![kolum_domain::EditableField {
-                id: kolum_domain::FieldId::new("description"),
+                id: kolum_domain::FieldId::new(kolum_domain::FieldId::DESCRIPTION),
+                provider_id: kolum_domain::FieldId::new(kolum_domain::FieldId::DESCRIPTION),
                 name: "Description".into(),
                 kind: kolum_domain::FieldKind::RichText,
                 required: false,
+                on_issue: true,
             }],
             Err(e) => return self.say(format!("Reading the fields of {key}: {e}"), Level::Error),
         };
@@ -1333,7 +1335,7 @@ impl App {
         let mut rows =
             vec![(FieldEntry::Status, "Status".to_string(), plain(issue.status.name.clone()))];
         rows.extend(fields.into_iter().map(|f| {
-            let shown = match current_value(issue, &f.id) {
+            let shown = match issue.value(&f.id) {
                 Some(kolum_domain::FieldValue::RichText(text)) => text,
                 Some(value) => plain(value.to_input()),
                 None => plain("None".into()),
@@ -1367,69 +1369,90 @@ impl App {
         };
         match &field.kind {
             kolum_domain::FieldKind::RichText => self.edit(EditPurpose::Field { key, field }),
-            kolum_domain::FieldKind::User if field.id.as_str() == "assignee" => {
+            kolum_domain::FieldKind::User
+                if field.id.as_str() == kolum_domain::FieldId::ASSIGNEE =>
+            {
                 self.open_user_picker(vec![key], None)
             }
             kolum_domain::FieldKind::User => self.open_user_picker(vec![key], Some(field)),
             kolum_domain::FieldKind::Choice { options, .. } => {
-                let mut choices: Vec<Option<String>> = options.iter().cloned().map(Some).collect();
-                if !field.required {
-                    choices.push(None);
-                }
-                let source = sources::OptionChoice { key, field: field.clone(), options: choices };
-                self.open_picker(Box::new(Picker::new(source, self.waker.clone())));
+                let options = options.clone();
+                self.open_option_picker(key, field, options)
             }
-            kolum_domain::FieldKind::Sprint => {
-                let Some(board) = self.board.snapshot.as_ref().map(|s| s.board.id.clone()) else {
-                    return;
-                };
-                self.effects.push(Effect::Send(Command::Sprints(board)));
-                self.sprint_for = Some((key, field));
-            }
-            _ => {
-                let mut input = Input::default();
-                let current = self.full_issue(&key).and_then(|i| current_value(i, &field.id));
-                input.set(&current.map(|v| v.to_input()).unwrap_or_default());
-                self.prompt = Some(Prompt::new(PromptKind::Field, input, vec![]));
-                self.field_prompt = Some((key, field));
-            }
+            kolum_domain::FieldKind::Sprint => self.ask_sprints(key, field),
+            _ => self.ask_field_line(key, field),
         }
+    }
+
+    /// The field's options, and none when it may be emptied.
+    fn open_option_picker(
+        &mut self,
+        key: IssueKey,
+        field: kolum_domain::EditableField,
+        options: Vec<String>,
+    ) {
+        let mut choices: Vec<Option<String>> = options.into_iter().map(Some).collect();
+        if !field.required {
+            choices.push(None);
+        }
+        let source = sources::OptionChoice { key, field, options: choices };
+        self.open_picker(Box::new(Picker::new(source, self.waker.clone())));
+    }
+
+    /// The board's sprints, for the sprint picker of `field`.
+    fn ask_sprints(&mut self, key: IssueKey, field: kolum_domain::EditableField) {
+        let Some(board) = self.board.snapshot.as_ref().map(|s| s.board.id.clone()) else {
+            return;
+        };
+        self.effects.push(Effect::Send(Command::Sprints(board)));
+        self.sprint_for = Some((key, field));
+    }
+
+    /// The bottom line, holding what the field holds now.
+    fn ask_field_line(&mut self, key: IssueKey, field: kolum_domain::EditableField) {
+        let mut input = Input::default();
+        let current = self.full_issue(&key).and_then(|i| i.value(&field.id));
+        input.set(&current.map(|v| v.to_input()).unwrap_or_default());
+        self.prompt = Some(Prompt::new(PromptKind::Field, input, vec![]));
+        self.field_prompt = Some((key, field));
     }
 
     /// The bottom line's value for the field it was opened for.
     fn confirm_field(&mut self, text: &str) {
         let Some((key, field)) = self.field_prompt.take() else { return };
         match field.kind.parse(text) {
-            Ok(value) => self.set_field(key, &field, value),
+            Ok(value) => {
+                let issue = field.kind == kolum_domain::FieldKind::Issue;
+                let value = value.map(|v| if issue { self.as_board_issue(v) } else { v });
+                self.set_field(key, &field, value)
+            }
             Err(e) => self.say(e, Level::Warn),
         }
     }
 
-    /// One field set to `value`, or emptied: through the edit the domain
-    /// names (title, description, labels, priority), by id otherwise.
+    /// An issue typed by its key, whole when the board has it, so it shows
+    /// at once; the key alone otherwise, which the read-back fills.
+    fn as_board_issue(&self, value: kolum_domain::FieldValue) -> kolum_domain::FieldValue {
+        let kolum_domain::FieldValue::Text(key) = &value else { return value };
+        let key = IssueKey::parse(key.as_str());
+        let issues = self.board.snapshot.iter().flat_map(|s| &s.issues);
+        match issues.into_iter().find(|i| i.key == key) {
+            Some(issue) => kolum_domain::FieldValue::Issue(issue.as_ref()),
+            None => value,
+        }
+    }
+
+    /// One field set to `value`, or emptied, unless it is required.
     fn set_field(
         &mut self,
         key: IssueKey,
         field: &kolum_domain::EditableField,
         value: Option<kolum_domain::FieldValue>,
     ) {
-        use kolum_domain::FieldValue;
         if value.is_none() && field.required {
             return self.say(format!("{} is required", field.name), Level::Warn);
         }
-        let mut update = kolum_domain::IssueUpdate::default();
-        match (field.id.as_str(), value) {
-            ("summary", Some(FieldValue::Text(title))) => update.title = Some(title),
-            ("description", Some(FieldValue::RichText(text))) => update.description = Some(text),
-            ("labels", Some(FieldValue::Options(labels))) => update.labels = Some(labels),
-            ("priority", Some(FieldValue::Text(name)))
-                if kolum_domain::Priority::from_name(&name).is_some() =>
-            {
-                update.priority = kolum_domain::Priority::from_name(&name)
-            }
-            (_, value) => update.fields = vec![(field.id.clone(), value)],
-        }
-        self.save(key, update);
+        self.save(key, kolum_domain::IssueUpdate::set(field, value));
     }
 
     /// The detail's copy of the issue when it is the open one: the board's
@@ -2253,29 +2276,9 @@ impl App {
     }
 }
 
-/// What a field of the issue holds now, by its provider id: the built-in
-/// fields from the issue's own members, the others from its custom fields.
-fn current_value(
-    issue: &kolum_domain::Issue,
-    id: &kolum_domain::FieldId,
-) -> Option<kolum_domain::FieldValue> {
-    use kolum_domain::FieldValue;
-    Some(match id.as_str() {
-        "summary" => FieldValue::Text(issue.title.clone()),
-        "description" => FieldValue::RichText(issue.description.clone()),
-        "labels" => FieldValue::Options(issue.labels.clone()),
-        "priority" => FieldValue::Text(issue.priority?.name().into()),
-        "duedate" => FieldValue::Date(issue.due?),
-        "assignee" => FieldValue::User(issue.assignee.clone()?),
-        "reporter" => FieldValue::User(issue.reporter.clone()?),
-        "parent" => FieldValue::Text(issue.parent.as_ref()?.key.to_string()),
-        _ => issue.fields.iter().find(|f| &f.id == id)?.value.clone(),
-    })
-}
-
 /// A rich text field's text, empty when it has none yet.
 fn rich_value(issue: &kolum_domain::Issue, id: &kolum_domain::FieldId) -> kolum_domain::RichText {
-    match current_value(issue, id) {
+    match issue.value(id) {
         Some(kolum_domain::FieldValue::RichText(text)) => text,
         _ => kolum_domain::RichText::default(),
     }
