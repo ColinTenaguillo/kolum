@@ -1673,6 +1673,64 @@ async fn a_saved_description_shows_at_once_and_e_waits_for_the_save() {
     assert!(shown.contains("My switch"), "{shown}");
 }
 
+/// A read that failed leaves nothing waiting on it: a later read of the
+/// same issue, for another reason, does not open the editor or the issue;
+/// and a description waiting on it to be saved is kept as a draft.
+#[tokio::test]
+async fn a_failed_read_leaves_nothing_waiting_on_it() {
+    let fake = FakeProvider::new();
+    let mut app = loaded().await;
+    let key = IssueKey::new("ACME-9");
+    let read = fake.issue(&key).await.unwrap();
+    let detail = |issue| IssueDetail {
+        issue,
+        comments: vec![],
+        activity: vec![],
+        layout: None,
+        children: vec![],
+    };
+    let failed = |key: &IssueKey| Event::IssueLoadFailed {
+        key: key.clone(),
+        error: kolum_domain::DomainError::Transport("down".into()),
+    };
+    app.take_effects();
+    press(&mut app, "e");
+    assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(key.clone()))]);
+    app.on_event(failed(&key));
+    assert!(screen(&mut app, 120, 30).contains("loading ACME-9 failed"));
+    app.on_event(Event::IssueLoaded(Box::new(detail(read.clone()))));
+    assert!(app.take_effects().is_empty(), "no editor out of the blue");
+
+    // The epic of ACME-9 off the board: `gp` waits for it to be read.
+    let epic = IssueKey::new("ACME-1");
+    let mut snapshot = load_board(&fake, None).await.unwrap();
+    snapshot.issues.retain(|i| i.key != epic);
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true });
+    press(&mut app, "gp");
+    app.on_event(failed(&epic));
+    app.on_event(Event::IssueLoaded(Box::new(detail(fake.issue(&epic).await.unwrap()))));
+    assert_eq!(app.open_issue(), None, "not opened out of the blue");
+
+    // A save waits on a read; it fails, offline say: the text is kept as a
+    // draft, which the next `e` on the issue opens, not the editor at once.
+    press(&mut app, "e");
+    let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else { panic!() };
+    app.on_edited(purpose.clone(), Ok(text.replace("An admin switch", "My switch")));
+    assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(key.clone()))]);
+    app.on_event(failed(&key));
+    assert!(app.take_effects().is_empty(), "no editor over whatever is open");
+    assert!(screen(&mut app, 120, 30).contains("kept as a draft"));
+    press(&mut app, "e");
+    let Some(Effect::Edit { purpose: again, text }) = app.take_effects().pop() else {
+        panic!("the draft in the editor")
+    };
+    assert_eq!(again, purpose, "from where the editing began");
+    assert!(text.split("<!-- kolum:").next().unwrap().contains("My switch"), "{text}");
+    press(&mut app, "e");
+    let Some(Effect::Edit { text, .. }) = app.take_effects().pop() else { panic!() };
+    assert!(text.contains("An admin switch"), "the draft opens once: {text}");
+}
+
 /// The board's copy has no description on Jira Cloud: the picker's preview
 /// takes it from the issue read whole.
 #[tokio::test]

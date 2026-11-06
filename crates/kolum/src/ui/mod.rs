@@ -264,6 +264,9 @@ pub struct App {
     /// Waiting on a read of this issue: `e` with none as new as the board's
     /// copy, or a description's save, which reads the issue right before.
     describe_after: Option<(IssueKey, AfterRead)>,
+    /// Descriptions not saved, as their read failed: `from` and the text,
+    /// which the next `e` on the issue opens.
+    drafts: std::collections::HashMap<IssueKey, (String, String)>,
     remote_debounce: std::time::Duration,
     /// The board filter is one applied, kept for the next run; until then
     /// the config's starts each.
@@ -354,6 +357,7 @@ impl App {
             layouts: Default::default(),
             read: Default::default(),
             describe_after: None,
+            drafts: Default::default(),
             remote_debounce: settings.remote_debounce,
             filter_applied: settings.filter_applied,
             now: Instant::now(),
@@ -647,6 +651,7 @@ impl App {
                 }
                 self.say(format!("Created {key}"), Level::Info);
             }
+            Event::IssueLoadFailed { key, error } => self.read_failed(key, error),
             Event::Failed { what, error } => {
                 self.say(format!("{what} failed: {error}"), Level::Error)
             }
@@ -673,6 +678,21 @@ impl App {
             AfterRead::Describe => self.describe(key),
             AfterRead::Save { from, text } => self.save_read(key, from, text),
         }
+    }
+
+    /// A read that failed: nothing waits on it any more, and a description
+    /// waiting on it to be saved is kept as a draft, for the next `e`.
+    fn read_failed(&mut self, key: IssueKey, error: kolum_domain::DomainError) {
+        self.say(format!("loading {key} failed: {error}"), Level::Error);
+        self.opening.take_if(|opening| *opening == key);
+        let Some((_, AfterRead::Save { from, text })) =
+            self.describe_after.take_if(|(waiting, _)| *waiting == key)
+        else {
+            return;
+        };
+        let why = format!("loading {key} failed: {error}; not saved, kept as a draft for `e`");
+        self.say(why, Level::Error);
+        self.drafts.insert(key, (from, text));
     }
 
     /// Lets the picker take in finished matches. Called before each draw.
@@ -1464,6 +1484,13 @@ impl App {
         if let Some((saving, AfterRead::Save { .. })) = &self.describe_after {
             let why = format!("{saving} is still being saved: `e` once it is");
             return self.say(why, Level::Warn);
+        }
+        if let Some((from, text)) = self.drafts.remove(&key) {
+            let text = format!(
+                "{text}\n{MARKER} {key}: the draft not saved. The first `# ` line is the title, the rest the description, in Markdown. -->\n"
+            );
+            let purpose = EditPurpose::Describe { key, from };
+            return self.effects.push(Effect::Edit { purpose, text });
         }
         match self.issue_in_full(&key) {
             Some(issue) => self.edit_description(&issue, None),

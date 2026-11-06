@@ -119,6 +119,11 @@ pub enum Event {
     ReadIssues(Vec<IssueDetail>),
     Sprints(Result<Vec<kolum_domain::Sprint>, DomainError>),
     IssueLoaded(Box<IssueDetail>),
+    /// The `LoadIssue` of this issue failed.
+    IssueLoadFailed {
+        key: IssueKey,
+        error: DomainError,
+    },
     /// For the search with this id; stale ones were cancelled.
     SearchResults {
         id: u64,
@@ -316,7 +321,10 @@ async fn run(
                 }
                 Event::IssueLoaded(Box::new(detail))
             }
-            Err(error) => Event::Failed { what: format!("loading {key}"), error },
+            Err(error) => {
+                tracing::warn!("loading {key}: {error}");
+                Event::IssueLoadFailed { key, error }
+            }
         },
     };
     if let Event::Failed { what, error } = &event {
@@ -494,8 +502,8 @@ mod tests {
         let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), None);
         events.recv().await; // Me
         service.send(Command::LoadIssue(IssueKey::new("ACME-999")));
-        let Some(Event::Failed { what, error }) = events.recv().await else { panic!() };
-        assert_eq!(what, "loading ACME-999");
+        let Some(Event::IssueLoadFailed { key, error }) = events.recv().await else { panic!() };
+        assert_eq!(key, IssueKey::new("ACME-999"));
         assert!(matches!(error, DomainError::NotFound(_)));
     }
 
