@@ -2297,7 +2297,8 @@ fn opening(key: &IssueKey) -> String {
 
 /// The board's copy of the open issue, keeping what the detail read
 /// better: Jira sends rich text fields for one issue and not for a board,
-/// and Jira Cloud sends a board its descriptions as wiki markup.
+/// and no description to a Jira Cloud board. The description shown stays
+/// unless the copy has one and is newer, as a Data Center board's can be.
 fn refresh_detail(shown: &mut kolum_domain::Issue, fresh: &kolum_domain::Issue) {
     let only_here: Vec<_> = shown
         .fields
@@ -2305,10 +2306,13 @@ fn refresh_detail(shown: &mut kolum_domain::Issue, fresh: &kolum_domain::Issue) 
         .filter(|f| !fresh.fields.iter().any(|x| x.id == f.id))
         .cloned()
         .collect();
+    let newer = !fresh.description.is_empty() && fresh.updated > shown.updated;
     let description = std::mem::take(&mut shown.description);
     *shown = fresh.clone();
     shown.fields.extend(only_here);
-    shown.description = description;
+    if !newer {
+        shown.description = description;
+    }
 }
 
 /// `# Title` then Markdown, against the same it was edited from: only what

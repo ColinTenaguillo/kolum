@@ -495,6 +495,41 @@ async fn a_board_sync_keeps_the_description_the_detail_loaded() {
     assert!(!shown.contains("h3. Context"), "{shown}");
 }
 
+/// A board copy newer than the detail's read takes its description when it
+/// has one (Data Center's boards do), and keeps the detail's when it has
+/// none (Jira Cloud's do not).
+#[tokio::test]
+async fn a_board_sync_brings_a_newer_description() {
+    let fake = FakeProvider::new();
+    let mut app = loaded().await;
+    press(&mut app, "/ACME-10<CR><CR>");
+    let key = IssueKey::new("ACME-10");
+    let issue = fake.issue(&key).await.unwrap();
+    let updated = issue.updated;
+    let detail =
+        IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
+    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    let sync = |minutes, description: &str| {
+        let fake = &fake;
+        let key = &key;
+        let description = kolum_domain::RichText::from_markdown(description);
+        async move {
+            let mut snapshot = load_board(fake, None).await.unwrap();
+            let issue = snapshot.issues.iter_mut().find(|i| &i.key == key).unwrap();
+            issue.updated = updated + time::Duration::minutes(minutes);
+            issue.description = description;
+            Event::BoardLoaded { snapshot, fresh: true }
+        }
+    };
+    app.on_event(sync(1, "").await);
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("Offset pagination over a non-unique sort"), "{shown}");
+    app.on_event(sync(2, "Rewritten by a colleague").await);
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("Rewritten by a colleague"), "{shown}");
+    assert!(!shown.contains("Offset pagination over a non-unique sort"), "{shown}");
+}
+
 /// Unset, the right-hand column shows every field: the built-in ones, then
 /// each custom field the issue fills that is not rich text.
 #[tokio::test]
