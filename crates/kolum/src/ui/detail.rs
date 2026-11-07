@@ -64,7 +64,7 @@ pub struct DetailView {
     /// The issue as the provider last sent it.
     pub latest: Issue,
     /// Comments and history arrive after the view opens.
-    pub loaded: Option<IssueDetail>,
+    pub loaded: Option<std::sync::Arc<IssueDetail>>,
     pub tab: Tab,
     pub scroll: u16,
     /// Rows of content on screen at the last draw, for half-page moves.

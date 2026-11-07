@@ -543,7 +543,9 @@ async fn fake_jira_with(fail_once: Option<&'static str>, broken: Option<&'static
                 log.lock().unwrap().push(entry);
                 let first_hit = fail_once.is_some_and(|p| target.starts_with(p))
                     && !std::mem::replace(&mut *failed.lock().unwrap(), true);
+                let refused = target.contains("bulkfetch") && body.contains("\"BROKEN-");
                 let (status, extra, body) = match route(&method, &target) {
+                    _ if refused => ("500 Internal Server Error", "", String::new()),
                     _ if broken.is_some_and(|p| target.starts_with(p)) => {
                         ("500 Internal Server Error", "", String::new())
                     }
@@ -685,7 +687,9 @@ async fn issues_are_read_in_full_with_their_comments_and_history_in_one_request(
     let jira = fake_jira(None).await;
     let p = provider(&jira);
     assert!(p.capabilities().supports(Capability::BulkRead));
-    let read = p.issues_in_full(&[IssueKey::parse("ACME-5")]).await.unwrap();
+    let (batches, done) = in_full(&p, &[IssueKey::parse("ACME-5")]).await;
+    done.unwrap();
+    let read = batches.concat();
     assert_eq!(read.len(), 1);
     assert_eq!(read[0].issue.title, "Login times out after SSO redirect");
     assert_eq!(read[0].comments[0].body.plain_text(), "I can reproduce with MFA on.");
@@ -699,6 +703,61 @@ async fn issues_are_read_in_full_with_their_comments_and_history_in_one_request(
             && asked.contains(r#""expand":["changelog"]"#),
         "{asked}"
     );
+}
+
+/// Each batch a bulk read hands on, and how the read ended.
+async fn in_full(p: &JiraProvider, keys: &[IssueKey]) -> (Vec<Vec<IssueInFull>>, Result<()>) {
+    let mut batches = vec![];
+    let done = p.issues_in_full(keys, &mut |batch| batches.push(batch)).await;
+    (batches, done)
+}
+
+/// Jira's bulkfetch takes 100 keys at most: more go in turns, each handed
+/// on as it comes.
+#[tokio::test]
+async fn any_number_of_issues_is_read_in_full_a_hundred_at_a_time() {
+    let jira = fake_jira(None).await;
+    let keys: Vec<IssueKey> = (1..=150).map(|n| IssueKey::parse(format!("ACME-{n}"))).collect();
+    let (batches, done) = in_full(&provider(&jira), &keys).await;
+    done.unwrap();
+    assert_eq!(batches.len(), 2);
+    let seen = jira.seen.lock().unwrap().clone();
+    let asked: Vec<&String> = seen.iter().filter(|r| r.contains("bulkfetch")).collect();
+    assert_eq!(asked.len(), 2);
+    assert!(asked[0].contains(r#""ACME-1","#) && asked[0].contains(r#""ACME-100"]"#));
+    assert!(asked[1].contains(r#"["ACME-101","#) && asked[1].contains(r#""ACME-150"]"#));
+}
+
+/// A batch that fails ends the read; those before it were handed on.
+#[tokio::test]
+async fn a_failed_batch_keeps_the_batches_read_before_it() {
+    let jira = fake_jira(None).await;
+    let key = |n: usize| match n {
+        ..=100 => IssueKey::parse(format!("ACME-{n}")),
+        _ => IssueKey::parse(format!("BROKEN-{n}")),
+    };
+    let keys: Vec<IssueKey> = (1..=150).map(key).collect();
+    let (batches, done) = in_full(&provider(&jira), &keys).await;
+    assert!(done.is_err());
+    assert_eq!(batches.len(), 1, "the first batch, read");
+}
+
+/// An issue Jira refuses (`issueErrors`), or one that does not map, is
+/// left out: the others are read.
+#[test]
+fn a_bulk_read_leaves_out_what_it_cannot_read() {
+    let mut answer: serde_json::Value = serde_json::from_str(fixture!("bulkfetch.json")).unwrap();
+    let mut odd = answer["issues"][0].clone();
+    odd["key"] = "ACME-6".into();
+    odd["fields"].as_object_mut().unwrap().remove("status");
+    answer["issues"].as_array_mut().unwrap().insert(0, odd);
+    answer["issues"].as_array_mut().unwrap().push(serde_json::json!({ "no": "key" }));
+    answer["issueErrors"] = serde_json::json!([{
+        "issueIdsOrKeys": ["NOPE-1"], "status": 404, "elementErrors": {}
+    }]);
+    let read = read_bulk(answer, &ctx()).unwrap();
+    let keys: Vec<&str> = read.iter().map(|r| r.issue.key.as_str()).collect();
+    assert_eq!(keys, ["ACME-5"]);
 }
 
 #[tokio::test]

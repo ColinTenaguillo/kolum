@@ -287,3 +287,38 @@ async fn the_fake_board_has_a_sprint_running_and_one_to_come() {
     let names: Vec<&str> = sprints.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, ["Sprint 14", "Sprint 15"]);
 }
+
+/// As Jira's: a key it cannot read is left out, a long issue's comments
+/// are cut short, what was asked is seen, and a refusal refuses.
+#[tokio::test]
+async fn a_bulk_read_is_cut_short_and_leaves_out_what_it_cannot_read() {
+    let p = FakeProvider::new();
+    let five = IssueKey::parse("ACME-5");
+    p.delay_next_bulk_read(std::time::Duration::from_millis(1));
+    let mut read = vec![];
+    let asked = [five.clone(), IssueKey::parse("NOPE-1")];
+    p.issues_in_full(&asked, &mut |batch| read.extend(batch)).await.unwrap();
+    assert_eq!(read.len(), 1);
+    assert_eq!(read[0].issue.key, five);
+    assert_eq!(p.comments(&five).await.unwrap().len(), 3);
+    assert_eq!(read[0].comments.len(), kolum_provider_fake::BULK_COMMENTS);
+    assert!(!read[0].activity.is_empty());
+    p.refuse_bulk_reads();
+    assert!(p.issues_in_full(std::slice::from_ref(&five), &mut |_| {}).await.is_err());
+    assert_eq!(p.bulk_reads(), [vec![five.clone(), IssueKey::parse("NOPE-1")], vec![five]]);
+}
+
+/// A bulk read hands its issues ten at a time; refused after one batch,
+/// the batch handed stays read.
+#[tokio::test]
+async fn a_bulk_read_comes_a_batch_at_a_time_until_refused() {
+    let p = FakeProvider::new();
+    let keys: Vec<IssueKey> = (1..=25).map(|n| IssueKey::parse(format!("ACME-{n}"))).collect();
+    let mut sizes = vec![];
+    p.issues_in_full(&keys, &mut |batch| sizes.push(batch.len())).await.unwrap();
+    assert_eq!(sizes, [10, 10, 5]);
+    p.refuse_bulk_reads_after(1);
+    sizes.clear();
+    assert!(p.issues_in_full(&keys, &mut |batch| sizes.push(batch.len())).await.is_err());
+    assert_eq!(sizes, [10]);
+}

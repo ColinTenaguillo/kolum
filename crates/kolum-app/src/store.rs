@@ -24,13 +24,15 @@ pub trait Store: Send + Sync {
     fn save_layout(&self, key: &str, layout: &FieldLayout) -> std::io::Result<()>;
 }
 
-/// The issues as last read in full, by an opening or a prefetch.
+/// The issues as last read in full, by an opening or a prefetch. Only the
+/// issue store holds it: one writer.
 pub trait IssueArchive: Send + Sync {
-    /// Every issue kept, but those forgotten for their age.
+    /// Every issue kept, but those neither read nor seen on a board for long.
     fn issues(&self) -> Vec<IssueDetail>;
-    /// One issue kept, if it is and it reads.
-    fn issue(&self, key: &IssueKey) -> Option<IssueDetail>;
     fn save_issue(&self, detail: &IssueDetail) -> std::io::Result<()>;
+    /// These issues were seen on a board just now: they are kept as long as
+    /// one just read. What is not kept is no matter.
+    fn touch(&self, keys: &[IssueKey]);
 }
 
 /// Both, as one adapter gives them.
@@ -52,6 +54,8 @@ pub(crate) mod tests {
         boards: Mutex<Boards>,
         layouts: Mutex<BTreeMap<String, FieldLayout>>,
         issues: Mutex<BTreeMap<IssueKey, IssueDetail>>,
+        pub touched: Mutex<Vec<IssueKey>>,
+        saves: std::sync::atomic::AtomicUsize,
     }
 
     impl Store for Memory {
@@ -80,12 +84,24 @@ pub(crate) mod tests {
         fn issues(&self) -> Vec<IssueDetail> {
             self.issues.lock().unwrap().values().cloned().collect()
         }
-        fn issue(&self, key: &IssueKey) -> Option<IssueDetail> {
-            self.issues.lock().unwrap().get(key).cloned()
-        }
         fn save_issue(&self, detail: &IssueDetail) -> std::io::Result<()> {
+            self.saves.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.issues.lock().unwrap().insert(detail.issue.key.clone(), detail.clone());
             Ok(())
+        }
+        fn touch(&self, keys: &[IssueKey]) {
+            self.touched.lock().unwrap().extend_from_slice(keys);
+        }
+    }
+
+    impl Memory {
+        /// How many issues were written so far.
+        pub fn saves(&self) -> usize {
+            self.saves.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        pub fn issue(&self, key: &IssueKey) -> Option<IssueDetail> {
+            self.issues.lock().unwrap().get(key).cloned()
         }
     }
 }

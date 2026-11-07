@@ -1,15 +1,16 @@
 use crate::board::{BoardSnapshot, load_board, sync_board};
-use crate::store::{IssueArchive, Storage, Store};
+use crate::issue_store::{IssueStore, Wanted, prefetch};
+use crate::store::Storage;
 use crate::write::Write;
+use crate::writer::{Job, Reader, Writer};
 use kolum_domain::{
-    ActivityEntry, BULK_READ_MAX, BoardId, BoardSummary, Capabilities, Capability, Comment,
-    DomainError, Issue, IssueInFull, IssueKey, Provider, Query, User,
+    ActivityEntry, BoardId, BoardSummary, Capabilities, Capability, Comment, DomainError, Issue,
+    IssueInFull, IssueKey, Provider, Query, User,
 };
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use time::OffsetDateTime;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 /// What the TUI asks for.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,28 +75,6 @@ impl From<IssueInFull> for IssueDetail {
     }
 }
 
-/// The background read of a board's issues in full, so each opens whole:
-/// shared by the commands, which run side by side.
-#[derive(Default)]
-struct Prefetch {
-    /// When each issue kept was last updated, as kept: one updated since
-    /// is read again.
-    kept: Mutex<HashMap<IssueKey, OffsetDateTime>>,
-    /// Set by a refusal (a rate limit) or a failure: none for the rest of
-    /// the run, so that the user's own requests pass.
-    stopped: AtomicBool,
-    /// One at a time; what changes meanwhile is caught after the next sync.
-    running: AtomicBool,
-    /// Set once the issues of earlier runs are read: what is kept is known.
-    loaded: tokio::sync::watch::Sender<bool>,
-}
-
-impl Prefetch {
-    fn keep(&self, issue: &Issue) {
-        self.kept.lock().unwrap().insert(issue.key.clone(), issue.updated);
-    }
-}
-
 /// The project and the issue type an issue's field layout belongs to:
 /// every issue of a type in a project has the same. A key in no project
 /// (a GitHub draft) has an empty one, which no project's name is.
@@ -118,10 +97,13 @@ pub enum Event {
     /// The field layouts kept from earlier runs, by `layout_key`, first of all.
     FieldLayouts(std::collections::BTreeMap<String, kolum_domain::FieldLayout>),
     /// Issues read in full: those of earlier runs, right after the layouts,
-    /// then those a board prefetches.
-    ReadIssues(Vec<IssueDetail>),
+    /// then those a board prefetches. Only the copies that won: each
+    /// replaces the one held. Shared with the service, which holds them too.
+    ReadIssues(Vec<Arc<IssueDetail>>),
     Sprints(Result<Vec<kolum_domain::Sprint>, DomainError>),
-    IssueLoaded(Box<IssueDetail>),
+    /// The answer to a `LoadIssue`, or the issue read again: the copy
+    /// current after the read, which replaces the one held.
+    IssueLoaded(Arc<IssueDetail>),
     /// The `LoadIssue` of this issue failed.
     IssueLoadFailed {
         key: IssueKey,
@@ -171,6 +153,8 @@ pub struct Service {
     commands: mpsc::UnboundedSender<Command>,
     capabilities: Capabilities,
     provider: String,
+    /// The writer's end: once every command's task is done.
+    written: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Service {
@@ -180,30 +164,37 @@ impl Service {
         provider: Arc<dyn Provider>,
         store: Option<Arc<dyn Storage>>,
     ) -> (Self, mpsc::UnboundedReceiver<Event>) {
-        let cache: Option<Arc<dyn Store>> = store.clone().map(|s| s as Arc<dyn Store>);
-        let archive: Option<Arc<dyn IssueArchive>> = store.map(|s| s as Arc<dyn IssueArchive>);
         let (commands, mut rx) = mpsc::unbounded_channel();
         let (events, events_rx) = mpsc::unbounded_channel();
+        let started = store.map(crate::writer::start);
+        let kept = started.as_ref().map(|s| s.reader.layouts()).unwrap_or_default();
+        if !kept.is_empty() {
+            let _ = events.send(Event::FieldLayouts(kept));
+        }
+        let (writer, reader, written) = match started {
+            Some(s) => (Some((s.writer, s.kept)), Some(s.reader), Some(s.done)),
+            None => (None, None, None),
+        };
         let service = Service {
             commands,
             capabilities: provider.capabilities(),
             provider: provider.name().to_string(),
+            written,
         };
-        let kept = cache.as_ref().map(|c| c.layouts()).unwrap_or_default();
-        if !kept.is_empty() {
-            let _ = events.send(Event::FieldLayouts(kept));
+        let writes = writer.as_ref().map(|(w, _)| w.clone()).unwrap_or_default();
+        let issues = IssueStore::spawn(writer, events.clone(), provider.clone());
+        let (boards, wanted) = watch::channel(Wanted::new());
+        if provider.capabilities().supports(Capability::BulkRead) {
+            tokio::spawn(prefetch(provider.clone(), issues.clone(), wanted));
         }
-        let prefetch = Arc::new(Prefetch::default());
-        // Every issue kept, read off the way of the board's first showing.
-        let (kept, sent, state) = (archive.clone(), events.clone(), prefetch.clone());
-        tokio::task::spawn_blocking(move || {
-            let read = kept.as_ref().map(|a| a.issues()).unwrap_or_default();
-            read.iter().for_each(|d| state.keep(&d.issue));
-            if !read.is_empty() {
-                let _ = sent.send(Event::ReadIssues(read));
-            }
-            state.loaded.send_replace(true);
-        });
+        let ports = Ports {
+            provider: provider.clone(),
+            reader,
+            writer: writes,
+            issues,
+            boards,
+            events: events.clone(),
+        };
         let me = (provider.clone(), events.clone());
         tokio::spawn(async move {
             let event = match me.0.me().await {
@@ -216,14 +207,7 @@ impl Service {
             let mut search: Option<tokio::task::JoinHandle<()>> = None;
             let mut turns = Turns::default();
             while let Some(command) = rx.recv().await {
-                let job = run(
-                    provider.clone(),
-                    cache.clone(),
-                    archive.clone(),
-                    command.clone(),
-                    events.clone(),
-                    prefetch.clone(),
-                );
+                let job = run(ports.clone(), command.clone());
                 let task = turns.spawn(&command, job);
                 if matches!(command, Command::Search { .. })
                     && let Some(previous) = search.replace(task)
@@ -247,6 +231,18 @@ impl Service {
 
     pub fn provider_name(&self) -> &str {
         &self.provider
+    }
+
+    /// No more commands: what was sent to be kept is written before this
+    /// ends, or `limit` passes, past which it is given up.
+    pub async fn close(self, limit: std::time::Duration) {
+        let Service { commands, written, .. } = self;
+        drop(commands);
+        if let Some(written) = written
+            && tokio::time::timeout(limit, written).await.is_err()
+        {
+            tracing::warn!("quitting before everything read was kept");
+        }
     }
 }
 
@@ -296,175 +292,143 @@ async fn within<T>(
     tokio::time::timeout(limit, request).await.map_err(late)?
 }
 
-async fn run(
+/// What each command's task works with.
+#[derive(Clone)]
+struct Ports {
     provider: Arc<dyn Provider>,
-    cache: Option<Arc<dyn Store>>,
-    archive: Option<Arc<dyn IssueArchive>>,
-    command: Command,
+    /// What is kept, to read; none without storage.
+    reader: Option<Reader>,
+    /// What to keep goes there.
+    writer: Writer,
+    issues: IssueStore,
+    /// The latest board's issues, for the prefetch.
+    boards: watch::Sender<Wanted>,
     events: mpsc::UnboundedSender<Event>,
-    prefetched: Arc<Prefetch>,
-) {
+}
+
+/// One command, answered by its event. A flat dispatch: each arm one call.
+async fn run(ports: Ports, command: Command) {
+    let provider = ports.provider.as_ref();
     let event = match command {
-        Command::LoadBoard(id, request) => {
-            // The cache first, then the whole board: a board filtered by date
-            // loses issues nobody touched, which no incremental sync reports.
-            if let Some((snapshot, _)) = cache.as_ref().and_then(|c| c.board(id.as_ref())) {
-                let _ = events.send(Event::BoardLoaded { snapshot, fresh: false, request });
-            }
-            fetch_board(provider.as_ref(), cache.as_deref(), (id, request), None).await
-        }
-        Command::ReloadBoard(id, request) => {
-            fetch_board(provider.as_ref(), cache.as_deref(), (id, request), None).await
-        }
+        Command::LoadBoard(id, request) => ports.load_board(id, request).await,
+        Command::ReloadBoard(id, request) => ports.fetch_board(id, request, None).await,
         Command::SyncBoard(id, request) => {
-            let cached = cache.as_ref().and_then(|c| c.board(id.as_ref()));
-            fetch_board(provider.as_ref(), cache.as_deref(), (id, request), cached).await
+            let cached = ports.kept_board(id.clone()).await;
+            ports.fetch_board(id, request, cached).await
         }
-        Command::Sprints(board) => Event::Sprints(provider.sprints(&board).await),
-        Command::LoadBoards => match provider.boards().await {
-            Ok(boards) => Event::Boards(boards),
-            Err(error) => Event::Failed { what: "listing the boards".into(), error },
+        Command::LoadIssue(key) => match ports.load_issue(key).await {
+            Some(answer) => answer,
+            None => return,
         },
+        Command::Sprints(board) => Event::Sprints(provider.sprints(&board).await),
+        Command::LoadBoards => {
+            or_failed(provider.boards().await, Event::Boards, || "listing the boards".into())
+        }
         Command::Transitions(key) => {
-            let result = provider.transitions(&key).await;
-            Event::Transitions { key, result }
+            Event::Transitions { result: provider.transitions(&key).await, key }
         }
         Command::EditableFields(key) => {
-            let result = provider.editable_fields(&key).await;
-            Event::EditableFields { key, result }
+            Event::EditableFields { result: provider.editable_fields(&key).await, key }
         }
-        Command::Write { op, key, write } => written(provider.as_ref(), op, key, write).await,
-        Command::Image(url) => {
-            let result = provider.image(&url).await;
-            Event::Image { url, result }
+        Command::Write { op, key, write } => written(provider, op, key, write).await,
+        Command::Image(url) => Event::Image { result: provider.image(&url).await, url },
+        Command::Create(new) => {
+            or_failed(provider.create(new).await, created, || "creating the issue".into())
         }
-        Command::Create(new) => match provider.create(new).await {
-            Ok(issue) => Event::Created(Box::new(issue)),
-            Err(error) => Event::Failed { what: "creating the issue".into(), error },
-        },
-        Command::Clone(key) => match provider.clone_issue(&key).await {
-            Ok(issue) => Event::Created(Box::new(issue)),
-            Err(error) => Event::Failed { what: format!("cloning {key}"), error },
-        },
+        Command::Clone(key) => {
+            or_failed(provider.clone_issue(&key).await, created, || format!("cloning {key}"))
+        }
         Command::Search { id, query } => {
             let result = provider.search(&query, None).await.map(|page| page.items);
             Event::SearchResults { id, result }
         }
-        Command::LoadIssue(key) => match load_issue(provider.as_ref(), &key).await {
-            Ok(detail) => {
-                if let (Some(cache), Some(layout)) = (&cache, &detail.layout)
-                    && let Err(e) = cache.save_layout(&layout_key(&detail.issue), layout)
-                {
-                    tracing::warn!("keeping the field layout of {key}: {e}");
-                }
-                prefetched.keep(&detail.issue);
-                if let Some(archive) = &archive
-                    && let Err(e) = archive.save_issue(&detail)
-                {
-                    tracing::warn!("keeping {key}: {e}");
-                }
-                Event::IssueLoaded(Box::new(detail))
+    };
+    ports.announce(event);
+}
+
+fn created(issue: Issue) -> Event {
+    Event::Created(Box::new(issue))
+}
+
+/// The answer, or what failed, in words for a status line.
+fn or_failed<T>(
+    result: kolum_domain::Result<T>,
+    answer: impl FnOnce(T) -> Event,
+    what: impl FnOnce() -> String,
+) -> Event {
+    match result {
+        Ok(value) => answer(value),
+        Err(error) => Event::Failed { what: what(), error },
+    }
+}
+
+impl Ports {
+    /// The cache first, then the whole board: a board filtered by date
+    /// loses issues nobody touched, which no incremental sync reports.
+    async fn load_board(&self, id: Option<BoardId>, request: u64) -> Event {
+        if let Some((snapshot, _)) = self.kept_board(id.clone()).await {
+            let _ = self.events.send(Event::BoardLoaded { snapshot, fresh: false, request });
+        }
+        self.fetch_board(id, request, None).await
+    }
+
+    async fn kept_board(&self, id: Option<BoardId>) -> Option<(BoardSnapshot, OffsetDateTime)> {
+        self.reader.as_ref()?.board(id).await
+    }
+
+    /// From the provider, synced from `cached` when there is one, and kept
+    /// with the time the sync started: whatever changes while it runs is
+    /// caught by the next one.
+    async fn fetch_board(
+        &self,
+        id: Option<BoardId>,
+        request: u64,
+        cached: Option<(BoardSnapshot, OffsetDateTime)>,
+    ) -> Event {
+        let provider = self.provider.as_ref();
+        let started = OffsetDateTime::now_utc();
+        let result = match cached {
+            Some((snapshot, since)) => sync_board(provider, snapshot, since).await,
+            None => load_board(provider, id.clone()).await,
+        };
+        match result {
+            Ok(snapshot) => {
+                self.writer.send(Job::Board(id, snapshot.clone(), started));
+                Event::BoardLoaded { snapshot, fresh: true, request }
             }
+            Err(error) => Event::Failed { what: "loading the board".into(), error },
+        }
+    }
+
+    /// The issue read whole goes to the issue store, which answers; its
+    /// layout is kept here. `Some` when there is no one else to answer.
+    async fn load_issue(&self, key: IssueKey) -> Option<Event> {
+        let detail = match load_issue(self.provider.as_ref(), &key).await {
+            Ok(detail) => detail,
             Err(error) => {
                 tracing::warn!("loading {key}: {error}");
-                Event::IssueLoadFailed { key, error }
+                return Some(Event::IssueLoadFailed { key, error });
             }
-        },
-    };
-    if let Event::Failed { what, error } = &event {
-        tracing::warn!("{what}: {error}");
-    }
-    if let Event::BoardLoaded { snapshot, fresh: true, .. } = &event {
-        start_prefetch(&provider, &archive, snapshot, &events, prefetched);
-    }
-    let _ = events.send(event);
-}
-
-/// A board just read from the provider: its issues read in full in the
-/// background, if the provider can.
-fn start_prefetch(
-    provider: &Arc<dyn Provider>,
-    cache: &Option<Arc<dyn IssueArchive>>,
-    snapshot: &BoardSnapshot,
-    events: &mpsc::UnboundedSender<Event>,
-    state: Arc<Prefetch>,
-) {
-    if provider.capabilities().supports(Capability::BulkRead) {
-        let wanted = snapshot.issues.iter().map(|i| (i.key.clone(), i.updated)).collect();
-        tokio::spawn(prefetch(provider.clone(), cache.clone(), wanted, events.clone(), state));
-    }
-}
-
-/// The issues of `wanted` not kept as last updated, read in full a batch
-/// at a time, each kept and sent on as it comes.
-async fn prefetch(
-    provider: Arc<dyn Provider>,
-    cache: Option<Arc<dyn IssueArchive>>,
-    wanted: Vec<(IssueKey, OffsetDateTime)>,
-    events: mpsc::UnboundedSender<Event>,
-    state: Arc<Prefetch>,
-) {
-    let _ = state.loaded.subscribe().wait_for(|loaded| *loaded).await;
-    if state.stopped.load(Ordering::Relaxed) || state.running.swap(true, Ordering::AcqRel) {
-        return;
-    }
-    let stale: Vec<IssueKey> = {
-        let kept = state.kept.lock().unwrap();
-        wanted.into_iter().filter(|(k, at)| kept.get(k) != Some(at)).map(|(k, _)| k).collect()
-    };
-    for batch in stale.chunks(BULK_READ_MAX) {
-        match provider.issues_in_full(batch).await {
-            Ok(read) => {
-                let mut read: Vec<IssueDetail> = read.into_iter().map(IssueDetail::from).collect();
-                for detail in &mut read {
-                    // A bulk read has no children nor layout: an opening's stay.
-                    if let Some(kept) = cache.as_ref().and_then(|c| c.issue(&detail.issue.key)) {
-                        detail.children = kept.children;
-                        detail.layout = kept.layout;
-                    }
-                    state.keep(&detail.issue);
-                    if let Some(cache) = &cache
-                        && let Err(e) = cache.save_issue(detail)
-                    {
-                        tracing::warn!("keeping {}: {e}", detail.issue.key);
-                    }
-                }
-                let _ = events.send(Event::ReadIssues(read));
-            }
-            Err(error) => {
-                tracing::info!("prefetching stopped for this run: {error}");
-                state.stopped.store(true, Ordering::Relaxed);
-                break;
-            }
+        };
+        if let Some(layout) = &detail.layout {
+            self.writer.send(Job::Layout(layout_key(&detail.issue), layout.clone()));
         }
+        // The store gone, the read goes straight to the screen.
+        Some(Event::IssueLoaded(Arc::from(self.issues.opened(detail).err()?)))
     }
-    state.running.store(false, Ordering::Release);
-}
 
-/// From the provider, synced from `cached` when there is one, and saved
-/// back with the time the sync started: whatever changes while it runs is
-/// caught by the next one.
-async fn fetch_board(
-    provider: &dyn Provider,
-    cache: Option<&dyn Store>,
-    (id, request): (Option<BoardId>, u64),
-    cached: Option<(BoardSnapshot, time::OffsetDateTime)>,
-) -> Event {
-    let started = time::OffsetDateTime::now_utc();
-    let result = match cached {
-        Some((snapshot, since)) => sync_board(provider, snapshot, since).await,
-        None => load_board(provider, id.clone()).await,
-    };
-    match result {
-        Ok(snapshot) => {
-            if let Some(cache) = cache
-                && let Err(e) = cache.save_board(id.as_ref(), &snapshot, started)
-            {
-                tracing::warn!("keeping the board: {e}");
-            }
-            Event::BoardLoaded { snapshot, fresh: true, request }
+    /// The event sent, a failure logged; a board fresh from the provider
+    /// is seen by the issue store and fed to the prefetch.
+    fn announce(&self, event: Event) {
+        if let Event::Failed { what, error } = &event {
+            tracing::warn!("{what}: {error}");
         }
-        Err(error) => Event::Failed { what: "loading the board".into(), error },
+        if let Event::BoardLoaded { snapshot, fresh: true, .. } = &event {
+            self.issues.seen(snapshot.issues.iter().map(|i| i.key.clone()).collect());
+            let wanted = snapshot.issues.iter().map(|i| (i.key.clone(), i.updated)).collect();
+            self.boards.send_replace(wanted);
+        }
+        let _ = self.events.send(event);
     }
 }
 
@@ -495,7 +459,10 @@ async fn send_write(
     }
 }
 
-async fn load_issue(provider: &dyn Provider, key: &IssueKey) -> kolum_domain::Result<IssueDetail> {
+pub(crate) async fn load_issue(
+    provider: &dyn Provider,
+    key: &IssueKey,
+) -> kolum_domain::Result<IssueDetail> {
     let (detail, layout, children) = tokio::join!(
         async {
             tokio::try_join!(provider.issue(key), provider.comments(key), provider.activity(key))
@@ -524,13 +491,29 @@ fn nicety<T>(result: kolum_domain::Result<T>, what: &str, key: &IssueKey) -> Opt
 mod tests {
     use super::*;
     use crate::store::tests::Memory;
+    use crate::store::{IssueArchive, Store};
     use kolum_provider_fake::FakeProvider;
+    use std::sync::atomic::Ordering;
+    use time::OffsetDateTime;
+
+    /// The next event, or `None` after two seconds without one: a test
+    /// that waits on an event never sent fails rather than hangs.
+    trait Within {
+        async fn within(&mut self) -> Option<Event>;
+    }
+
+    impl Within for mpsc::UnboundedReceiver<Event> {
+        async fn within(&mut self) -> Option<Event> {
+            let wait = std::time::Duration::from_secs(2);
+            tokio::time::timeout(wait, self.recv()).await.ok().flatten()
+        }
+    }
 
     #[tokio::test]
     async fn commands_come_back_as_events() {
         let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), None);
         assert_eq!(service.provider_name(), "fake");
-        let Some(Event::Me(me)) = events.recv().await else { panic!("expected Me first") };
+        let Some(Event::Me(me)) = events.within().await else { panic!("expected Me first") };
         assert_eq!(me.display_name, "Colin Tenaguillo");
 
         service.send(Command::LoadBoard(None, 7));
@@ -543,6 +526,9 @@ mod tests {
         service.send(Command::LoadBoards);
         let Some(Event::Boards(boards)) = next(&mut events).await else { panic!() };
         assert_eq!(boards.len(), 1);
+        service.send(Command::Sprints(boards[0].id.clone()));
+        let Some(Event::Sprints(Ok(sprints))) = next(&mut events).await else { panic!() };
+        assert_eq!(sprints.len(), 2, "the running one and the next");
 
         service.send(Command::LoadIssue(IssueKey::parse("ACME-5")));
         let Some(Event::IssueLoaded(detail)) = next(&mut events).await else { panic!() };
@@ -559,9 +545,9 @@ mod tests {
     #[tokio::test]
     async fn a_failure_names_what_failed() {
         let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), None);
-        events.recv().await; // Me
+        events.within().await; // Me
         service.send(Command::LoadIssue(IssueKey::parse("ACME-999")));
-        let Some(Event::IssueLoadFailed { key, error }) = events.recv().await else { panic!() };
+        let Some(Event::IssueLoadFailed { key, error }) = events.within().await else { panic!() };
         assert_eq!(key, IssueKey::parse("ACME-999"));
         assert!(matches!(error, DomainError::NotFound(_)));
     }
@@ -613,7 +599,8 @@ mod tests {
         service.send(to(2, "done"));
         let mut answers = vec![];
         while answers.len() < 2 {
-            match next(&mut events).await {
+            // A paused clock: a bounded wait would time out first.
+            match events.recv().await {
                 Some(Event::WriteFailed { op, error, .. }) => answers.push((op, error.to_string())),
                 Some(Event::Written { op, .. }) => answers.push((op, "saved".into())),
                 Some(Event::Me(_)) => {}
@@ -629,7 +616,7 @@ mod tests {
     /// they come.
     async fn next(events: &mut mpsc::UnboundedReceiver<Event>) -> Option<Event> {
         loop {
-            match events.recv().await {
+            match events.within().await {
                 Some(Event::ReadIssues(_)) => continue,
                 other => return other,
             }
@@ -675,7 +662,8 @@ mod tests {
         service.send(Command::LoadBoard(None, 1));
         let (cold, fresh) = next_board(&mut events).await;
         assert!(fresh, "nothing cached: straight from the provider");
-        assert!(store.board(None).is_some());
+        service.close(std::time::Duration::from_secs(1)).await;
+        assert!(store.board(None).is_some(), "kept");
 
         let key = IssueKey::parse("ACME-12");
         fake.update(&key, IssueUpdate { title: Some("Renamed".into()), ..Default::default() })
@@ -721,16 +709,16 @@ mod tests {
     async fn search_results_carry_their_request_id() {
         use kolum_domain::{Filter, UserSel};
         let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), None);
-        events.recv().await; // Me
+        events.within().await; // Me
         let mine = Query::Filter(Filter { assignees: vec![UserSel::Me], ..Default::default() });
         service.send(Command::Search { id: 7, query: mine });
-        let Some(Event::SearchResults { id: 7, result: Ok(issues) }) = events.recv().await else {
+        let Some(Event::SearchResults { id: 7, result: Ok(issues) }) = events.within().await else {
             panic!()
         };
         assert!(!issues.is_empty());
         service.send(Command::Search { id: 8, query: Query::Native("x".into()) });
         let Some(Event::SearchResults { id: 8, result: Err(DomainError::Unsupported(_)) }) =
-            events.recv().await
+            events.within().await
         else {
             panic!()
         };
@@ -751,11 +739,12 @@ mod tests {
         let store = Arc::new(Memory::default());
         let fake = Arc::new(FakeProvider::new());
         let (service, mut events) = Service::spawn(fake.clone(), Some(store.clone()));
-        events.recv().await; // Me
+        events.within().await; // Me
         service.send(Command::LoadIssue(IssueKey::parse("ACME-5")));
-        let Some(Event::IssueLoaded(detail)) = events.recv().await else { panic!() };
+        let Some(Event::IssueLoaded(detail)) = events.within().await else { panic!() };
+        service.close(std::time::Duration::from_secs(1)).await;
         let (_again, mut events) = Service::spawn(fake, Some(store.clone()));
-        let Some(Event::FieldLayouts(layouts)) = events.recv().await else {
+        let Some(Event::FieldLayouts(layouts)) = events.within().await else {
             panic!("the layouts come first")
         };
         assert_eq!(layouts.get(&layout_key(&detail.issue)), detail.layout.as_ref());
@@ -766,18 +755,20 @@ mod tests {
         let store = Arc::new(Memory::default());
         let fake = Arc::new(FakeProvider::new());
         let (service, mut events) = Service::spawn(fake.clone(), Some(store.clone()));
-        events.recv().await; // Me
+        events.within().await; // Me
         service.send(Command::LoadIssue(IssueKey::parse("ACME-5")));
-        let Some(Event::IssueLoaded(detail)) = events.recv().await else { panic!() };
+        let Some(Event::IssueLoaded(detail)) = events.within().await else { panic!() };
+        // Written after it is sent on.
+        until(|| store.issue(&detail.issue.key).is_some()).await;
         let (_again, mut events) = Service::spawn(fake, Some(store.clone()));
         let read = loop {
-            match events.recv().await {
+            match events.within().await {
                 Some(Event::ReadIssues(read)) => break read,
                 Some(Event::FieldLayouts(_) | Event::Me(_)) => continue,
                 other => panic!("the issues read, not {other:?}"),
             }
         };
-        assert_eq!(read, [*detail]);
+        assert_eq!(read, [detail]);
     }
 
     /// The next `ReadIssues`, or `None` when none comes in a moment.
@@ -785,11 +776,22 @@ mod tests {
         let wait = std::time::Duration::from_millis(300);
         loop {
             match tokio::time::timeout(wait, events.recv()).await {
-                Ok(Some(Event::ReadIssues(read))) => return Some(read),
+                Ok(Some(Event::ReadIssues(read))) => {
+                    return Some(read.into_iter().map(|d| (*d).clone()).collect());
+                }
                 Ok(Some(_)) => continue,
                 _ => return None,
             }
         }
+    }
+
+    /// Every `ReadIssues` until none comes in a moment, as one.
+    async fn all_read(events: &mut mpsc::UnboundedReceiver<Event>) -> Vec<IssueDetail> {
+        let mut all = vec![];
+        while let Some(read) = next_read(events).await {
+            all.extend(read);
+        }
+        all
     }
 
     #[tokio::test]
@@ -799,7 +801,7 @@ mod tests {
         let fake = Arc::new(FakeProvider::new());
         let (service, mut events) = Service::spawn(fake.clone(), Some(store.clone()));
         service.send(Command::LoadBoard(None, 1));
-        let read = next_read(&mut events).await.expect("the board's issues, read in full");
+        let read = all_read(&mut events).await;
         let board = load_board(fake.as_ref(), None).await.unwrap();
         assert_eq!(read.len(), board.issues.len());
         let five = read.iter().find(|d| d.issue.key.as_str() == "ACME-5").unwrap();
@@ -807,10 +809,10 @@ mod tests {
             !five.comments.is_empty() && !five.activity.is_empty(),
             "with comments and history"
         );
-        assert_eq!(store.issues().len(), board.issues.len(), "kept for the next run");
 
         service.send(Command::SyncBoard(None, 1));
         assert_eq!(next_read(&mut events).await, None, "nothing changed, nothing read");
+        assert_eq!(store.issues().len(), board.issues.len(), "kept for the next run");
 
         let key = IssueKey::parse("ACME-12");
         fake.update(&key, IssueUpdate { title: Some("Renamed".into()), ..Default::default() })
@@ -821,6 +823,7 @@ mod tests {
         assert_eq!(read.iter().map(|d| d.issue.key.clone()).collect::<Vec<_>>(), [key]);
 
         // The next run starts from what is kept: nothing to read again.
+        service.close(std::time::Duration::from_secs(1)).await;
         let (service, mut events) = Service::spawn(fake.clone(), Some(store.clone()));
         service.send(Command::LoadBoard(None, 1));
         let kept = next_read(&mut events).await.expect("what the last run kept");
@@ -860,31 +863,422 @@ mod tests {
         assert_eq!(kept.children, opened.children, "on disk too");
     }
 
-    /// A refusal, a rate limit most likely, stops the prefetch for the run:
+    /// An issue kept and on a board is seen there: it is kept as long as
+    /// if just read, though nothing reads it again.
+    #[tokio::test]
+    async fn a_board_keeps_the_issues_on_it() {
+        use kolum_domain::IssueReader;
+        let store = Arc::new(Memory::default());
+        let fake = Arc::new(FakeProvider::new());
+        let key = IssueKey::parse("ACME-5");
+        let issue = fake.issue(&key).await.unwrap();
+        let kept = IssueDetail {
+            issue,
+            comments: vec![],
+            activity: vec![],
+            layout: None,
+            children: vec![],
+        };
+        store.save_issue(&kept).unwrap();
+        let (service, mut events) = Service::spawn(fake, Some(store.clone()));
+        // Opened just before: its file was just written, no need.
+        service.send(Command::LoadIssue(IssueKey::parse("ACME-6")));
+        loaded_within(&mut events, std::time::Duration::from_secs(1)).await;
+        service.send(Command::LoadBoard(None, 1));
+        next_board(&mut events).await;
+        until(|| !store.touched.lock().unwrap().is_empty()).await;
+        assert_eq!(*store.touched.lock().unwrap(), std::slice::from_ref(&key), "the one kept");
+        service.send(Command::SyncBoard(None, 2));
+        next_board(&mut events).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(*store.touched.lock().unwrap(), [key], "once a run, not every sync");
+    }
+
+    /// Until `done`, which fails the test after a second.
+    async fn until(done: impl Fn() -> bool) {
+        let wait = async {
+            while !done() {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(1), wait).await.expect("in time");
+    }
+
+    /// The prefetch fed boards by hand, with what it sends on.
+    fn prefetching(
+        fake: &Arc<FakeProvider>,
+    ) -> (watch::Sender<Wanted>, mpsc::UnboundedReceiver<Event>, tokio::task::JoinHandle<()>) {
+        let (events, rx) = mpsc::unbounded_channel();
+        let (boards, wanted) = watch::channel(Wanted::new());
+        let store = IssueStore::spawn(None, events, fake.clone());
+        (boards, rx, tokio::spawn(prefetch(fake.clone(), store, wanted)))
+    }
+
+    /// A refusal, a rate limit most likely, ends the prefetch for the run:
     /// the user's own requests come first.
     #[tokio::test]
-    async fn a_failed_prefetch_stops_for_the_run() {
-        let fake: Arc<dyn Provider> = Arc::new(FakeProvider::new());
+    async fn a_refused_prefetch_stops_for_the_run_keeping_what_it_read() {
+        let fake = Arc::new(FakeProvider::new());
+        fake.refuse_bulk_reads_after(1);
+        let (boards, mut events, prefetch) = prefetching(&fake);
+        let board = load_board(fake.as_ref(), None).await.unwrap();
+        boards.send_replace(board.issues.iter().map(|i| (i.key.clone(), i.updated)).collect());
+        let wait = std::time::Duration::from_secs(1);
+        tokio::time::timeout(wait, prefetch)
+            .await
+            .expect("ended, the boards still coming")
+            .unwrap();
+        let Some(read) = next_read(&mut events).await else { panic!("the batch read first") };
+        assert_eq!(read.len(), kolum_provider_fake::BULK_BATCH);
+        assert_eq!(next_read(&mut events).await, None, "nothing after the refusal");
+        assert_eq!(fake.bulk_reads().len(), 1);
+    }
+
+    /// An issue asked and not read, one Jira refuses or kolum cannot read,
+    /// is not asked again every sync, until it changes.
+    #[tokio::test]
+    async fn an_issue_not_read_is_not_asked_again_until_it_changes() {
+        let fake = Arc::new(FakeProvider::new());
+        let (boards, mut events, _prefetch) = prefetching(&fake);
+        let at = OffsetDateTime::now_utc();
+        let (five, nope) = (IssueKey::parse("ACME-5"), IssueKey::parse("NOPE-1"));
+        let board = vec![(five.clone(), at), (nope.clone(), at)];
+        boards.send_replace(board.clone());
+        assert!(next_read(&mut events).await.is_some());
+        boards.send_replace(board);
+        let six = IssueKey::parse("ACME-6");
+        boards.send_replace(vec![(nope.clone(), at), (six.clone(), at)]);
+        assert!(next_read(&mut events).await.is_some());
+        let later = at + time::Duration::minutes(1);
+        boards.send_replace(vec![(nope.clone(), later)]);
+        until(|| fake.bulk_reads().len() >= 3).await;
+        let asked = vec![vec![five, nope.clone()], vec![six], vec![nope]];
+        assert_eq!(fake.bulk_reads(), asked, "again once it changed");
+    }
+
+    /// An opening's read lands while a slower prefetch of the same issue
+    /// is out: the prefetch's copy, of the same version and cut short,
+    /// replaces it neither in what is sent nor in what is kept.
+    #[tokio::test]
+    async fn a_full_read_stays_over_a_slower_bulk_read_of_the_same_issue() {
+        let store = Arc::new(Memory::default());
+        let fake = Arc::new(FakeProvider::new());
+        fake.delay_next_bulk_read(std::time::Duration::from_millis(150));
+        let (service, mut events) = Service::spawn(fake.clone(), Some(store.clone()));
+        service.send(Command::LoadBoard(None, 1));
+        next_board(&mut events).await;
+        until(|| !fake.bulk_reads().is_empty()).await;
+        let key = IssueKey::parse("ACME-5");
+        service.send(Command::LoadIssue(key.clone()));
+        let opened = loop {
+            match events.within().await {
+                Some(Event::IssueLoaded(detail)) => break detail,
+                Some(Event::ReadIssues(_)) => panic!("the prefetch is the slower"),
+                _ => continue,
+            }
+        };
+        assert_eq!(opened.comments.len(), 3, "whole");
+        let read = next_read(&mut events).await.expect("the prefetch");
+        let five = read.iter().find(|d| d.issue.key == key);
+        assert!(five.is_none_or(|d| d.comments.len() == 3), "not sent over the opening's");
+        assert_eq!(store.issue(&key).map(|d| d.comments.len()), Some(3), "nor kept over it");
+    }
+
+    /// An archive slow to write, which counts the writes going on at once.
+    #[derive(Default)]
+    struct Slow {
+        kept: Memory,
+        took: std::time::Duration,
+        /// How long reading what earlier runs kept takes.
+        reading: std::time::Duration,
+        /// How long writing a board takes.
+        board: std::time::Duration,
+        writing: std::sync::atomic::AtomicUsize,
+        most: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Store for Slow {
+        fn board(&self, id: Option<&BoardId>) -> Option<(BoardSnapshot, OffsetDateTime)> {
+            self.kept.board(id)
+        }
+        fn save_board(
+            &self,
+            id: Option<&BoardId>,
+            snapshot: &BoardSnapshot,
+            at: OffsetDateTime,
+        ) -> std::io::Result<()> {
+            std::thread::sleep(self.board);
+            self.kept.save_board(id, snapshot, at)
+        }
+        fn layouts(&self) -> std::collections::BTreeMap<String, kolum_domain::FieldLayout> {
+            self.kept.layouts()
+        }
+        fn save_layout(
+            &self,
+            key: &str,
+            layout: &kolum_domain::FieldLayout,
+        ) -> std::io::Result<()> {
+            self.kept.save_layout(key, layout)
+        }
+    }
+
+    impl IssueArchive for Slow {
+        fn issues(&self) -> Vec<IssueDetail> {
+            std::thread::sleep(self.reading);
+            self.kept.issues()
+        }
+        fn touch(&self, keys: &[IssueKey]) {
+            self.kept.touch(keys)
+        }
+        fn save_issue(&self, detail: &IssueDetail) -> std::io::Result<()> {
+            let now = self.writing.fetch_add(1, Ordering::SeqCst) + 1;
+            self.most.fetch_max(now, Ordering::SeqCst);
+            std::thread::sleep(self.took);
+            let saved = self.kept.save_issue(detail);
+            self.writing.fetch_sub(1, Ordering::SeqCst);
+            saved
+        }
+    }
+
+    /// The store reads an issue again on its own: when that read fails, no
+    /// one waited on it, so the screen is not told.
+    #[tokio::test]
+    async fn the_stores_own_read_failing_is_only_logged() {
+        use kolum_domain::IssueReader;
+        let store = Arc::new(Memory::default());
+        let fake = Arc::new(FakeProvider::new());
+        let epic = IssueKey::parse("ACME-1");
+        let mut newer = fake.issue(&epic).await.unwrap();
+        newer.updated += time::Duration::minutes(1);
+        let bulk = IssueDetail {
+            issue: newer,
+            comments: vec![],
+            activity: vec![],
+            layout: None,
+            children: vec![],
+        };
+        store.save_issue(&bulk).unwrap();
+        let (service, mut events) = Service::spawn(fake.clone(), Some(store));
+        next_read(&mut events).await.expect("the bulk read kept");
+        fake.refuse_comments_after(1);
+        service.send(Command::LoadIssue(epic));
+        answer(&mut events).await;
+        let wait = std::time::Duration::from_millis(300);
+        while let Ok(Some(event)) = tokio::time::timeout(wait, events.recv()).await {
+            assert!(!matches!(event, Event::IssueLoadFailed { .. }), "told: {event:?}");
+        }
+    }
+
+    /// The issue as the screen shows it once a `LoadIssue` is answered.
+    async fn answer(events: &mut mpsc::UnboundedReceiver<Event>) -> IssueDetail {
+        loop {
+            match events.within().await {
+                Some(Event::IssueLoaded(detail)) => return (*detail).clone(),
+                None => panic!("no answer"),
+                Some(_) => {}
+            }
+        }
+    }
+
+    /// With the issue store gone, an opening is still answered: the read
+    /// goes straight to the screen.
+    #[tokio::test]
+    async fn an_opening_is_answered_without_the_issue_store() {
         let (events, mut rx) = mpsc::unbounded_channel();
-        let state = Arc::new(Prefetch::default());
-        state.loaded.send_replace(true);
-        let at = time::OffsetDateTime::now_utc();
-        // Two batches, the first failing: the second is not asked either.
-        let mut wanted = vec![(IssueKey::parse("ACME-999"), at)];
-        wanted.extend((0..BULK_READ_MAX).map(|_| (IssueKey::parse("ACME-5"), at)));
-        prefetch(fake.clone(), None, wanted, events.clone(), state.clone()).await;
-        let five = vec![(IssueKey::parse("ACME-5"), at)];
-        prefetch(fake, None, five, events, state).await;
-        assert!(rx.try_recv().is_err(), "nothing read after the failure");
+        let ports = Ports {
+            provider: Arc::new(FakeProvider::new()),
+            reader: None,
+            writer: Writer::default(),
+            issues: IssueStore::ended(),
+            boards: watch::channel(Wanted::new()).0,
+            events,
+        };
+        run(ports, Command::LoadIssue(IssueKey::parse("ACME-5"))).await;
+        let Ok(Event::IssueLoaded(detail)) = rx.try_recv() else { panic!("answered") };
+        assert_eq!(detail.comments.len(), 3);
+    }
+
+    /// With the issue store gone, the prefetch ends rather than read every
+    /// board as wholly stale.
+    #[tokio::test]
+    async fn the_prefetch_ends_with_the_issue_store() {
+        let fake = Arc::new(FakeProvider::new());
+        let (boards, wanted) = watch::channel(Wanted::new());
+        let prefetch = tokio::spawn(prefetch(fake.clone(), IssueStore::ended(), wanted));
+        boards.send_replace(vec![(IssueKey::parse("ACME-5"), OffsetDateTime::now_utc())]);
+        let wait = std::time::Duration::from_secs(1);
+        tokio::time::timeout(wait, prefetch).await.expect("ended").unwrap();
+        assert!(fake.bulk_reads().is_empty(), "nothing read for no one");
+    }
+
+    /// The next `IssueLoaded`, within `limit`.
+    async fn loaded_within(
+        events: &mut mpsc::UnboundedReceiver<Event>,
+        limit: std::time::Duration,
+    ) -> Arc<IssueDetail> {
+        let loaded = async {
+            loop {
+                if let Some(Event::IssueLoaded(detail)) = events.within().await {
+                    return detail;
+                }
+            }
+        };
+        tokio::time::timeout(limit, loaded).await.expect("answered in time")
+    }
+
+    /// The issue store writes on a task of its own: an opening is answered
+    /// while a prefetch's forty issues are still being written.
+    #[tokio::test]
+    async fn an_opening_answers_while_the_issues_are_being_written() {
+        let ms = std::time::Duration::from_millis;
+        let store = Arc::new(Slow { took: ms(50), ..Default::default() });
+        let (service, mut events) =
+            Service::spawn(Arc::new(FakeProvider::new()), Some(store.clone()));
+        service.send(Command::LoadBoard(None, 1));
+        until(|| store.writing.load(Ordering::SeqCst) > 0).await;
+        service.send(Command::LoadIssue(IssueKey::parse("ACME-5")));
+        loaded_within(&mut events, ms(500)).await;
+    }
+
+    /// Nor does reading what earlier runs kept hold up an opening.
+    #[tokio::test]
+    async fn an_opening_answers_while_the_kept_issues_are_read() {
+        let ms = std::time::Duration::from_millis;
+        let store = Arc::new(Slow { reading: ms(1000), ..Default::default() });
+        let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), Some(store));
+        service.send(Command::LoadIssue(IssueKey::parse("ACME-5")));
+        loaded_within(&mut events, ms(500)).await;
+    }
+
+    /// An opening read older than a bulk read kept: the issue is read whole
+    /// again, as a newer whole version exists; meanwhile the bulk copy
+    /// shows with the opening's children.
+    #[tokio::test]
+    async fn an_opening_older_than_a_bulk_read_kept_is_read_again() {
+        use kolum_domain::IssueReader;
+        let store = Arc::new(Memory::default());
+        let fake = Arc::new(FakeProvider::new());
+        let epic = IssueKey::parse("ACME-1");
+        let mut newer = fake.issue(&epic).await.unwrap();
+        newer.updated += time::Duration::minutes(1);
+        let bulk = IssueDetail {
+            issue: newer,
+            comments: vec![],
+            activity: vec![],
+            layout: None,
+            children: vec![],
+        };
+        store.save_issue(&bulk).unwrap();
+        let (service, mut events) = Service::spawn(fake, Some(store));
+        next_read(&mut events).await.expect("the bulk read kept");
+        service.send(Command::LoadIssue(epic.clone()));
+        let shown = answer(&mut events).await;
+        assert_eq!(shown.issue.updated, bulk.issue.updated, "the newer copy shows");
+        assert_eq!(shown.children.len(), 6, "with the opening's children");
+        let again = answer(&mut events).await;
+        assert_eq!(again.issue.key, epic, "read again, unasked");
+    }
+
+    /// Quitting waits for what was read to be kept: two openings written
+    /// one after the other, the second still queued when the user quits.
+    #[test]
+    fn quitting_keeps_what_was_read() {
+        let took = std::time::Duration::from_millis(200);
+        let store = Arc::new(Slow { took, ..Default::default() });
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let fake = Arc::new(FakeProvider::new());
+            let (service, mut events) = Service::spawn(fake, Some(store.clone()));
+            for key in ["ACME-5", "ACME-6"] {
+                service.send(Command::LoadIssue(IssueKey::parse(key)));
+                loaded_within(&mut events, std::time::Duration::from_secs(1)).await;
+            }
+            service.close(std::time::Duration::from_secs(2)).await;
+        });
+        drop(runtime);
+        assert_eq!(store.kept.issues().len(), 2, "both kept");
+    }
+
+    /// The service keeps a board off the runtime's threads: a reply due
+    /// while a large board is being written is not held up.
+    #[tokio::test]
+    async fn a_board_written_holds_up_no_reply() {
+        let ms = std::time::Duration::from_millis;
+        let store = Arc::new(Slow { board: ms(1000), ..Default::default() });
+        let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), Some(store));
+        service.send(Command::LoadBoard(None, 1));
+        let asked = std::time::Instant::now();
+        service.send(Command::Transitions(IssueKey::parse("ACME-9")));
+        loop {
+            match next(&mut events).await {
+                Some(Event::Transitions { .. }) => break,
+                None => panic!("no reply"),
+                Some(_) => {}
+            }
+        }
+        let waited = asked.elapsed();
+        assert!(waited < ms(500), "{waited:?} for the reply: the board's writing held it up");
+    }
+
+    /// Openings and a prefetch at once: one writer of the issues, so no
+    /// two writes of them ever overlap.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_issues_are_written_one_at_a_time() {
+        let took = std::time::Duration::from_millis(20);
+        let store = Arc::new(Slow { took, ..Default::default() });
+        let fake = Arc::new(FakeProvider::new());
+        let (service, mut events) = Service::spawn(fake.clone(), Some(store.clone()));
+        service.send(Command::LoadBoard(None, 1));
+        let keys = ["ACME-5", "ACME-6", "ACME-7", "ACME-9", "ACME-10", "ACME-12"];
+        for key in keys {
+            service.send(Command::LoadIssue(IssueKey::parse(key)));
+        }
+        let board = load_board(fake.as_ref(), None).await.unwrap().issues.len();
+        let all_kept = async {
+            while store.kept.issues().len() < board || store.writing.load(Ordering::SeqCst) > 0 {
+                let _ = tokio::time::timeout(took, events.recv()).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), all_kept).await.unwrap();
+        assert_eq!(store.most.load(Ordering::SeqCst), 1);
+    }
+
+    /// The prefetch writes what it read off the runtime's threads: a reply
+    /// due while it writes is not held up by the disk.
+    #[tokio::test]
+    async fn a_prefetch_writing_holds_up_no_reply() {
+        use kolum_domain::TransitionId;
+        let ms = std::time::Duration::from_millis;
+        let store = Arc::new(Slow { took: ms(20), ..Default::default() });
+        let fake = Arc::new(FakeProvider::new());
+        let (service, mut events) = Service::spawn(fake.clone(), Some(store));
+        fake.delay_next_bulk_read(ms(50));
+        service.send(Command::LoadBoard(None, 1));
+        next_board(&mut events).await;
+        // Its reply due once the prefetch has its 40-odd issues to write.
+        fake.delay_next_transition(ms(100));
+        let asked = std::time::Instant::now();
+        let to_done = Write::Transition(TransitionId::new("to-done"));
+        service.send(Command::Write { op: 1, key: IssueKey::parse("ACME-9"), write: to_done });
+        loop {
+            match next(&mut events).await {
+                Some(Event::Written { .. }) => break,
+                None => panic!("no reply"),
+                Some(_) => {}
+            }
+        }
+        let waited = asked.elapsed();
+        assert!(waited < ms(500), "{waited:?} for the reply: the disk held it up");
     }
 
     #[tokio::test]
     async fn the_fields_an_issue_lets_set_come_back_for_it() {
         let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), None);
-        events.recv().await; // Me
+        events.within().await; // Me
         let key = IssueKey::parse("ACME-9");
         service.send(Command::EditableFields(key.clone()));
-        let Some(Event::EditableFields { key: k, result: Ok(fields) }) = events.recv().await else {
+        let Some(Event::EditableFields { key: k, result: Ok(fields) }) = events.within().await
+        else {
             panic!()
         };
         assert_eq!(k, key);
@@ -894,23 +1288,25 @@ mod tests {
     #[tokio::test]
     async fn a_write_comes_back_with_the_issue_as_the_provider_has_it() {
         let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), None);
-        events.recv().await; // Me
+        events.within().await; // Me
         let key = IssueKey::parse("ACME-9");
         service.send(Command::Transitions(key.clone()));
-        let Some(Event::Transitions { result: Ok(ts), .. }) = events.recv().await else { panic!() };
+        let Some(Event::Transitions { result: Ok(ts), .. }) = events.within().await else {
+            panic!()
+        };
         let to_done = ts.iter().find(|t| t.name == "Done").unwrap().id.clone();
         service.send(Command::Write { op: 1, key: key.clone(), write: Write::Transition(to_done) });
-        let Some(Event::Written { op: 1, issue: Some(issue), .. }) = events.recv().await else {
+        let Some(Event::Written { op: 1, issue: Some(issue), .. }) = events.within().await else {
             panic!()
         };
         assert_eq!(issue.status.name, "Done");
         let hi = Write::Comment(kolum_domain::RichText::from_markdown("hi"));
         service.send(Command::Write { op: 2, key: key.clone(), write: hi });
-        assert!(matches!(events.recv().await, Some(Event::Written { op: 2, .. })));
+        assert!(matches!(events.within().await, Some(Event::Written { op: 2, .. })));
         let nobody = Write::Assign(Some(kolum_domain::UserId::new("nobody")));
         service.send(Command::Write { op: 3, key, write: nobody });
         let Some(Event::WriteFailed { op: 3, error: DomainError::NotFound(_), .. }) =
-            events.recv().await
+            events.within().await
         else {
             panic!()
         };
@@ -920,21 +1316,23 @@ mod tests {
     #[tokio::test]
     async fn a_transition_to_a_status_goes_by_the_issues_own() {
         let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), None);
-        events.recv().await; // Me
+        events.within().await; // Me
         let key = IssueKey::parse("ACME-9");
         service.send(Command::Transitions(key.clone()));
-        let Some(Event::Transitions { result: Ok(ts), .. }) = events.recv().await else { panic!() };
+        let Some(Event::Transitions { result: Ok(ts), .. }) = events.within().await else {
+            panic!()
+        };
         let t = ts.iter().find(|t| t.name == "Done").unwrap();
         let done = t.to.clone();
         let write = Write::TransitionTo { id: t.id.clone(), to: done.clone() };
         service.send(Command::Write { op: 1, key: key.clone(), write: write.clone() });
-        let Some(Event::Written { op: 1, issue: Some(issue), .. }) = events.recv().await else {
+        let Some(Event::Written { op: 1, issue: Some(issue), .. }) = events.within().await else {
             panic!()
         };
         assert_eq!(issue.status, done);
         service.send(Command::Write { op: 2, key, write });
         let Some(Event::WriteFailed { op: 2, error: DomainError::Conflict(_), .. }) =
-            events.recv().await
+            events.within().await
         else {
             panic!("already there: no transition to it")
         };
@@ -943,9 +1341,9 @@ mod tests {
     #[tokio::test]
     async fn create_and_clone_answer_with_the_new_issue() {
         let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), None);
-        events.recv().await; // Me
+        events.within().await; // Me
         service.send(Command::Clone(IssueKey::parse("ACME-5")));
-        let Some(Event::Created(clone)) = events.recv().await else { panic!() };
+        let Some(Event::Created(clone)) = events.within().await else { panic!() };
         assert_eq!(clone.title, "CLONE - Login times out after SSO redirect");
         let kind =
             kolum_domain::IssueType { name: "Task".into(), kind: kolum_domain::IssueKind::Task };
@@ -957,21 +1355,21 @@ mod tests {
             parent: None,
         };
         service.send(Command::Create(new));
-        let Some(Event::Created(created)) = events.recv().await else { panic!() };
+        let Some(Event::Created(created)) = events.within().await else { panic!() };
         assert_eq!(created.title, "T");
         service.send(Command::Clone(IssueKey::parse("NOPE-1")));
         assert!(
-            matches!(events.recv().await, Some(Event::Failed { what, .. }) if what == "cloning NOPE-1")
+            matches!(events.within().await, Some(Event::Failed { what, .. }) if what == "cloning NOPE-1")
         );
     }
 
     #[tokio::test]
     async fn an_avatar_comes_back_by_its_url() {
         let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), None);
-        let Some(Event::Me(me)) = events.recv().await else { panic!() };
+        let Some(Event::Me(me)) = events.within().await else { panic!() };
         let url = me.avatar_url.unwrap();
         service.send(Command::Image(url.clone()));
-        let Some(Event::Image { url: back, result: Ok(bytes) }) = events.recv().await else {
+        let Some(Event::Image { url: back, result: Ok(bytes) }) = events.within().await else {
             panic!()
         };
         assert_eq!(back, url);

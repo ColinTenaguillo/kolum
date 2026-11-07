@@ -22,8 +22,8 @@ pub use issue::{
     Transition, User,
 };
 pub use ports::{
-    BULK_READ_MAX, BoardSource, Capabilities, Capability, IssueInFull, IssueReader, IssueSearch,
-    IssueWriter, Page, PageToken, Provider, Rank, UserDirectory,
+    BoardSource, Capabilities, Capability, IssueInFull, IssueReader, IssueSearch, IssueWriter,
+    Page, PageToken, Provider, Rank, UserDirectory,
 };
 pub use query::{Filter, Query, UserSel};
 pub use rich_text::RichText;

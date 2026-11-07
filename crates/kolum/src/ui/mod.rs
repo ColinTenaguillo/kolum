@@ -260,7 +260,7 @@ pub struct App {
     /// The last full read of each issue, opened or prefetched: it opens from
     /// there, comments and history included, rather than from the board's
     /// copy, which lacks fields.
-    read: std::collections::HashMap<IssueKey, IssueDetail>,
+    read: std::collections::HashMap<IssueKey, std::sync::Arc<IssueDetail>>,
     /// Waiting on a read of this issue: `e` with none as new as the board's
     /// copy, or a description's save, which reads the issue right before.
     describe_after: Option<(IssueKey, AfterRead)>,
@@ -546,18 +546,9 @@ impl App {
         };
         match event {
             Event::FieldLayouts(kept) => self.layouts.extend(kept),
-            // Only a newer copy replaces one: a prefetch has no children,
-            // what an opening read does.
+            // The copies that won, which the service decides.
             Event::ReadIssues(read) => {
-                for detail in read {
-                    let newer = self
-                        .read
-                        .get(&detail.issue.key)
-                        .is_none_or(|kept| detail.issue.updated > kept.issue.updated);
-                    if newer {
-                        self.read.insert(detail.issue.key.clone(), detail);
-                    }
-                }
+                self.read.extend(read.into_iter().map(|d| (d.issue.key.clone(), d)));
             }
             Event::Me(user) => {
                 self.board.me = Some(user.id.clone());
@@ -572,7 +563,7 @@ impl App {
                 self.opening = None;
                 self.said_done(&opening(&detail.issue.key));
                 let mut view = DetailView::new(detail.issue.clone());
-                view.loaded = Some(*detail);
+                view.loaded = Some(detail);
                 self.detail = Some(view);
                 self.show_detail();
                 self.want_avatar();
@@ -584,7 +575,7 @@ impl App {
                     && kolum_app::supersedes(&detail.issue, &d.latest)
                 {
                     d.latest = detail.issue.clone();
-                    d.loaded = Some(*detail);
+                    d.loaded = Some(detail);
                     self.show_detail();
                     self.want_avatar();
                 }
@@ -655,7 +646,7 @@ impl App {
             && let Some(copy) = snapshot.issues.iter().find(|i| i.key == d.latest.key)
             && kolum_app::supersedes(copy, &d.latest)
         {
-            refresh_detail(&mut d.latest, copy);
+            kolum_app::refresh(&mut d.latest, copy);
         }
         self.latest = Some(snapshot);
         self.show();
@@ -679,14 +670,11 @@ impl App {
     }
 
     /// An issue read whole, kept; and what waited on its read, if anything.
-    fn keep_read(&mut self, detail: &IssueDetail) -> Option<(IssueKey, AfterRead)> {
+    fn keep_read(&mut self, detail: &std::sync::Arc<IssueDetail>) -> Option<(IssueKey, AfterRead)> {
         if let Some(layout) = &detail.layout {
             self.layouts.insert(kolum_app::layout_key(&detail.issue), layout.clone());
         }
-        let kept = self.read.get(&detail.issue.key);
-        if kept.is_none_or(|kept| kolum_app::supersedes(&detail.issue, &kept.issue)) {
-            self.read.insert(detail.issue.key.clone(), detail.clone());
-        }
+        self.read.insert(detail.issue.key.clone(), detail.clone());
         self.describe_after.take_if(|(key, _)| *key == detail.issue.key)
     }
 
@@ -1525,20 +1513,10 @@ impl App {
         self.save(key, kolum_domain::IssueUpdate::set(field, value));
     }
 
-    /// The detail's copy of the issue when it is the open one: the board's
-    /// lacks the fields Jira sends for one issue only.
     /// The issue whole, from its last full read brought up to the board's
-    /// copy; `None` when no read is as new as that copy, whose description
-    /// is missing or lacks what Markdown cannot hold.
+    /// copy: see `kolum_app::in_full`.
     fn issue_in_full(&self, key: &IssueKey) -> Option<kolum_domain::Issue> {
-        let read = &self.read.get(key)?.issue;
-        let Some(board) = self.issue(key) else { return Some(read.clone()) };
-        if board.updated > read.updated {
-            return None;
-        }
-        let mut whole = read.clone();
-        refresh_detail(&mut whole, board);
-        Some(whole)
+        kolum_app::in_full(&self.read.get(key)?.issue, self.issue(key))
     }
 
     fn full_issue(&self, key: &IssueKey) -> Option<&kolum_domain::Issue> {
@@ -1811,7 +1789,10 @@ impl App {
                     Some(read) => {
                         let mut read = read.clone();
                         if kolum_app::supersedes(issue, &read.issue) {
-                            refresh_detail(&mut read.issue, issue);
+                            kolum_app::refresh(
+                                &mut std::sync::Arc::make_mut(&mut read).issue,
+                                issue,
+                            );
                         }
                         let mut view = DetailView::new(read.issue.clone());
                         view.loaded = Some(read);
@@ -2372,26 +2353,6 @@ fn reading(key: &IssueKey) -> String {
 
 fn opening(key: &IssueKey) -> String {
     format!("Opening {key}…")
-}
-
-/// The board's copy of the open issue, keeping what the detail read
-/// better: Jira sends rich text fields for one issue and not for a board,
-/// and no description to a Jira Cloud board. The description shown stays
-/// unless the copy has one and is newer, as a Data Center board's can be.
-fn refresh_detail(shown: &mut kolum_domain::Issue, fresh: &kolum_domain::Issue) {
-    let only_here: Vec<_> = shown
-        .fields
-        .iter()
-        .filter(|f| !fresh.fields.iter().any(|x| x.id == f.id))
-        .cloned()
-        .collect();
-    let newer = !fresh.description.is_empty() && fresh.updated > shown.updated;
-    let description = std::mem::take(&mut shown.description);
-    *shown = fresh.clone();
-    shown.fields.extend(only_here);
-    if !newer {
-        shown.description = description;
-    }
 }
 
 /// Two drafts of one issue as one: the title, and the description, each

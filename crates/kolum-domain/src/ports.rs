@@ -50,9 +50,6 @@ pub enum Capability {
     BulkRead,
 }
 
-/// The most issues `issues_in_full` takes at once: Jira's limit.
-pub const BULK_READ_MAX: usize = 100;
-
 /// An issue with its comments and history, read along with others. On a
 /// long one they may be cut short; opening the issue reads them whole.
 #[derive(Debug, Clone, PartialEq)]
@@ -127,9 +124,16 @@ pub trait IssueReader: Send + Sync {
     async fn comments(&self, key: &IssueKey) -> Result<Vec<Comment>>;
     async fn activity(&self, key: &IssueKey) -> Result<Vec<ActivityEntry>>;
 
-    /// Up to `BULK_READ_MAX` issues in full, asked only of a provider with
-    /// `BulkRead`.
-    async fn issues_in_full(&self, _keys: &[IssueKey]) -> Result<Vec<IssueInFull>> {
+    /// Any number of issues in full, asked only of a provider with
+    /// `BulkRead`, handed to `read` a batch at a time as each comes: a
+    /// failure ends the call, and what was handed before it stays read.
+    /// One it cannot read, refused or of an odd shape, is left out rather
+    /// than failing the others.
+    async fn issues_in_full(
+        &self,
+        _keys: &[IssueKey],
+        _read: &mut (dyn FnMut(Vec<IssueInFull>) + Send),
+    ) -> Result<()> {
         Err(crate::DomainError::Unsupported(Capability::BulkRead))
     }
 

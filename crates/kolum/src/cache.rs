@@ -43,7 +43,8 @@ struct IssueEntry {
 }
 
 const ISSUE_FILE: &str = "issue-";
-/// An issue not opened for this long is forgotten.
+/// An issue neither read nor seen on a board for this long is forgotten:
+/// its file's time is when it was last either.
 const ISSUE_DAYS: u64 = 30;
 
 fn read_issue(path: &Path) -> Option<IssueDetail> {
@@ -177,8 +178,8 @@ impl Store for Cache {
 }
 
 impl IssueArchive for Cache {
-    /// Every issue kept; the files of those not opened for `ISSUE_DAYS`
-    /// are removed, what does not read is left out.
+    /// Every issue kept; the files of those neither read nor seen on a
+    /// board for `ISSUE_DAYS` are removed, what does not read is left out.
     fn issues(&self) -> Vec<IssueDetail> {
         let max_age = std::time::Duration::from_secs(ISSUE_DAYS * 86_400);
         let fresh = |f: &std::fs::DirEntry| {
@@ -196,13 +197,21 @@ impl IssueArchive for Cache {
             .collect()
     }
 
-    fn issue(&self, key: &IssueKey) -> Option<IssueDetail> {
-        read_issue(&self.path(&format!("{ISSUE_FILE}{key}")))
-    }
-
     fn save_issue(&self, detail: &IssueDetail) -> std::io::Result<()> {
         let entry = IssueEntry { version: VERSION, detail: detail.clone() };
         self.write(&format!("{ISSUE_FILE}{}", detail.issue.key), &serde_json::to_vec(&entry)?)
+    }
+
+    /// Each file's time set to now, which its age goes by.
+    fn touch(&self, keys: &[IssueKey]) {
+        let now = std::time::SystemTime::now();
+        for key in keys {
+            let file =
+                std::fs::File::options().write(true).open(self.path(&format!("{ISSUE_FILE}{key}")));
+            if let Err(e) = file.and_then(|f| f.set_modified(now)) {
+                tracing::debug!("touching {key}: {e}");
+            }
+        }
     }
 }
 
@@ -302,7 +311,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn issues_are_kept_one_file_each_for_thirty_days() {
+    async fn issues_are_kept_one_file_each_for_thirty_days_since_read_or_seen() {
         let dir = temp_dir("cache-issues");
         let cache = Cache::new(&dir);
         assert!(cache.issues().is_empty(), "nothing yet");
@@ -315,8 +324,10 @@ mod tests {
             children: vec![],
         };
         let (recent, old) = (detail(&snapshot.issues[0]), detail(&snapshot.issues[1]));
+        let seen = detail(&snapshot.issues[2]);
         cache.save_issue(&recent).unwrap();
         cache.save_issue(&old).unwrap();
+        cache.save_issue(&seen).unwrap();
         let old_file = dir.join(file_name(&format!("{ISSUE_FILE}{}", old.issue.key)));
         let days_ago = |file: &std::path::Path, days: u64| {
             let at = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
@@ -324,9 +335,15 @@ mod tests {
         };
         days_ago(&old_file, 31);
         days_ago(&dir.join(file_name(&format!("{ISSUE_FILE}{}", recent.issue.key))), 29);
+        days_ago(&dir.join(file_name(&format!("{ISSUE_FILE}{}", seen.issue.key))), 31);
+        cache.touch(&[seen.issue.key.clone(), IssueKey::parse("NOPE-1")]);
         std::fs::write(dir.join("1.json"), "a board, not an issue").unwrap();
-        assert_eq!(cache.issues(), [recent]);
-        assert!(!old_file.exists(), "an issue not opened for a month goes");
+        let mut kept = cache.issues();
+        kept.sort_by_key(|d| d.issue.key.clone());
+        let mut wanted = [recent, seen];
+        wanted.sort_by_key(|d| d.issue.key.clone());
+        assert_eq!(kept, wanted, "the one seen on a board just now is kept");
+        assert!(!old_file.exists(), "an issue neither read nor seen for a month goes");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -12,11 +12,28 @@ use std::io::Write;
 use std::time::Instant;
 use tokio::sync::mpsc::UnboundedReceiver;
 
+/// How long quitting waits for what was read to be kept.
+const FLUSH: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The loop until the user quits; then what was read is kept, for a while.
 pub async fn run(
     state_file: Option<std::path::PathBuf>,
     terminal: &mut DefaultTerminal,
-    mut app: App,
+    app: App,
     service: Service,
+    events: UnboundedReceiver<Event>,
+    wake: UnboundedReceiver<()>,
+) -> anyhow::Result<()> {
+    let result = run_loop(state_file, terminal, app, &service, events, wake).await;
+    service.close(FLUSH).await;
+    result
+}
+
+async fn run_loop(
+    state_file: Option<std::path::PathBuf>,
+    terminal: &mut DefaultTerminal,
+    mut app: App,
+    service: &Service,
     mut events: UnboundedReceiver<Event>,
     mut wake: UnboundedReceiver<()>,
 ) -> anyhow::Result<()> {
@@ -31,7 +48,7 @@ pub async fn run(
             }
             for effect in effects {
                 let Effect::Edit { purpose, text } = effect else {
-                    perform(effect, &service, state_file.as_deref());
+                    perform(effect, service, state_file.as_deref());
                     continue;
                 };
                 // The editor needs the terminal and stdin to itself:

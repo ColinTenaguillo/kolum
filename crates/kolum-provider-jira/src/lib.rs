@@ -344,11 +344,16 @@ struct KeyOnly {
 /// The most keys Jira gives in one page of a board.
 const KEY_PAGE: u64 = 1000;
 
+/// The most keys Jira's bulkfetch takes in one request.
+const BULK_FETCH_MAX: usize = 100;
+
 /// Jira Cloud's bulk read: each issue with its `comment` field and its
-/// changelog.
+/// changelog, read one by one; and the keys it refused.
 #[derive(serde::Deserialize)]
 struct BulkFetch {
-    issues: Vec<BulkIssue>,
+    issues: Vec<serde_json::Value>,
+    #[serde(default, rename = "issueErrors")]
+    issue_errors: Vec<serde_json::Value>,
 }
 
 #[derive(serde::Deserialize)]
@@ -415,18 +420,23 @@ impl IssueReader for JiraProvider {
         Ok(page.comments.iter().filter_map(map::comment).collect())
     }
 
-    async fn issues_in_full(&self, keys: &[IssueKey]) -> Result<Vec<IssueInFull>> {
+    /// `BULK_FETCH_MAX` at a time, in turns, each handed on as it comes.
+    async fn issues_in_full(
+        &self,
+        keys: &[IssueKey],
+        read: &mut (dyn FnMut(Vec<IssueInFull>) + Send),
+    ) -> Result<()> {
         let ctx = self.ctx().await?;
-        let body = json!({
-            "issueIdsOrKeys": keys.iter().map(IssueKey::as_str).collect::<Vec<_>>(),
-            "fields": ["*all"],
-            "expand": ["changelog"],
-        });
         let path = format!("{}/issue/bulkfetch", self.api());
-        let answer = self.client.send(Method::POST, &path, &body).await?;
-        let read: BulkFetch = serde_json::from_value(answer)
-            .map_err(|e| DomainError::Transport(format!("{path}: {e}")))?;
-        read.issues.iter().map(|bulk| in_full(bulk, ctx)).collect()
+        for batch in keys.chunks(BULK_FETCH_MAX) {
+            let body = json!({
+                "issueIdsOrKeys": batch.iter().map(IssueKey::as_str).collect::<Vec<_>>(),
+                "fields": ["*all"],
+                "expand": ["changelog"],
+            });
+            read(read_bulk(self.client.send(Method::POST, &path, &body).await?, ctx)?);
+        }
+        Ok(())
     }
 
     async fn activity(&self, key: &IssueKey) -> Result<Vec<ActivityEntry>> {
@@ -675,6 +685,24 @@ impl Provider for JiraProvider {
             .chain((self.settings.flavor == JiraFlavor::Cloud).then_some(BulkRead)),
         )
     }
+}
+
+/// A bulkfetch's answer, one issue at a time: one of an odd shape, or one
+/// Jira refused, costs only itself.
+fn read_bulk(answer: serde_json::Value, ctx: &Ctx) -> Result<Vec<IssueInFull>> {
+    let read: BulkFetch = serde_json::from_value(answer)
+        .map_err(|e| DomainError::Transport(format!("bulkfetch: {e}")))?;
+    for refused in &read.issue_errors {
+        tracing::info!("not read in bulk: {refused}");
+    }
+    let one = |issue: serde_json::Value| {
+        let bulk: BulkIssue = serde_json::from_value(issue).map_err(|e| e.to_string())?;
+        in_full(&bulk, ctx).map_err(|e| format!("{}: {e}", bulk.issue.key))
+    };
+    let read = read.issues.into_iter().map(one);
+    Ok(read
+        .filter_map(|r| r.inspect_err(|e| tracing::warn!("left out of a bulk read: {e}")).ok())
+        .collect())
 }
 
 /// One issue of a bulk read: its comments from its `comment` field, its

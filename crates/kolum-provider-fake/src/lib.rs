@@ -21,7 +21,29 @@ pub struct FakeProvider {
     state: Mutex<State>,
     /// How long the next transition takes, for tests of slow replies.
     delay: Mutex<Option<std::time::Duration>>,
+    bulk: Mutex<BulkReads>,
+    /// How many more comment reads answer before every one is refused; no
+    /// end when `None`.
+    comments: Mutex<Option<usize>>,
 }
+
+/// What tests make of the bulk reads, and see of them.
+#[derive(Default)]
+struct BulkReads {
+    /// How long the next one takes; it reads the issues as they are when
+    /// it is asked, as a request does.
+    delay: Option<std::time::Duration>,
+    /// How many more batches are read before every one is refused, as a
+    /// rate limit would; no end when `None`.
+    allowed: Option<usize>,
+    /// The keys of each one asked, in order.
+    asked: Vec<Vec<IssueKey>>,
+}
+
+/// The comments a bulk read keeps of an issue: Jira's cuts a long one short.
+pub const BULK_COMMENTS: usize = 2;
+/// The issues a bulk read hands over at once.
+pub const BULK_BATCH: usize = 10;
 
 struct State {
     issues: Vec<Issue>,
@@ -236,12 +258,47 @@ impl FakeProvider {
             .zip(data::ROWS)
             .map(|(i, row)| (i.key.clone(), history(i, user(row.reporter))))
             .collect();
-        Self { state: Mutex::new(State { issues, comments, activity }), delay: Mutex::default() }
+        Self {
+            state: Mutex::new(State { issues, comments, activity }),
+            delay: Mutex::default(),
+            bulk: Mutex::default(),
+            comments: Mutex::default(),
+        }
     }
 
     /// The next transition answers only after `by`.
     pub fn delay_next_transition(&self, by: std::time::Duration) {
         *self.delay.lock().unwrap_or_else(|e| e.into_inner()) = Some(by);
+    }
+
+    /// The next bulk read answers only after `by`.
+    pub fn delay_next_bulk_read(&self, by: std::time::Duration) {
+        self.bulk().delay = Some(by);
+    }
+
+    /// Every bulk read from now on is refused.
+    pub fn refuse_bulk_reads(&self) {
+        self.refuse_bulk_reads_after(0);
+    }
+
+    /// Comment reads, and so openings, are refused once `reads` more
+    /// answered.
+    pub fn refuse_comments_after(&self, reads: usize) {
+        *self.comments.lock().unwrap_or_else(|e| e.into_inner()) = Some(reads);
+    }
+
+    /// Bulk reads are refused once `batches` more are read.
+    pub fn refuse_bulk_reads_after(&self, batches: usize) {
+        self.bulk().allowed = Some(batches);
+    }
+
+    /// The keys of each bulk read asked so far.
+    pub fn bulk_reads(&self) -> Vec<Vec<IssueKey>> {
+        self.bulk().asked.clone()
+    }
+
+    fn bulk(&self) -> MutexGuard<'_, BulkReads> {
+        self.bulk.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// A poisoned lock means a test panicked mid-write; the data is still
@@ -347,18 +404,52 @@ impl IssueReader for FakeProvider {
     }
 
     async fn comments(&self, key: &IssueKey) -> Result<Vec<Comment>> {
+        let mut left = self.comments.lock().unwrap_or_else(|e| e.into_inner());
+        if left.as_mut().is_some_and(|n| n.checked_sub(1).map(|l| *n = l).is_none()) {
+            return Err(DomainError::Transport("503 Service Unavailable".into()));
+        }
+        drop(left);
         Ok(self.state().comments.get(key).cloned().unwrap_or_default())
     }
 
-    /// An unknown key fails the whole read, as a refusal would.
-    async fn issues_in_full(&self, keys: &[IssueKey]) -> Result<Vec<IssueInFull>> {
-        let mut out = vec![];
-        for key in keys {
-            let (issue, comments, activity) =
-                (self.issue(key).await?, self.comments(key).await?, self.activity(key).await?);
-            out.push(IssueInFull { issue, comments, activity });
+    /// As Jira's: an unknown key is left out, a long issue's comments are
+    /// cut short, and the issues come a batch at a time.
+    async fn issues_in_full(
+        &self,
+        keys: &[IssueKey],
+        hand: &mut (dyn FnMut(Vec<IssueInFull>) + Send),
+    ) -> Result<()> {
+        let delay = {
+            let mut bulk = self.bulk();
+            bulk.asked.push(keys.to_vec());
+            bulk.delay.take()
+        };
+        let read: Vec<IssueInFull> = {
+            let state = self.state();
+            let read = |key: &IssueKey| {
+                let issue = state.issues.iter().find(|i| &i.key == key)?.clone();
+                let mut comments = state.comments.get(key).cloned().unwrap_or_default();
+                comments.truncate(BULK_COMMENTS);
+                let activity = state.activity.get(key).cloned().unwrap_or_default();
+                Some(IssueInFull { issue, comments, activity })
+            };
+            keys.iter().filter_map(read).collect()
+        };
+        if let Some(by) = delay {
+            tokio::time::sleep(by).await;
         }
-        Ok(out)
+        for batch in read.chunks(BULK_BATCH) {
+            let refused = self
+                .bulk()
+                .allowed
+                .as_mut()
+                .is_some_and(|n| n.checked_sub(1).map(|left| *n = left).is_none());
+            if refused {
+                return Err(DomainError::Transport("429 Too Many Requests".into()));
+            }
+            hand(batch.to_vec());
+        }
+        Ok(())
     }
 
     async fn children(&self, key: &IssueKey) -> Result<Vec<IssueRef>> {

@@ -174,7 +174,7 @@ async fn the_issue_detail() {
         layout: None,
         children: vec![],
     };
-    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail)));
     insta::assert_snapshot!(screen(&mut app, 150, 60));
     press(&mut app, "q");
     assert_eq!(app.open_issue(), None, "q closes the detail, not the app");
@@ -315,7 +315,7 @@ async fn detail_of(app: &mut App, key: &str) {
         layout: None,
         children: vec![],
     };
-    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail)));
 }
 
 #[tokio::test]
@@ -386,7 +386,7 @@ async fn a_board_sync_keeps_the_fields_only_the_detail_loaded() {
     let issue = fake.issue(&key).await.unwrap();
     let detail =
         IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
-    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail)));
     let mut snapshot = load_board(&fake, None).await.unwrap();
     for issue in &mut snapshot.issues {
         issue.fields.clear();
@@ -410,7 +410,7 @@ async fn an_issue_opened_again_starts_from_what_it_last_read() {
     let issue = fake.issue(&IssueKey::parse("ACME-10")).await.unwrap();
     let detail =
         IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
-    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail)));
     press(&mut app, "q");
     press(&mut app, "<CR>");
     assert_eq!(selected(&app), "ACME-10");
@@ -432,16 +432,17 @@ async fn an_issue_read_on_an_earlier_run_opens_with_its_fields() {
     let comments = fake.comments(&issue.key).await.unwrap();
     assert!(!comments.is_empty());
     let detail = IssueDetail { issue, comments, activity: vec![], layout: None, children: vec![] };
-    app.on_event(Event::ReadIssues(vec![detail]));
+    app.on_event(Event::ReadIssues(vec![std::sync::Arc::new(detail)]));
     press(&mut app, "/ACME-10<CR><CR>");
     let shown = screen(&mut app, 140, 60);
     assert!(shown.contains("Tokens refresh before they expire"), "{shown}");
     assert!(shown.contains("Comments (1)"), "its comments too: {shown}");
 }
 
-/// What a run read wins over an older copy, from disk or a prefetch.
+/// Which read of an issue wins is the service's to say: the screen shows
+/// the copy it sent last.
 #[tokio::test]
-async fn an_older_copy_does_not_replace_what_was_read() {
+async fn the_screen_shows_the_read_the_service_sent_last() {
     let fake = FakeProvider::new();
     let mut app = loaded().await;
     let issue = fake.issue(&IssueKey::parse("ACME-10")).await.unwrap();
@@ -459,19 +460,18 @@ async fn an_older_copy_does_not_replace_what_was_read() {
         layout: None,
         children: vec![],
     };
-    app.on_event(Event::ReadIssues(vec![with(3, &issue)]));
-    app.on_event(Event::ReadIssues(vec![with(2, &issue)]));
     let comments = |app: &mut App| {
         press(app, "/ACME-10<CR><CR>");
         let shown = screen(app, 140, 60);
         press(app, "q<Esc>");
         shown
     };
-    assert!(comments(&mut app).contains("Comments (3)"), "the same age: the first stays");
-    let mut newer = issue.clone();
-    newer.updated += time::Duration::minutes(1);
-    app.on_event(Event::ReadIssues(vec![with(2, &newer)]));
-    assert!(comments(&mut app).contains("Comments (2)"), "a newer one wins");
+    app.on_event(Event::ReadIssues(vec![std::sync::Arc::new(with(3, &issue))]));
+    assert!(comments(&mut app).contains("Comments (3)"));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(with(2, &issue))));
+    assert!(comments(&mut app).contains("Comments (2)"));
+    app.on_event(Event::ReadIssues(vec![std::sync::Arc::new(with(1, &issue))]));
+    assert!(comments(&mut app).contains("Comments (1)"));
 }
 
 /// Jira Cloud sends a board's descriptions as wiki markup, an open issue's
@@ -485,7 +485,7 @@ async fn a_board_sync_keeps_the_description_the_detail_loaded() {
     let issue = fake.issue(&key).await.unwrap();
     let detail =
         IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
-    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail)));
     let mut snapshot = load_board(&fake, None).await.unwrap();
     for issue in &mut snapshot.issues {
         issue.description = kolum_domain::RichText::from_markdown("h3. Context{{raw}}");
@@ -509,7 +509,7 @@ async fn a_board_sync_brings_a_newer_description() {
     let updated = issue.updated;
     let detail =
         IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
-    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail)));
     let sync = |minutes, description: &str| {
         let fake = &fake;
         let key = &key;
@@ -586,7 +586,7 @@ async fn the_detail_follows_the_providers_layout() {
             layout: Some(layout),
             children: vec![],
         };
-        app.on_event(Event::IssueLoaded(Box::new(detail)));
+        app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail)));
         screen(&mut app, 140, 60)
     };
     let shown = open(settings()).await;
@@ -647,7 +647,7 @@ async fn an_issue_opens_with_the_layout_its_type_had() {
         layout: Some(layout("Team now")),
         children: vec![],
     };
-    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail)));
     press(&mut app, "q<CR>");
     assert!(screen(&mut app, 140, 40).contains("Team now"), "the latest one is kept");
 }
@@ -904,7 +904,7 @@ async fn a_message_of_waiting_goes_once_it_is_done() {
     let issue = fake.issue(&epic).await.unwrap();
     let detail =
         IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
-    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail)));
     assert!(!screen(&mut app, 150, 30).contains("Opening ACME-1…"));
 
     press(&mut app, "q");
@@ -1128,7 +1128,7 @@ async fn one_field_is_edited_at_a_time() {
             text.lossy = true;
         }
     }
-    app.on_event(Event::IssueLoaded(Box::new(IssueDetail {
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(IssueDetail {
         issue,
         comments: vec![],
         activity: vec![],
@@ -1668,7 +1668,7 @@ async fn a_read_slower_than_the_write_does_not_undo_it_on_the_open_issue() {
         layout: None,
         children: vec![],
     };
-    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail)));
     assert!(detail_value(&mut app, "Assignee").contains("Colin Tenaguillo"));
 }
 
@@ -1701,7 +1701,7 @@ async fn writes_reach_the_provider_with_no_board() {
     press(&mut app, "<CR>");
     let detail =
         IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
-    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail)));
     assert_eq!(app.open_issue(), Some(&key));
     app.take_effects();
 
@@ -1852,7 +1852,7 @@ async fn editing_sends_only_what_changed() {
     let issue = FakeProvider::new().issue(&key).await.unwrap();
     let detail =
         IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
-    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail)));
     let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else { panic!() };
     assert!(matches!(&purpose, EditPurpose::Describe { key: k, .. } if *k == key), "{purpose:?}");
     assert!(text.starts_with("# Enforce SSO per organisation\n\nAn admin switch"), "{text}");
@@ -1880,7 +1880,7 @@ async fn editing_sends_only_what_changed() {
     let issue = FakeProvider::new().issue(&key).await.unwrap();
     let detail =
         IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
-    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail)));
     let sent = writes(app.take_effects());
     let kolum_app::Write::Update(update) = &sent[0].2 else { panic!() };
     assert_eq!(
@@ -1905,7 +1905,7 @@ async fn an_edit_starts_from_a_read_as_new_as_the_board() {
         layout: None,
         children: vec![],
     };
-    app.on_event(Event::ReadIssues(vec![detail(read.clone())]));
+    app.on_event(Event::ReadIssues(vec![std::sync::Arc::new(detail(read.clone()))]));
     app.take_effects();
     press(&mut app, "e");
     let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else { panic!() };
@@ -1922,7 +1922,7 @@ async fn an_edit_starts_from_a_read_as_new_as_the_board() {
     assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(key.clone()))], "read again");
     let mut commented = read.clone();
     commented.updated = read.updated + time::Duration::minutes(1);
-    app.on_event(Event::IssueLoaded(Box::new(detail(commented))));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail(commented))));
     let sent = writes(app.take_effects());
     let kolum_app::Write::Update(update) = &sent[0].2 else { panic!("{sent:?}") };
     let saved = update.description.as_ref().map(|d| d.plain_text()).unwrap_or_default();
@@ -1952,7 +1952,7 @@ async fn a_description_changed_meanwhile_reopens_the_editor_on_the_text() {
         layout: None,
         children: vec![],
     };
-    app.on_event(Event::ReadIssues(vec![detail(read.clone())]));
+    app.on_event(Event::ReadIssues(vec![std::sync::Arc::new(detail(read.clone()))]));
     app.take_effects();
     press(&mut app, "e");
     let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else { panic!() };
@@ -1963,7 +1963,7 @@ async fn a_description_changed_meanwhile_reopens_the_editor_on_the_text() {
     app.on_edited(purpose, Ok(text.replace("An admin switch", "My switch")));
     let read_first = [Effect::Send(Command::LoadIssue(key.clone()))];
     assert_eq!(app.take_effects(), read_first, "read right before writing");
-    app.on_event(Event::IssueLoaded(Box::new(detail(theirs.clone()))));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail(theirs.clone()))));
     let effects = app.take_effects();
     assert!(writes(effects.clone()).is_empty(), "not saved over theirs");
     let Some(Effect::Edit { purpose, text }) = effects.into_iter().last() else {
@@ -1976,7 +1976,7 @@ async fn a_description_changed_meanwhile_reopens_the_editor_on_the_text() {
 
     app.on_edited(purpose, Ok(text));
     assert_eq!(app.take_effects(), read_first);
-    app.on_event(Event::IssueLoaded(Box::new(detail(theirs))));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail(theirs))));
     let sent = writes(app.take_effects());
     let kolum_app::Write::Update(update) = &sent[0].2 else { panic!("{sent:?}") };
     let saved = update.description.as_ref().map(|d| d.plain_text()).unwrap_or_default();
@@ -2000,7 +2000,7 @@ async fn a_saved_description_shows_at_once_and_e_waits_for_the_save() {
         children: vec![],
     };
     press(&mut app, "<CR>");
-    app.on_event(Event::IssueLoaded(Box::new(detail(read.clone()))));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail(read.clone()))));
     app.take_effects();
     press(&mut app, "e");
     let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else { panic!() };
@@ -2010,7 +2010,7 @@ async fn a_saved_description_shows_at_once_and_e_waits_for_the_save() {
     assert!(app.take_effects().is_empty(), "`e` waits for the save");
     assert!(screen(&mut app, 120, 40).contains("ACME-9 is still being saved"));
 
-    app.on_event(Event::IssueLoaded(Box::new(detail(read))));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail(read))));
     assert_eq!(writes(app.take_effects()).len(), 1);
     let shown = screen(&mut app, 120, 40);
     assert!(shown.contains("My switch"), "{shown}");
@@ -2041,7 +2041,7 @@ async fn a_failed_read_leaves_nothing_waiting_on_it() {
     assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(key.clone()))]);
     app.on_event(failed(&key));
     assert!(screen(&mut app, 120, 30).contains("loading ACME-9 failed"));
-    app.on_event(Event::IssueLoaded(Box::new(detail(read.clone()))));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail(read.clone()))));
     assert!(app.take_effects().is_empty(), "no editor out of the blue");
 
     // The epic of ACME-9 off the board: `gp` waits for it to be read.
@@ -2051,7 +2051,7 @@ async fn a_failed_read_leaves_nothing_waiting_on_it() {
     app.on_event(Event::BoardLoaded { snapshot, fresh: true, request: 1 });
     press(&mut app, "gp");
     app.on_event(failed(&epic));
-    app.on_event(Event::IssueLoaded(Box::new(detail(fake.issue(&epic).await.unwrap()))));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail(fake.issue(&epic).await.unwrap()))));
     assert_eq!(app.open_issue(), None, "not opened out of the blue");
 
     // A save waits on a read; it fails, offline say: the text is kept as a
@@ -2088,7 +2088,7 @@ async fn the_picker_previews_the_description_read_whole() {
     let issue = fake.issue(&IssueKey::parse("ACME-10")).await.unwrap();
     let detail =
         IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
-    app.on_event(Event::ReadIssues(vec![detail]));
+    app.on_event(Event::ReadIssues(vec![std::sync::Arc::new(detail)]));
     press(&mut app, "<Space>fACME-10");
     settle(&mut app);
     let shown = screen(&mut app, 150, 40);
@@ -2135,7 +2135,7 @@ async fn describe(app: &mut App, edit: impl Fn(&str) -> String) -> u64 {
     press(app, "e");
     let asked = app.take_effects();
     if asked.contains(&Effect::Send(Command::LoadIssue(key.clone()))) {
-        app.on_event(Event::IssueLoaded(Box::new(bare(read.clone()))));
+        app.on_event(Event::IssueLoaded(std::sync::Arc::new(bare(read.clone()))));
     }
     let Some(Effect::Edit { purpose, text }) = app.take_effects().pop().or(asked.last().cloned())
     else {
@@ -2144,7 +2144,7 @@ async fn describe(app: &mut App, edit: impl Fn(&str) -> String) -> u64 {
     app.on_edited(purpose, Ok(edit(&text)));
     let mut sent = writes(app.take_effects());
     if sent.is_empty() {
-        app.on_event(Event::IssueLoaded(Box::new(bare(read))));
+        app.on_event(Event::IssueLoaded(std::sync::Arc::new(bare(read))));
         sent = writes(app.take_effects());
     }
     sent[0].0
@@ -2209,7 +2209,7 @@ async fn a_read_back_replaces_the_open_issue_whole() {
     let mut app = loaded().await;
     press(&mut app, "<CR>");
     let read = FakeProvider::new().issue(&IssueKey::parse("ACME-9")).await.unwrap();
-    app.on_event(Event::IssueLoaded(Box::new(bare(read.clone()))));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(bare(read.clone()))));
     press(&mut app, "<Space>A");
     let op = writes(app.take_effects())[0].0;
     let mut saved = read.clone();
@@ -2232,7 +2232,7 @@ async fn an_issue_opens_from_a_read_newer_than_the_board() {
     let mut read = FakeProvider::new().issue(&IssueKey::parse("ACME-9")).await.unwrap();
     read.title = "Renamed since the board".into();
     read.updated += time::Duration::minutes(1);
-    app.on_event(Event::ReadIssues(vec![bare(read)]));
+    app.on_event(Event::ReadIssues(vec![std::sync::Arc::new(bare(read))]));
     press(&mut app, "<CR>");
     assert!(screen(&mut app, 120, 40).contains("Renamed since the board"));
 }
@@ -2253,12 +2253,12 @@ async fn a_refused_description_is_kept_as_a_draft_and_e_waits_while_it_is_saved(
         children: vec![],
     };
     press(&mut app, "<CR>");
-    app.on_event(Event::IssueLoaded(Box::new(detail(read.clone()))));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail(read.clone()))));
     app.take_effects();
     press(&mut app, "e");
     let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else { panic!() };
     app.on_edited(purpose, Ok(text.replace("An admin switch", "My switch")));
-    app.on_event(Event::IssueLoaded(Box::new(detail(read))));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail(read))));
     let op = writes(app.take_effects())[0].0;
     press(&mut app, "e");
     assert!(app.take_effects().is_empty(), "`e` waits for the write");
@@ -2580,7 +2580,7 @@ async fn gp_opens_the_parent() {
     assert!(screen(&mut app, 140, 40).contains(&format!("Opening {parent}")));
     let issue = fake.issue(&parent).await.unwrap();
     let title = issue.title.clone();
-    app.on_event(Event::IssueLoaded(Box::new(IssueDetail {
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(IssueDetail {
         issue,
         comments: vec![],
         activity: vec![],
@@ -2602,7 +2602,7 @@ async fn gp_opens_the_parent() {
     let issue = fake.issue(&parent).await.unwrap();
     let late =
         IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
-    app.on_event(Event::IssueLoaded(Box::new(late)));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(late)));
     assert!(
         screen(&mut app, 140, 40).contains("· ACME-5"),
         "opened since: the parent waits no more"
@@ -2678,7 +2678,7 @@ async fn a_search_hit_that_is_not_on_the_board_still_opens() {
     let children = kolum_domain::IssueReader::children(&fake, &epic.key).await.unwrap();
     let detail =
         IssueDetail { issue: epic, comments: vec![], activity: vec![], layout: None, children };
-    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail)));
     assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-1"), "opened once loaded");
     let shown = screen(&mut app, 120, 50);
     assert!(shown.contains("Single sign-on") && shown.contains("\u{f0e8} Child issues"), "{shown}");
@@ -3068,7 +3068,7 @@ async fn the_detail_names_the_repository_an_issue_is_in() {
     (issue.key, issue.parent, issue.updated) = (key.clone(), None, time::OffsetDateTime::now_utc());
     let detail =
         IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
-    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail)));
     let shown = screen(&mut app, 150, 40);
     assert!(shown.contains(&format!(" python-language-server · {key}")), "{shown}");
 }
