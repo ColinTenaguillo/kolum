@@ -196,7 +196,9 @@ impl BoardView {
         }
     }
 
+    /// The range belongs to its column: leaving the column ends it.
     pub fn move_column(&mut self, delta: i64) {
+        self.visual = None;
         let visible = self.visible();
         if let Some(pos) = visible.iter().position(|&c| c == self.column) {
             let to = (pos as i64 + delta).clamp(0, visible.len() as i64 - 1) as usize;
@@ -204,7 +206,10 @@ impl BoardView {
         }
     }
 
+    /// The first or the last column; the range ends, as it does for
+    /// [`BoardView::move_column`].
     pub fn column_edge(&mut self, last: bool) {
+        self.visual = None;
         let visible = self.visible();
         let edge = if last { visible.last() } else { visible.first() };
         self.column = edge.copied().unwrap_or(0);
@@ -243,6 +248,21 @@ impl BoardView {
             }
             _ => self.selected().map(|i| i.key.clone()).into_iter().collect(),
         }
+    }
+
+    /// The targets, as [`BoardView::targets`]; the range ends with them.
+    pub fn take_targets(&mut self) -> Vec<IssueKey> {
+        let keys = self.targets();
+        self.visual = None;
+        keys
+    }
+
+    /// Visual mode on, from the highlighted card if there is one; or off.
+    pub fn toggle_visual(&mut self) {
+        self.visual = match self.visual {
+            Some(_) => None,
+            None => self.selected().map(|_| self.cursor_row()),
+        };
     }
 
     /// The card `delta` places below (or above) the highlighted one in its

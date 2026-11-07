@@ -2465,6 +2465,8 @@ async fn visual_mode_acts_on_a_range_of_cards() {
     assert!(!screen(&mut app, 150, 50).contains("VISUAL"));
     press(&mut app, "vjl");
     assert!(!screen(&mut app, 150, 50).contains("VISUAL"), "another column ends it");
+    press(&mut app, "0vj$");
+    assert!(!screen(&mut app, 150, 50).contains("VISUAL"), "the last column too");
     press(&mut app, "vv");
     assert!(!screen(&mut app, 150, 50).contains("VISUAL"), "v again ends it");
 }

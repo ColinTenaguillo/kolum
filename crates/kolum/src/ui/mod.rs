@@ -137,6 +137,14 @@ impl Prompt {
         Prompt { kind, input, typed, chosen: None, hidden: false, themes }
     }
 
+    /// The `/` line, holding `text`: over the help page when it is open,
+    /// the board otherwise.
+    fn filter(text: &str) -> Self {
+        let mut input = Input::default();
+        input.set(text);
+        Prompt::new(PromptKind::Filter, input, vec![])
+    }
+
     fn proposals(&self) -> (usize, Vec<complete::Proposal>) {
         match self.kind {
             PromptKind::Command => complete::proposals(&self.typed, &self.themes),
@@ -539,99 +547,124 @@ impl App {
         }
     }
 
+    /// A flat routing: each event to the one handler that takes it.
     pub fn on_event(&mut self, event: Event) {
-        let waited = match &event {
-            Event::IssueLoaded(detail) => self.keep_read(detail),
-            _ => None,
-        };
         match event {
             Event::FieldLayouts(kept) => self.layouts.extend(kept),
             // The copies that won, which the service decides.
             Event::ReadIssues(read) => {
-                self.read.extend(read.into_iter().map(|d| (d.issue.key.clone(), d)));
+                self.read.extend(read.into_iter().map(|d| (d.issue.key.clone(), d)))
             }
-            Event::Me(user) => {
-                self.board.me = Some(user.id.clone());
-                self.me = Some(user);
-                self.board.clamp();
-            }
+            Event::Me(user) => self.set_me(user),
             Event::BoardLoaded { snapshot, fresh, request } => {
                 self.board_loaded(snapshot, fresh, request)
             }
-            // In place of the open issue, if any: `gp` waits on the parent there.
-            Event::IssueLoaded(detail) if self.opening.as_ref() == Some(&detail.issue.key) => {
-                self.opening = None;
-                self.said_done(&opening(&detail.issue.key));
-                let mut view = DetailView::new(detail.issue.clone());
-                view.loaded = Some(detail);
-                self.detail = Some(view);
-                self.show_detail();
-                self.want_avatar();
-            }
-            Event::IssueLoaded(detail) => {
-                // A read slower than a write's reply does not undo it.
-                if let Some(d) = &mut self.detail
-                    && d.latest.key == detail.issue.key
-                    && kolum_app::supersedes(&detail.issue, &d.latest)
-                {
-                    d.latest = detail.issue.clone();
-                    d.loaded = Some(detail);
-                    self.show_detail();
-                    self.want_avatar();
-                }
-            }
-            Event::Boards(boards) => {
-                let source = sources::BoardChoice { boards };
-                self.open_picker(Box::new(Picker::new(source, self.waker.clone())));
-            }
-            Event::SearchResults { id, result } => {
-                let latest = self.search_id;
-                let Some(p) = self.picker.as_mut().filter(|p| p.is_remote() && id == latest) else {
-                    return;
-                };
-                match result {
-                    Ok(issues) => p.receive(issues),
-                    Err(error) => {
-                        p.set_loading(false);
-                        self.say(format!("search failed: {error}"), Level::Error);
-                    }
-                }
-            }
+            Event::IssueLoaded(detail) => self.issue_loaded(detail),
+            Event::Boards(boards) => self.open_picker(Box::new(Picker::new(
+                sources::BoardChoice { boards },
+                self.waker.clone(),
+            ))),
+            Event::SearchResults { id, result } => self.search_results(id, result),
             Event::Transitions { key, result } => self.on_transitions(key, result),
             Event::EditableFields { key, result } => self.open_field_picker(key, result),
             Event::Sprints(result) => self.open_sprint_picker(result),
             Event::Written { op, key, issue } => self.written(op, key, issue.as_deref()),
             Event::WriteFailed { op, key, error } => self.write_failed(op, key, error),
-            Event::Image { url, result } => {
-                let decoded = result.map_err(|e| e.to_string()).and_then(|bytes| {
-                    let picker = self.images.as_ref().ok_or("no pictures here")?;
-                    let image = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
-                    Ok(picker.new_resize_protocol(image))
-                });
-                let avatar = match decoded {
-                    Ok(protocol) => Avatar::Ready(Box::new(protocol)),
-                    Err(e) => {
-                        tracing::info!("avatar {url}: {e}");
-                        Avatar::Failed
-                    }
-                };
-                self.avatars.insert(url, avatar);
-            }
-            // On the board if its query takes it in, which the sync says.
-            Event::Created(issue) => {
-                self.sync_soon();
-                self.say(format!("Created {}", issue.key), Level::Info);
-                self.created = Some((issue.key, self.board_request));
-            }
+            Event::Image { url, result } => self.image(url, result),
+            Event::Created(issue) => self.on_created(issue.key),
             Event::IssueLoadFailed { key, error } => self.read_failed(key, error),
             Event::Failed { what, error } => {
                 self.say(format!("{what} failed: {error}"), Level::Error)
             }
         }
-        // Once the detail shows the read: a save shows over it.
+    }
+
+    fn set_me(&mut self, user: User) {
+        self.board.me = Some(user.id.clone());
+        self.me = Some(user);
+        self.board.clamp();
+    }
+
+    /// An issue read whole: kept; opened in place of the open issue if it
+    /// was asked to be (`gp` waits on the parent there), else shown over
+    /// the open one unless older. What waited on its read goes on once the
+    /// detail shows it: a save shows over it.
+    fn issue_loaded(&mut self, detail: std::sync::Arc<IssueDetail>) {
+        let waited = self.keep_read(&detail);
+        if self.opening.as_ref() == Some(&detail.issue.key) {
+            self.opened(detail);
+        } else {
+            self.read_again(detail);
+        }
         if let Some((key, after)) = waited {
             self.read_done(key, after);
         }
+    }
+
+    /// The issue asked to be opened, read: it opens.
+    fn opened(&mut self, detail: std::sync::Arc<IssueDetail>) {
+        self.opening = None;
+        self.said_done(&opening(&detail.issue.key));
+        let mut view = DetailView::new(detail.issue.clone());
+        view.loaded = Some(detail);
+        self.detail = Some(view);
+        self.show_detail();
+        self.want_avatar();
+    }
+
+    /// The open issue read again; a read slower than a write's reply does
+    /// not undo it.
+    fn read_again(&mut self, detail: std::sync::Arc<IssueDetail>) {
+        if let Some(d) = &mut self.detail
+            && d.latest.key == detail.issue.key
+            && kolum_app::supersedes(&detail.issue, &d.latest)
+        {
+            d.latest = detail.issue.clone();
+            d.loaded = Some(detail);
+            self.show_detail();
+            self.want_avatar();
+        }
+    }
+
+    /// The hits of the latest remote search, to the picker that asked;
+    /// those of any other are stale.
+    fn search_results(&mut self, id: u64, result: kolum_domain::Result<Vec<kolum_domain::Issue>>) {
+        let latest = self.search_id;
+        let Some(p) = self.picker.as_mut().filter(|p| p.is_remote() && id == latest) else {
+            return;
+        };
+        match result {
+            Ok(issues) => p.receive(issues),
+            Err(error) => {
+                p.set_loading(false);
+                self.say(format!("search failed: {error}"), Level::Error);
+            }
+        }
+    }
+
+    /// A picture fetched, decoded for this terminal; one that cannot be is
+    /// not asked for again.
+    fn image(&mut self, url: String, result: kolum_domain::Result<Vec<u8>>) {
+        let decoded = result.map_err(|e| e.to_string()).and_then(|bytes| {
+            let picker = self.images.as_ref().ok_or("no pictures here")?;
+            let image = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+            Ok(picker.new_resize_protocol(image))
+        });
+        let avatar = match decoded {
+            Ok(protocol) => Avatar::Ready(Box::new(protocol)),
+            Err(e) => {
+                tracing::info!("avatar {url}: {e}");
+                Avatar::Failed
+            }
+        };
+        self.avatars.insert(url, avatar);
+    }
+
+    /// On the board if its query takes it in, which the sync says.
+    fn on_created(&mut self, key: IssueKey) {
+        self.sync_soon();
+        self.say(format!("Created {key}"), Level::Info);
+        self.created = Some((key, self.board_request));
     }
 
     /// The provider's board, the cached copy or a fresh one: what is
@@ -726,48 +759,70 @@ impl App {
         self.say(format!("`{}` is not available yet", action.name()), Level::Warn);
     }
 
+    /// A flat routing: the actions that act wherever the focus is, then
+    /// the others to whatever has the focus.
     fn dispatch(&mut self, action: Action, count: Option<u32>) {
-        let n = i64::from(count.unwrap_or(1));
         match action {
             Action::Quit => self.quit = true,
             Action::Close => self.close(),
             Action::Help => self.help = Some(0),
-            Action::CommandLine => {
-                let themes = self.theme_names();
-                self.prompt = Some(Prompt::new(PromptKind::Command, Input::default(), themes))
-            }
-            Action::Refresh => {
-                let id = self.board.snapshot.as_ref().map(|s| s.board.id.clone());
-                self.ask_board(|n| Command::ReloadBoard(id, n));
-                self.say(REFRESHING, Level::Info);
-            }
+            Action::CommandLine => self.open_command_line(),
+            Action::Refresh => self.refresh(),
             Action::PickerIssues => self.open_issue_picker(),
-            Action::PickerRemote => {
-                self.open_issue_picker();
-                self.toggle_source();
-            }
-            Action::PickerBoards => {
-                self.effects.push(Effect::Send(Command::LoadBoards));
-                self.say("Listing the boards…", Level::Info);
-            }
-            Action::PickerCommands => self.open_picker(Box::new(Picker::new(
-                sources::CommandSource::new(&self.keymap),
-                self.waker.clone(),
-            ))),
+            Action::PickerRemote => self.open_remote_picker(),
+            Action::PickerBoards => self.list_boards(),
+            Action::PickerCommands => self.open_command_picker(),
             Action::PickerThemes => self.open_theme_picker(),
-            Action::PickerResume => match self.last_picker.take() {
-                Some(p) => self.picker = Some(p),
-                None => self.say("No picker to reopen", Level::Info),
-            },
-            _ => match self.focus() {
-                Focus::Problems => {}
-                Focus::Help => self.help_action(action, n),
-                Focus::Picker => self.picker_action(action, n),
-                Focus::Prompt => self.prompt_action(action),
-                Focus::Viewer => self.viewer_action(action, n),
-                Focus::Detail => self.detail_action(action, count),
-                Focus::Board => self.board_action(action, count),
-            },
+            Action::PickerResume => self.resume_picker(),
+            _ => self.focused_action(action, count),
+        }
+    }
+
+    fn focused_action(&mut self, action: Action, count: Option<u32>) {
+        let n = i64::from(count.unwrap_or(1));
+        match self.focus() {
+            Focus::Problems => {}
+            Focus::Help => self.help_action(action, n),
+            Focus::Picker => self.picker_action(action, n),
+            Focus::Prompt => self.prompt_action(action),
+            Focus::Viewer => self.viewer_action(action, n),
+            Focus::Detail => self.detail_action(action, count),
+            Focus::Board => self.board_action(action, count),
+        }
+    }
+
+    fn open_command_line(&mut self) {
+        let themes = self.theme_names();
+        self.prompt = Some(Prompt::new(PromptKind::Command, Input::default(), themes));
+    }
+
+    /// The whole board again, not only what changed.
+    fn refresh(&mut self) {
+        let id = self.board.snapshot.as_ref().map(|s| s.board.id.clone());
+        self.ask_board(|n| Command::ReloadBoard(id, n));
+        self.say(REFRESHING, Level::Info);
+    }
+
+    fn open_remote_picker(&mut self) {
+        self.open_issue_picker();
+        self.toggle_source();
+    }
+
+    /// The board picker opens when the list arrives.
+    fn list_boards(&mut self) {
+        self.effects.push(Effect::Send(Command::LoadBoards));
+        self.say("Listing the boards…", Level::Info);
+    }
+
+    fn open_command_picker(&mut self) {
+        let source = sources::CommandSource::new(&self.keymap);
+        self.open_picker(Box::new(Picker::new(source, self.waker.clone())));
+    }
+
+    fn resume_picker(&mut self) {
+        match self.last_picker.take() {
+            Some(p) => self.picker = Some(p),
+            None => self.say("No picker to reopen", Level::Info),
         }
     }
 
@@ -792,21 +847,13 @@ impl App {
         }
     }
 
+    /// A flat routing: the highlight's moves to the board, the rest to
+    /// [`App::board_command`].
     fn board_action(&mut self, action: Action, count: Option<u32>) {
         let n = i64::from(count.unwrap_or(1));
         let b = &mut self.board;
-        // The range belongs to its column: leaving the column ends it.
-        if matches!(action, Action::Left | Action::Right | Action::FirstColumn | Action::LastColumn)
-        {
-            b.visual = None;
-        }
         match action {
-            Action::VisualMode => {
-                b.visual = match b.visual {
-                    Some(_) => None,
-                    None => b.selected().map(|_| b.cursor_row()),
-                };
-            }
+            Action::VisualMode => b.toggle_visual(),
             Action::NormalMode => b.visual = None,
             Action::Left => b.move_column(-n),
             Action::Right => b.move_column(n),
@@ -820,50 +867,54 @@ impl App {
             Action::HalfPageUp => b.move_card(-b.half_page() * n),
             Action::NextMatch => b.step_match(n),
             Action::PrevMatch => b.step_match(-n),
-            Action::ClearFilter => {
-                b.filter.clear();
-                b.clamp();
-                self.save_filter();
-            }
-            Action::Filter => {
-                let mut input = Input::default();
-                input.set(&b.filter);
-                self.prompt = Some(Prompt::new(PromptKind::Filter, input, vec![]));
-            }
+            _ => self.board_command(action, n),
+        }
+    }
+
+    /// A flat routing: each action on the board to the one handler that
+    /// does it; whatever else changes the issues targeted.
+    fn board_command(&mut self, action: Action, n: i64) {
+        match action {
+            Action::ClearFilter => self.clear_board_filter(),
+            Action::Filter => self.prompt = Some(Prompt::filter(&self.board.filter)),
             Action::ToggleSwimlanes => self.toggle_swimlanes(),
             Action::ToggleEmptyColumns => self.toggle_empty_columns(),
-            Action::OpenDetail => {
-                if let Some(key) = b.selected().map(|i| i.key.clone()) {
-                    self.open_detail(key);
-                }
-            }
-            Action::CopyKey if b.visual.is_some() => self.copy_range(),
+            Action::OpenDetail => self.open_selected(),
+            Action::CopyKey if self.board.visual.is_some() => self.copy_range(),
             Action::CopyKey | Action::CopyUrl | Action::OpenBrowser => {
-                if let Some(issue) = b.selected().cloned() {
-                    self.issue_effect(action, &issue);
-                }
+                self.on_selected(|app, issue| app.issue_effect(action, &issue))
             }
-            Action::OpenParent => {
-                if let Some(issue) = b.selected().cloned() {
-                    self.open_parent(&issue);
-                }
-            }
-            Action::Create => {
-                if self.can_write() {
-                    self.create();
-                }
-            }
+            Action::OpenParent => self.on_selected(|app, issue| app.open_parent(&issue)),
+            Action::Create => self.create(),
             Action::PickerUsers => self.open_people_picker(),
             Action::MoveCardDown => self.rank_card(n),
             Action::MoveCardUp => self.rank_card(-n),
             Action::MoveCardLeft => self.move_card(-n),
             Action::MoveCardRight => self.move_card(n),
             _ => {
-                let keys = b.targets();
-                b.visual = None;
+                let keys = self.board.take_targets();
                 self.issue_action(action, keys);
             }
         }
+    }
+
+    fn open_selected(&mut self) {
+        if let Some(key) = self.selected_issue().cloned() {
+            self.open_detail(key);
+        }
+    }
+
+    /// `then` on the highlighted card, when there is one.
+    fn on_selected(&mut self, then: impl FnOnce(&mut Self, kolum_domain::Issue)) {
+        if let Some(issue) = self.board.selected().cloned() {
+            then(self, issue);
+        }
+    }
+
+    fn clear_board_filter(&mut self) {
+        self.board.filter.clear();
+        self.board.clamp();
+        self.save_filter();
     }
 
     /// Everyone, me, then whoever has a card on the board by name, then no
@@ -941,8 +992,7 @@ impl App {
 
     /// `yy` in visual mode: every key in the range, space-separated.
     fn copy_range(&mut self) {
-        let keys: Vec<String> = self.board.targets().iter().map(|k| k.to_string()).collect();
-        self.board.visual = None;
+        let keys: Vec<String> = self.board.take_targets().iter().map(|k| k.to_string()).collect();
         self.say(format!("Copied {}", keys.join(" ")), Level::Info);
         self.effects.push(Effect::Copy(keys.join(" ")));
     }
@@ -1003,12 +1053,7 @@ impl App {
 
     fn help_action(&mut self, action: Action, n: i64) {
         match action {
-            Action::Filter => {
-                let mut input = Input::default();
-                input.set(&self.help_filter);
-                self.prompt = Some(Prompt::new(PromptKind::Filter, input, vec![]));
-                return;
-            }
+            Action::Filter => return self.prompt = Some(Prompt::filter(&self.help_filter)),
             // Clears the filter first, then closes the page.
             Action::ClearFilter if self.help_filter.is_empty() => return self.help = None,
             Action::ClearFilter => return self.set_filter(String::new()),
@@ -1102,8 +1147,7 @@ impl App {
     /// `H` and `L`: to the next visible column, by whichever transition
     /// leads there.
     fn move_card(&mut self, delta: i64) {
-        let keys = self.board.targets();
-        self.board.visual = None;
+        let keys = self.board.take_targets();
         if keys.is_empty() {
             return;
         }
@@ -1301,6 +1345,9 @@ impl App {
     /// `c`: a new issue in the board's project, of the highlighted card's
     /// type (a Task when there is none).
     fn create(&mut self) {
+        if !self.can_write() {
+            return;
+        }
         let selected = self.board.selected();
         let project = self
             .board
@@ -1553,25 +1600,31 @@ impl App {
             Err(e) => return self.say(format!("$EDITOR: {e}"), Level::Error),
         };
         match purpose {
-            EditPurpose::Comment(_) if text.is_empty() => {
-                self.say("Nothing written: no comment", Level::Info)
-            }
-            EditPurpose::Comment(key) => {
-                self.say(format!("Commenting on {key}…"), Level::Info);
-                self.write(vec![kolum_app::comment_write(key, &text)]);
-            }
+            EditPurpose::Comment(key) => self.comment(key, &text),
             EditPurpose::Create { project, kind } => {
-                match kolum_app::new_issue(project, kind, &text) {
-                    Some(new) => {
-                        self.effects.push(Effect::Send(Command::Create(new)));
-                        self.say("Creating…", Level::Info);
-                    }
-                    None => self.say("No title: nothing created", Level::Info),
-                }
+                self.send_new(kolum_app::new_issue(project, kind, &text))
             }
             EditPurpose::Field { key, field } => self.save_field(key, field, &text),
             EditPurpose::Describe { key, from } => self.save_description(key, from, text),
         }
+    }
+
+    /// A comment back from `$EDITOR`; an empty one cancels.
+    fn comment(&mut self, key: IssueKey, text: &str) {
+        if text.is_empty() {
+            return self.say("Nothing written: no comment", Level::Info);
+        }
+        self.say(format!("Commenting on {key}…"), Level::Info);
+        self.write(vec![kolum_app::comment_write(key, text)]);
+    }
+
+    /// A new issue back from `$EDITOR`; none without a title.
+    fn send_new(&mut self, new: Option<kolum_domain::NewIssue>) {
+        let Some(new) = new else {
+            return self.say("No title: nothing created", Level::Info);
+        };
+        self.effects.push(Effect::Send(Command::Create(new)));
+        self.say("Creating…", Level::Info);
     }
 
     /// An edit shown at once and sent; undone if the provider refuses it.
