@@ -741,6 +741,44 @@ async fn without_the_private_api_the_board_keeps_its_sub_filter_alone() {
     );
 }
 
+/// The cutoff for completed issues, from the private API, is read once a
+/// board, not on every sync: answered or refused, it is not asked again,
+/// and the cutoff read still scopes the later pages.
+#[tokio::test]
+async fn the_private_api_is_asked_once_a_board() {
+    let jira = fake_jira(None).await;
+    let p = provider(&jira);
+    for board in ["42", "7"] {
+        for _ in 0..3 {
+            p.board(&BoardId::new(board)).await.unwrap();
+        }
+    }
+    p.board_issues(&BoardId::new("42"), None, None).await.unwrap();
+    let seen = jira.seen.lock().unwrap().clone();
+    let asked = |id: &str| {
+        let wanted = format!("rapidViewId={id}");
+        seen.iter().filter(|r| r.contains("/greenhopper/") && r.contains(&wanted)).count()
+    };
+    assert_eq!((asked("42"), asked("7")), (1, 1), "{seen:?}");
+    let issues = seen.iter().find(|r| r.starts_with("/rest/agile/1.0/board/42/issue")).unwrap();
+    assert!(issues.contains("resolved"), "the cutoff kept: {issues}");
+}
+
+/// A failure that may pass (a timeout, a server error) is not a refusal:
+/// the private API is asked again on the next sync, not given up on for
+/// the session.
+#[tokio::test]
+async fn a_failing_private_api_is_asked_again_on_the_next_sync() {
+    let jira = fake_jira_with(None, Some("/rest/greenhopper/")).await;
+    let p = provider(&jira);
+    for _ in 0..3 {
+        p.board(&BoardId::new("42")).await.unwrap();
+    }
+    let seen = jira.seen.lock().unwrap().clone();
+    let asked = seen.iter().filter(|r| r.contains("/greenhopper/")).count();
+    assert_eq!(asked, 3, "{seen:?}");
+}
+
 /// The order, and what is still on the board: only keys, a thousand to a page.
 #[tokio::test]
 async fn the_board_keys_come_in_its_order_and_its_scope() {

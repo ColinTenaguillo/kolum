@@ -40,6 +40,9 @@ pub struct JiraProvider {
     cloud: OnceCell<String>,
     /// What each board shows of its filter, by board id, as last read.
     scopes: std::sync::Mutex<std::collections::HashMap<String, jql::Scope>>,
+    /// Each board's cutoff for completed issues, by board id, once the
+    /// private API answered or refused it.
+    cutoffs: std::sync::Mutex<std::collections::HashMap<String, Option<String>>>,
 }
 
 /// The web issue view's field layout for one issue, and the fields its
@@ -54,6 +57,7 @@ impl JiraProvider {
             ctx: OnceCell::new(),
             cloud: OnceCell::new(),
             scopes: Default::default(),
+            cutoffs: Default::default(),
         }
     }
 
@@ -155,7 +159,7 @@ impl JiraProvider {
         let config_path = format!("{AGILE}/board/{id}/configuration");
         let (config, done_cutoff) = tokio::join!(
             self.client.get::<BoardConfigDto>(&config_path, &[]),
-            self.done_cutoff(id),
+            self.known_done_cutoff(id),
         );
         Ok(self.remember_scope(id, &config?, done_cutoff))
     }
@@ -177,16 +181,37 @@ impl JiraProvider {
         scope
     }
 
+    /// The board's cutoff: the private API is asked until it answers or
+    /// refuses, then not again in the session; a failure that may pass is
+    /// asked again on the next sync.
+    async fn known_done_cutoff(&self, id: &BoardId) -> Option<String> {
+        let known = self.cutoffs.lock().unwrap().get(id.as_str()).cloned();
+        if let Some(cutoff) = known {
+            return cutoff;
+        }
+        let cutoff = self.done_cutoff(id).await.ok()?;
+        self.cutoffs.lock().unwrap().insert(id.to_string(), cutoff.clone());
+        cutoff
+    }
+
     /// shortcut: "hide completed issues older than" is only in the private
     /// greenhopper API; read at best, the sub-filter alone when it does not
     /// answer. Read it from the public API if Atlassian ever puts it there.
-    async fn done_cutoff(&self, id: &BoardId) -> Option<String> {
+    /// `Ok(None)` when it has none, or the API refuses (401, 403, 404).
+    async fn done_cutoff(&self, id: &BoardId) -> Result<Option<String>> {
         let query = [("rapidViewId", id.to_string())];
         let path = "/rest/greenhopper/1.0/rapidviewconfig/editmodel.json";
-        let model: EditModelDto = (self.client.get(path, &query).await)
-            .inspect_err(|e| tracing::info!("{path}: {e}; completed issues kept"))
-            .ok()?;
-        model.old_done_issues_cutoff
+        match self.client.get::<EditModelDto>(path, &query).await {
+            Ok(model) => Ok(model.old_done_issues_cutoff),
+            Err(e @ (DomainError::Unauthorized(_) | DomainError::NotFound(_))) => {
+                tracing::info!("{path}: {e}; completed issues kept");
+                Ok(None)
+            }
+            Err(e) => {
+                tracing::info!("{path}: {e}; asked again on the next sync");
+                Err(e)
+            }
+        }
     }
 
     /// A board page's fields: on Cloud without the description, which the
@@ -269,7 +294,7 @@ impl BoardSource for JiraProvider {
         let (summary, config, done_cutoff) = tokio::join!(
             self.client.get::<BoardDto>(&summary_path, &[]),
             self.client.get::<BoardConfigDto>(&config_path, &[]),
-            self.done_cutoff(id),
+            self.known_done_cutoff(id),
         );
         let (summary, config) = (summary?, config?);
         self.remember_scope(id, &config, done_cutoff);
