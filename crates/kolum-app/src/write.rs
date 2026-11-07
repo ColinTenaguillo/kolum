@@ -125,12 +125,13 @@ fn change_board(snapshot: &mut BoardSnapshot, key: &IssueKey, change: &Change) {
 }
 
 /// The provider's copy of the board once it read an issue back after a
-/// write: the read in place of an older copy, or added.
+/// write: the read in place of an older copy. An issue not on the board
+/// stays off it: the next sync says if it joined.
 pub fn written(snapshot: &mut BoardSnapshot, read: &Issue) {
-    match snapshot.issues.iter_mut().find(|i| i.key == read.key) {
-        Some(issue) if supersedes(read, issue) => *issue = read.clone(),
-        Some(_) => {}
-        None => snapshot.issues.push(read.clone()),
+    if let Some(issue) = snapshot.issues.iter_mut().find(|i| i.key == read.key)
+        && supersedes(read, issue)
+    {
+        *issue = read.clone();
     }
 }
 
@@ -430,7 +431,7 @@ mod tests {
     }
 
     /// The issue read back after a write replaces the board's copy, unless
-    /// that is newer.
+    /// that is newer; an issue off the board stays off.
     #[tokio::test]
     async fn a_read_back_replaces_an_older_copy_on_the_board() {
         let mut snapshot = load_board(&FakeProvider::new(), None).await.unwrap();
@@ -444,6 +445,10 @@ mod tests {
         older.updated -= time::Duration::minutes(1);
         written(&mut snapshot, &older);
         assert_eq!(issue_of(&snapshot), read, "an older read loses");
+        let before = snapshot.clone();
+        read.key = IssueKey::parse("NOPE-1");
+        written(&mut snapshot, &read);
+        assert_eq!(snapshot, before, "off the board, it stays off");
     }
 
     /// Taken by the provider, a change shows on until a board asked for

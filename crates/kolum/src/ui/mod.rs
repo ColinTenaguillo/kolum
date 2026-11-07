@@ -283,6 +283,9 @@ pub struct App {
     latest: Option<kolum_app::BoardSnapshot>,
     /// The writes not yet seen in a board the provider sent.
     pending: kolum_app::Pending,
+    /// A new issue, highlighted once a sync brings it to the board.
+    /// With the last board asked for then: the next one says.
+    created: Option<(IssueKey, u64)>,
     /// Transitions asked for these issues; `Some(column)` when they are
     /// for a move into that column.
     awaiting: Option<(Vec<IssueKey>, Option<usize>)>,
@@ -373,6 +376,7 @@ impl App {
             now: Instant::now(),
             latest: None,
             pending: kolum_app::Pending::default(),
+            created: None,
             awaiting: None,
             writable: settings.writable,
             opening: None,
@@ -622,14 +626,11 @@ impl App {
                 };
                 self.avatars.insert(url, avatar);
             }
+            // On the board if its query takes it in, which the sync says.
             Event::Created(issue) => {
-                let key = issue.key.clone();
-                if let Some(latest) = &mut self.latest {
-                    latest.merge(vec![*issue]);
-                    self.show();
-                    self.board.select(&key);
-                }
-                self.say(format!("Created {key}"), Level::Info);
+                self.sync_soon();
+                self.say(format!("Created {}", issue.key), Level::Info);
+                self.created = Some((issue.key, self.board_request));
             }
             Event::IssueLoadFailed { key, error } => self.read_failed(key, error),
             Event::Failed { what, error } => {
@@ -658,6 +659,13 @@ impl App {
         }
         self.latest = Some(snapshot);
         self.show();
+        // The first board asked for after it says whether the new issue is
+        // on the board; a cached one, older than any, says nothing.
+        if let Some((key, _)) = self.created.take_if(|(_, asked)| fresh && request > *asked)
+            && self.board.has(&key)
+        {
+            self.board.select(&key);
+        }
     }
 
     /// A board from the provider, not from the cache, answering `request`:

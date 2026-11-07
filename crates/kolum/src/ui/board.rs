@@ -123,6 +123,11 @@ impl BoardView {
         }
     }
 
+    /// Whether the issue is on the board, filtered out or not.
+    pub fn has(&self, key: &IssueKey) -> bool {
+        self.snapshot.as_ref().is_some_and(|s| s.issues.iter().any(|i| &i.key == key))
+    }
+
     /// The cards of every column, after the filter.
     pub fn cards(&self) -> Vec<Vec<&Issue>> {
         let Some(snapshot) = &self.snapshot else { return vec![] };

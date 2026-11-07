@@ -1672,6 +1672,17 @@ async fn a_read_slower_than_the_write_does_not_undo_it_on_the_open_issue() {
     assert!(detail_value(&mut app, "Assignee").contains("Colin Tenaguillo"));
 }
 
+/// An epic, in progress but not a card: what the provider reads back
+/// after a write does not put it on the board.
+#[tokio::test]
+async fn a_write_to_an_issue_off_the_board_leaves_it_off() {
+    let mut app = loaded().await;
+    let epic = FakeProvider::new().issue(&IssueKey::parse("ACME-1")).await.unwrap();
+    let key = epic.key.clone();
+    app.on_event(Event::Written { op: 1, key, issue: Some(Box::new(epic)) });
+    assert!(!column_order(&mut app, 2).contains(&"ACME-1".to_string()));
+}
+
 /// Before the board has arrived, or after it failed, an issue opened from
 /// a search is still written to.
 #[tokio::test]
@@ -2261,6 +2272,56 @@ async fn a_refused_description_is_kept_as_a_draft_and_e_waits_while_it_is_saved(
     assert!(text.contains("My switch"), "{text}");
 }
 
+/// A new issue and the fake's board with and without it.
+async fn created() -> (kolum_domain::Issue, kolum_app::BoardSnapshot, kolum_app::BoardSnapshot) {
+    use kolum_domain::IssueWriter;
+    let fake = FakeProvider::new();
+    let without = load_board(&fake, None).await.unwrap();
+    let template = fake.issue(&IssueKey::parse("ACME-12")).await.unwrap();
+    let new = kolum_domain::NewIssue {
+        project: "ACME".into(),
+        kind: template.kind,
+        title: "Later".into(),
+        description: template.description,
+        parent: None,
+    };
+    let created = fake.create(new).await.unwrap();
+    (created, without, load_board(&fake, None).await.unwrap())
+}
+
+/// A new issue the board's query leaves out is not highlighted later, by
+/// a sync long after.
+#[tokio::test]
+async fn a_new_issue_not_on_the_next_sync_is_forgotten() {
+    let mut app = loaded().await;
+    let (created, without, with) = created().await;
+    app.on_event(Event::Created(Box::new(created)));
+    let due = app.deadline().unwrap();
+    wait_until(&mut app, due);
+    assert!(app.take_effects().contains(&Effect::Send(Command::SyncBoard(None, 2))));
+    app.on_event(Event::BoardLoaded { snapshot: without, fresh: true, request: 2 });
+    let before = selected(&app).to_string();
+    press(&mut app, ":refresh<CR>");
+    app.on_event(Event::BoardLoaded { snapshot: with, fresh: true, request: 3 });
+    assert_eq!(selected(&app), before);
+}
+
+/// A board asked for before the issue was created says nothing of it: the
+/// first asked for after does.
+#[tokio::test]
+async fn a_new_issue_is_highlighted_by_the_first_board_asked_after_it() {
+    let mut app = loaded().await;
+    let (created, without, with) = created().await;
+    press(&mut app, ":refresh<CR>"); // request 2, on its way
+    app.on_event(Event::Created(Box::new(created)));
+    app.on_event(Event::BoardLoaded { snapshot: without, fresh: true, request: 2 });
+    let due = app.deadline().unwrap();
+    wait_until(&mut app, due);
+    assert!(app.take_effects().contains(&Effect::Send(Command::SyncBoard(None, 3))));
+    app.on_event(Event::BoardLoaded { snapshot: with, fresh: true, request: 3 });
+    assert_eq!(selected(&app), "ACME-45");
+}
+
 /// A board asked for before a write was taken may not hold it: the write
 /// shows over it until one asked for after lands, which says where the
 /// provider put the card. A read back after a rank does not say.
@@ -2325,10 +2386,17 @@ async fn c_creates_through_the_editor_and_capital_c_clones() {
     assert_eq!(new.description.plain_text(), "For 0.1");
 
     use kolum_domain::IssueWriter;
-    let created = FakeProvider::new().create(new).await.unwrap();
+    let fake = FakeProvider::new();
+    let created = fake.create(new).await.unwrap();
     app.on_event(Event::Created(Box::new(created)));
-    assert_eq!(selected(&app), "ACME-45", "the new card is highlighted");
     assert!(screen(&mut app, 150, 40).contains("Created ACME-45"));
+    assert_ne!(selected(&app), "ACME-45", "on the board once the sync says it is");
+    let due = app.deadline().unwrap();
+    wait_until(&mut app, due);
+    assert!(app.take_effects().contains(&Effect::Send(Command::SyncBoard(None, 2))), "soon");
+    let snapshot = load_board(&fake, None).await.unwrap();
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true, request: 2 });
+    assert_eq!(selected(&app), "ACME-45", "the new card is highlighted");
 
     press(&mut app, "C");
     assert_eq!(app.take_effects(), [Effect::Send(Command::Clone(IssueKey::parse("ACME-45")))]);
