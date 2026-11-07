@@ -12,7 +12,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
 
 /// The tallest card: two lines of title, the epic, the labels, the key
 /// line, and a blank one. A card with no labels has no labels line.
@@ -21,17 +21,22 @@ const MIN_COLUMN_WIDTH: u16 = 28;
 
 #[derive(Debug, Default)]
 pub struct BoardView {
-    pub snapshot: Option<BoardSnapshot>,
+    snapshot: Option<BoardSnapshot>,
     /// Index into the board's columns (not the visible ones).
     pub column: usize,
     /// The highlighted card of each column.
     cursor: Vec<usize>,
     /// The live `/` filter: cards whose key, title or labels contain it.
-    pub filter: String,
+    filter: String,
     pub hide_empty: bool,
-    pub swimlanes: Swimlanes,
+    swimlanes: Swimlanes,
     /// Who `@me` in the filter is.
-    pub me: Option<UserId>,
+    me: Option<UserId>,
+    /// Every column's cards after the filter, as places in the snapshot's
+    /// issues: made once from the snapshot, the filter, the swimlanes and
+    /// `me`, and emptied by each of their setters, the only way to change
+    /// them.
+    shown: OnceCell<Vec<Vec<usize>>>,
     /// Cards per column on screen at the last draw, for half-page moves.
     page: Cell<usize>,
     /// The first visible column on screen at the last draw: the columns
@@ -95,6 +100,7 @@ impl BoardView {
         }
         self.cursor.resize(snapshot.board.columns.len(), 0);
         self.snapshot = Some(snapshot);
+        self.shown.take();
         self.highlight(&held);
         match keep {
             Some(key) => self.select(&key),
@@ -105,17 +111,14 @@ impl BoardView {
 
     /// The card highlighted in each column.
     fn highlighted(&self) -> Vec<Option<IssueKey>> {
-        let cards = self.cards();
-        cards
-            .iter()
-            .zip(&self.cursor)
+        (self.columns().zip(&self.cursor))
             .map(|(col, &at)| col.get(at).map(|i| i.key.clone()))
             .collect()
     }
 
     /// Each column's highlight on its card, where the card still is.
     fn highlight(&mut self, held: &[Option<IssueKey>]) {
-        let found: Vec<Option<usize>> = (self.cards().iter().zip(held))
+        let found: Vec<Option<usize>> = (self.columns().zip(held))
             .map(|(col, key)| key.as_ref().and_then(|k| col.iter().position(|i| &i.key == k)))
             .collect();
         for (cursor, at) in self.cursor.iter_mut().zip(found) {
@@ -128,47 +131,83 @@ impl BoardView {
         self.snapshot.as_ref().is_some_and(|s| s.issues.iter().any(|i| &i.key == key))
     }
 
-    /// The cards of every column, after the filter.
-    pub fn cards(&self) -> Vec<Vec<&Issue>> {
-        let Some(snapshot) = &self.snapshot else { return vec![] };
-        let mode = self.swimlanes;
+    pub fn snapshot(&self) -> Option<&BoardSnapshot> {
+        self.snapshot.as_ref()
+    }
+
+    pub fn filter(&self) -> &str {
+        &self.filter
+    }
+
+    pub fn set_filter(&mut self, filter: String) {
+        self.filter = filter;
+        self.shown.take();
+    }
+
+    pub fn swimlanes(&self) -> Swimlanes {
+        self.swimlanes
+    }
+
+    pub fn set_swimlanes(&mut self, swimlanes: Swimlanes) {
+        self.swimlanes = swimlanes;
+        self.shown.take();
+    }
+
+    pub fn set_me(&mut self, me: UserId) {
+        self.me = Some(me);
+        self.shown.take();
+    }
+
+    /// Every column's cards after the filter, as places in the snapshot's
+    /// issues.
+    fn shown(&self) -> &[Vec<usize>] {
+        match &self.snapshot {
+            Some(snapshot) => self.shown.get_or_init(|| self.make_shown(snapshot)),
+            None => &[],
+        }
+    }
+
+    fn make_shown(&self, snapshot: &BoardSnapshot) -> Vec<Vec<usize>> {
         let filter = BoardFilter::parse(&self.filter);
         let me = self.me.clone().unwrap_or_else(|| UserId::new(""));
-        snapshot
-            .columns()
-            .into_iter()
-            .map(|col| {
-                let mut col: Vec<&Issue> =
-                    col.into_iter().filter(|i| filter.matches(i, &me)).collect();
-                // Stable: within a lane, the provider's order stands.
-                col.sort_by_cached_key(|i| lane(mode, i).map(|(key, _)| key));
-                col
-            })
-            .collect()
+        let lane_key = |&n: &usize| lane(self.swimlanes, &snapshot.issues[n]).map(|(key, _)| key);
+        let mut columns = snapshot.columns();
+        for col in &mut columns {
+            col.retain(|&n| filter.matches(&snapshot.issues[n], &me));
+            // Stable: within a lane, the provider's order stands.
+            col.sort_by_cached_key(lane_key);
+        }
+        columns
+    }
+
+    /// Column `c`'s cards after the filter; none past the last column.
+    fn column_cards(&self, c: usize) -> Cards<'_> {
+        let issues = self.snapshot.as_ref().map_or(&[][..], |s| &s.issues);
+        Cards { issues, places: self.shown().get(c).map_or(&[], Vec::as_slice) }
+    }
+
+    /// Every column's cards after the filter, left to right.
+    fn columns(&self) -> impl Iterator<Item = Cards<'_>> {
+        (0..self.shown().len()).map(|c| self.column_cards(c))
     }
 
     /// The columns on screen. Hiding empty ones never hides them all.
     pub fn visible(&self) -> Vec<usize> {
-        let cards = self.cards();
-        let all: Vec<usize> = (0..cards.len()).collect();
+        let shown = self.shown();
+        let all: Vec<usize> = (0..shown.len()).collect();
         if !self.hide_empty {
             return all;
         }
-        let some: Vec<usize> = all.iter().copied().filter(|&c| !cards[c].is_empty()).collect();
+        let some: Vec<usize> = all.iter().copied().filter(|&c| !shown[c].is_empty()).collect();
         if some.is_empty() { all } else { some }
     }
 
     pub fn selected(&self) -> Option<&Issue> {
-        let cards = self.cards();
-        let col = cards.get(self.column)?;
-        col.get(*self.cursor.get(self.column)?).copied()
+        self.column_cards(self.column).get(*self.cursor.get(self.column)?)
     }
 
     pub fn select(&mut self, key: &IssueKey) {
-        let found = self
-            .cards()
-            .iter()
-            .enumerate()
+        let found = (self.columns().enumerate())
             .find_map(|(c, col)| col.iter().position(|i| &i.key == key).map(|row| (c, row)));
         if let Some((c, row)) = found {
             self.column = c;
@@ -182,7 +221,7 @@ impl BoardView {
     /// still has a card, as vim's `/` jumps to a match.
     pub fn clamp(&mut self) {
         let visible = self.visible();
-        let lens: Vec<usize> = self.cards().iter().map(Vec::len).collect();
+        let lens: Vec<usize> = self.shown().iter().map(Vec::len).collect();
         let with_cards: Vec<usize> = visible.iter().copied().filter(|&c| lens[c] > 0).collect();
         let candidates = if with_cards.is_empty() { &visible } else { &with_cards };
         if !candidates.contains(&self.column) {
@@ -216,7 +255,7 @@ impl BoardView {
     }
 
     pub fn move_card(&mut self, delta: i64) {
-        let len = self.cards().get(self.column).map_or(0, Vec::len) as i64;
+        let len = self.column_cards(self.column).len() as i64;
         if let Some(cur) = self.cursor.get_mut(self.column)
             && len > 0
         {
@@ -226,7 +265,7 @@ impl BoardView {
 
     /// `index` from the top; `None` is the last card.
     pub fn card_at(&mut self, index: Option<usize>) {
-        let len = self.cards().get(self.column).map_or(0, Vec::len);
+        let len = self.column_cards(self.column).len();
         if let Some(cur) = self.cursor.get_mut(self.column) {
             *cur = index.unwrap_or(usize::MAX).min(len.saturating_sub(1));
         }
@@ -241,12 +280,10 @@ impl BoardView {
 
     /// What an action acts on: the visual range, or the highlighted card.
     pub fn targets(&self) -> Vec<IssueKey> {
-        let cards = self.cards();
-        match (self.range(), cards.get(self.column)) {
-            (Some((a, b)), Some(col)) => {
-                col.iter().skip(a).take(b + 1 - a).map(|i| i.key.clone()).collect()
-            }
-            _ => self.selected().map(|i| i.key.clone()).into_iter().collect(),
+        let col = self.column_cards(self.column);
+        match self.range() {
+            Some((a, b)) => col.iter().skip(a).take(b + 1 - a).map(|i| i.key.clone()).collect(),
+            None => self.selected().map(|i| i.key.clone()).into_iter().collect(),
         }
     }
 
@@ -269,8 +306,7 @@ impl BoardView {
     /// column, as far as that goes without leaving its swimlane. `Err`
     /// says why there is none: the edge of the column, or of the lane.
     pub fn neighbour(&self, delta: i64) -> Result<IssueKey, &'static str> {
-        let cards = self.cards();
-        let column = cards.get(self.column).ok_or("No card here")?;
+        let column = self.column_cards(self.column);
         let from = self.cursor_row();
         let here = column.get(from).ok_or("No card here")?;
         let lane_of = |i: &Issue| lane(self.swimlanes, i).map(|(key, _)| key);
@@ -305,7 +341,7 @@ impl BoardView {
     }
 
     /// A column's cards as drawn: a heading where a new lane starts.
-    fn items(&self, cards: &[&Issue], ctx: &DrawCtx, cols: usize) -> Vec<Item> {
+    fn items(&self, cards: Cards, ctx: &DrawCtx, cols: usize) -> Vec<Item> {
         let mut items = vec![];
         let mut current: Option<String> = None;
         for (row, issue) in cards.iter().enumerate() {
@@ -328,11 +364,11 @@ impl BoardView {
     /// `n` and `N`: the next or previous card in reading order (down each
     /// column, then on to the next), wrapping around.
     pub fn step_match(&mut self, delta: i64) {
-        let cards = self.cards();
+        let shown = self.shown();
         let order: Vec<(usize, usize)> = self
             .visible()
             .into_iter()
-            .flat_map(|c| (0..cards[c].len()).map(move |r| (c, r)))
+            .flat_map(|c| (0..shown[c].len()).map(move |r| (c, r)))
             .collect();
         if order.is_empty() {
             return;
@@ -354,7 +390,6 @@ impl BoardView {
             );
             return;
         };
-        let cards = self.cards();
         let visible = self.visible();
         let fit = (area.width / MIN_COLUMN_WIDTH).max(1) as usize;
         let shown = visible.len().min(fit);
@@ -370,7 +405,8 @@ impl BoardView {
             let w = if slot + 1 == shown { area.right() - x } else { width };
             let rect = Rect { x, y: area.y, width: w, height: area.height };
             let column = &snapshot.board.columns[c];
-            self.draw_column(frame, rect, &column.name, column.wip_limit, &cards[c], c, ctx);
+            let cards = self.column_cards(c);
+            self.draw_column(frame, rect, &column.name, column.wip_limit, cards, c, ctx);
         }
     }
 
@@ -381,7 +417,7 @@ impl BoardView {
         area: Rect,
         name: &str,
         wip: Option<u32>,
-        cards: &[&Issue],
+        cards: Cards,
         c: usize,
         ctx: &DrawCtx,
     ) {
@@ -435,7 +471,7 @@ impl BoardView {
                 }
                 &Item::Card(row, _) => {
                     let marked = range.is_some_and(|(a, b)| (a..=b).contains(&row));
-                    card(frame, rect, cards[row], focused && row == cursor, marked, ctx);
+                    card(frame, rect, &cards[row], focused && row == cursor, marked, ctx);
                     last_card = Some(row);
                 }
             }
@@ -456,6 +492,36 @@ impl BoardView {
 }
 
 /// One row of a column: a card, or the heading of the swimlane after it.
+/// One column's cards after the filter, top to bottom: places in the
+/// snapshot's issues, read where they are rather than copied out.
+#[derive(Clone, Copy)]
+struct Cards<'a> {
+    issues: &'a [Issue],
+    places: &'a [usize],
+}
+
+impl<'a> Cards<'a> {
+    fn len(self) -> usize {
+        self.places.len()
+    }
+
+    fn get(self, row: usize) -> Option<&'a Issue> {
+        self.places.get(row).map(|&n| &self.issues[n])
+    }
+
+    fn iter(self) -> impl Iterator<Item = &'a Issue> {
+        self.places.iter().map(move |&n| &self.issues[n])
+    }
+}
+
+impl std::ops::Index<usize> for Cards<'_> {
+    type Output = Issue;
+
+    fn index(&self, row: usize) -> &Issue {
+        &self.issues[self.places[row]]
+    }
+}
+
 enum Item {
     Lane(String),
     /// Its row, and its height.
@@ -655,6 +721,11 @@ mod tests {
         view
     }
 
+    /// Every column's cards after the filter.
+    fn cards(view: &BoardView) -> Vec<Vec<&Issue>> {
+        view.columns().map(|col| col.iter().collect()).collect()
+    }
+
     /// The lanes of each column, top to bottom.
     fn lanes(view: &BoardView) -> Vec<Vec<String>> {
         let lanes_of = |col: &Vec<&Issue>| {
@@ -663,7 +734,48 @@ mod tests {
             labels.dedup();
             labels
         };
-        view.cards().iter().map(lanes_of).collect()
+        cards(view).iter().map(lanes_of).collect()
+    }
+
+    /// The keys of each column, as shown.
+    fn shown(view: &BoardView) -> Vec<Vec<String>> {
+        cards(view).iter().map(|c| c.iter().map(|i| i.key.to_string()).collect()).collect()
+    }
+
+    /// The cards were read, then each of what they are made of changes:
+    /// the change shows at once.
+    #[tokio::test]
+    async fn a_change_after_a_read_shows_at_once() {
+        let mut view = board().await;
+        let snapshot = view.snapshot().unwrap().clone();
+        let all = shown(&view);
+        let first = snapshot.issues[0].key.to_string();
+        view.set_filter(first.clone());
+        assert_eq!(shown(&view).concat(), std::slice::from_ref(&first), "filter");
+
+        view.set_filter("@me".into());
+        assert_eq!(shown(&view).concat(), Vec::<String>::new(), "@me is no one yet");
+        let owner = snapshot.issues.iter().find_map(|i| i.assignee.clone()).unwrap().id;
+        view.set_me(owner.clone());
+        let mut mine = shown(&view).concat();
+        mine.sort();
+        let mut theirs: Vec<String> = (snapshot.issues.iter())
+            .filter(|i| i.is_assigned_to(&owner))
+            .map(|i| i.key.to_string())
+            .collect();
+        theirs.sort();
+        assert_eq!(mine, theirs, "me");
+
+        view.set_filter(String::new());
+        assert_eq!(shown(&view), all, "no filter");
+        view.set_swimlanes(Swimlanes::Priority);
+        assert_ne!(shown(&view), all, "swimlanes");
+
+        view.set_swimlanes(Swimlanes::None);
+        let mut fewer = snapshot.clone();
+        fewer.issues.remove(0);
+        view.set_snapshot(fewer);
+        assert!(!shown(&view).concat().contains(&first), "snapshot");
     }
 
     /// Lanes by priority go by its rank, the most urgent first, whatever
@@ -671,13 +783,13 @@ mod tests {
     #[tokio::test]
     async fn priority_lanes_go_by_rank_not_by_name() {
         let mut view = board().await;
-        let mut snapshot = view.snapshot.take().unwrap();
+        let mut snapshot = view.snapshot().unwrap().clone();
         let named = |rank, name: &str| Some(Priority { rank, name: name.into() });
         for (n, issue) in snapshot.issues.iter_mut().enumerate() {
             issue.priority = [named(1, "Alpha"), named(0, "Zulu"), None][n % 3].clone();
         }
         view.set_snapshot(snapshot);
-        view.swimlanes = Swimlanes::Priority;
+        view.set_swimlanes(Swimlanes::Priority);
         let order = ["Zulu", "Alpha", "No priority"];
         for column in lanes(&view) {
             let at: Vec<usize> =

@@ -366,8 +366,8 @@ impl App {
         };
         let mut board = BoardView::default();
         board.hide_empty = settings.ui.hide_empty_columns;
-        board.swimlanes = settings.ui.swimlanes;
-        board.filter = settings.ui.filter.clone();
+        board.set_swimlanes(settings.ui.swimlanes);
+        board.set_filter(settings.ui.filter.clone());
         App {
             keymap: settings.keymap,
             resolver: Resolver::default(),
@@ -608,7 +608,7 @@ impl App {
     }
 
     fn set_me(&mut self, user: User) {
-        self.board.me = Some(user.id.clone());
+        self.board.set_me(user.id.clone());
         self.me = Some(user);
         self.board.clamp();
     }
@@ -826,7 +826,7 @@ impl App {
 
     /// The whole board again, not only what changed.
     fn refresh(&mut self) {
-        let id = self.board.snapshot.as_ref().map(|s| s.board.id.clone());
+        let id = self.board.snapshot().map(|s| s.board.id.clone());
         self.ask_board(|n| Command::ReloadBoard(id, n));
         self.say(REFRESHING, Level::Info);
     }
@@ -904,7 +904,7 @@ impl App {
     fn board_command(&mut self, action: Action, n: i64) {
         match action {
             Action::ClearFilter => self.clear_board_filter(),
-            Action::Filter => self.prompt = Some(Prompt::filter(&self.board.filter)),
+            Action::Filter => self.prompt = Some(Prompt::filter(self.board.filter())),
             Action::ToggleSwimlanes => self.toggle_swimlanes(),
             Action::ToggleEmptyColumns => self.toggle_empty_columns(),
             Action::OpenDetail => self.open_selected(),
@@ -940,7 +940,7 @@ impl App {
     }
 
     fn clear_board_filter(&mut self) {
-        self.board.filter.clear();
+        self.board.set_filter(String::new());
         self.board.clamp();
         self.save_filter();
     }
@@ -967,7 +967,7 @@ impl App {
         // Those already shown say so rather than being marked: with marks,
         // Enter would act on them and not on the person highlighted.
         let shown: Vec<&str> =
-            self.board.filter.split_whitespace().filter(|w| w.starts_with('@')).collect();
+            self.board.filter().split_whitespace().filter(|w| w.starts_with('@')).collect();
         for (token, label) in &mut people {
             if shown.contains(&token.as_str()) {
                 label.push_str("  · shown");
@@ -982,11 +982,12 @@ impl App {
     fn show_people(&mut self, tokens: &[String]) {
         let everyone = tokens.iter().any(String::is_empty);
         let mut words: Vec<&str> =
-            self.board.filter.split_whitespace().filter(|w| !w.starts_with('@')).collect();
+            self.board.filter().split_whitespace().filter(|w| !w.starts_with('@')).collect();
         if !everyone {
             words.extend(tokens.iter().map(String::as_str));
         }
-        self.board.filter = words.join(" ");
+        let filter = words.join(" ");
+        self.board.set_filter(filter);
         self.board.clamp();
         self.save_filter();
         let msg = if everyone || tokens.is_empty() {
@@ -1000,11 +1001,11 @@ impl App {
     fn toggle_swimlanes(&mut self) {
         let b = &mut self.board;
         let key = b.selected().map(|i| i.key.clone());
-        b.swimlanes = b.swimlanes.next();
+        b.set_swimlanes(b.swimlanes().next());
         if let Some(key) = key {
             b.select(&key);
         }
-        let name = b.swimlanes.name();
+        let name = b.swimlanes().name();
         self.say(name[..1].to_uppercase() + &name[1..], Level::Info);
         self.save_state();
     }
@@ -1028,8 +1029,8 @@ impl App {
     fn save_state(&mut self) {
         let state = crate::config::UiState {
             hide_empty_columns: self.board.hide_empty,
-            swimlanes: self.board.swimlanes,
-            applied_filter: self.filter_applied.then(|| self.board.filter.clone()),
+            swimlanes: self.board.swimlanes(),
+            applied_filter: self.filter_applied.then(|| self.board.filter().to_string()),
         };
         self.effects.push(Effect::SaveState(state));
     }
@@ -1074,7 +1075,7 @@ impl App {
             self.help_filter = text;
             self.help = Some(0);
         } else {
-            self.board.filter = text;
+            self.board.set_filter(text);
             self.board.clamp();
         }
     }
@@ -1163,12 +1164,11 @@ impl App {
 
     /// The issues of the board on screen; none before it arrives.
     fn board_issues(&self) -> &[kolum_domain::Issue] {
-        self.board.snapshot.as_ref().map(|s| s.issues.as_slice()).unwrap_or_default()
+        self.board.snapshot().map(|s| s.issues.as_slice()).unwrap_or_default()
     }
 
     fn issue(&self, key: &IssueKey) -> Option<&kolum_domain::Issue> {
-        let on_board =
-            self.board.snapshot.as_ref().and_then(|s| s.issues.iter().find(|i| &i.key == key));
+        let on_board = self.board.snapshot().and_then(|s| s.issues.iter().find(|i| &i.key == key));
         on_board.or(self.detail.as_ref().map(|d| d.issue()).filter(|i| &i.key == key))
     }
 
@@ -1222,7 +1222,7 @@ impl App {
             Ok(t) => t,
             Err(e) => return self.say(format!("{key}: {e}"), Level::Error),
         };
-        let board = self.board.snapshot.as_ref().map(|s| &s.board);
+        let board = self.board.snapshot().map(|s| &s.board);
         let here = self.issue(&key).map(|i| i.status.id.clone());
         match kolum_app::offer(transitions, here.as_ref(), board, column) {
             kolum_app::Offer::Nothing(closed) => {
@@ -1379,8 +1379,7 @@ impl App {
         let selected = self.board.selected();
         let project = self
             .board
-            .snapshot
-            .as_ref()
+            .snapshot()
             .and_then(|s| s.board.project.as_ref().map(|p| p.key.clone()))
             .or_else(|| selected.and_then(|i| i.key.project()).map(String::from));
         let Some(project) = project else {
@@ -1492,7 +1491,7 @@ impl App {
 
     /// The board's sprints, for the sprint picker of `field`.
     fn ask_sprints(&mut self, key: IssueKey, field: kolum_domain::EditableField) {
-        let Some(board) = self.board.snapshot.as_ref().map(|s| s.board.id.clone()) else {
+        let Some(board) = self.board.snapshot().map(|s| s.board.id.clone()) else {
             return;
         };
         self.effects.push(Effect::Send(Command::Sprints(board)));
@@ -1526,7 +1525,7 @@ impl App {
     fn as_board_issue(&self, value: kolum_domain::FieldValue) -> kolum_domain::FieldValue {
         let kolum_domain::FieldValue::Text(key) = &value else { return value };
         let key = IssueKey::parse(key.as_str());
-        let issues = self.board.snapshot.iter().flat_map(|s| &s.issues);
+        let issues = self.board.snapshot().into_iter().flat_map(|s| &s.issues);
         match issues.into_iter().find(|i| i.key == key) {
             Some(issue) => kolum_domain::FieldValue::Issue(issue.as_ref()),
             None => value,
@@ -1951,7 +1950,7 @@ impl App {
         self.search_id += 1;
         p.set_loading(true);
         let mut query = kolum_app::parse_query(p.query());
-        if let Some(snapshot) = &self.board.snapshot {
+        if let Some(snapshot) = self.board.snapshot() {
             query = snapshot.qualify(query);
         }
         self.effects.push(Effect::Send(Command::Search { id: self.search_id, query }));
@@ -2216,7 +2215,7 @@ impl App {
     fn board_header(&self, theme: &Theme) -> (Line<'static>, std::ops::Range<usize>) {
         let mut spans = vec![];
         let mut lit = 0..0;
-        if let Some(s) = &self.board.snapshot {
+        if let Some(s) = self.board.snapshot() {
             spans.push(Span::styled(
                 format!(" {} ", s.board.name),
                 Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
@@ -2228,7 +2227,7 @@ impl App {
             spans.push(Span::styled("│", Style::new().fg(theme.border)));
             let lanes =
                 [Swimlanes::None, Swimlanes::Epic, Swimlanes::Assignee, Swimlanes::Priority];
-            let active = lanes.iter().position(|&l| l == self.board.swimlanes).unwrap_or(0);
+            let active = lanes.iter().position(|&l| l == self.board.swimlanes()).unwrap_or(0);
             let at = Line::from(spans.clone()).width();
             let (tabs, tab) =
                 glyph::tabs(&["No lanes", "Epic", "Assignee", "Priority"], active, theme);
@@ -2239,9 +2238,9 @@ impl App {
                 spans.push(Span::styled("  cached, syncing…", Style::new().fg(theme.warn)));
             }
         }
-        if !self.board.filter.is_empty() {
+        if !self.board.filter().is_empty() {
             spans.push(Span::styled(
-                format!("   /{}", self.board.filter),
+                format!("   /{}", self.board.filter()),
                 Style::new().fg(theme.match_highlight),
             ));
         }

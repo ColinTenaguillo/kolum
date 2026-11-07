@@ -50,13 +50,14 @@ impl BoardSnapshot {
         Query::Filter(filter)
     }
 
-    /// The cards of each column, left to right. A card whose status is in
-    /// no column is not on the board, as in the web app.
-    pub fn columns(&self) -> Vec<Vec<&Issue>> {
+    /// The cards of each column, left to right, as places in `issues`. A
+    /// card whose status is in no column is not on the board, as in the
+    /// web app.
+    pub fn columns(&self) -> Vec<Vec<usize>> {
         let mut columns = vec![Vec::new(); self.board.columns.len()];
-        for issue in &self.issues {
+        for (n, issue) in self.issues.iter().enumerate() {
             if let Some(c) = self.board.column_of(&issue.status.id) {
-                columns[c].push(issue);
+                columns[c].push(n);
             }
         }
         columns
@@ -137,7 +138,7 @@ mod tests {
         assert!(snapshot.issues.len() > 20, "more than one page of cards");
         // "In Progress" holds both In Progress and Blocked.
         let names: std::collections::BTreeSet<_> =
-            columns[2].iter().map(|i| i.status.name.as_str()).collect();
+            columns[2].iter().map(|&n| snapshot.issues[n].status.name.as_str()).collect();
         assert_eq!(names.into_iter().collect::<Vec<_>>(), ["Blocked", "In Progress"]);
     }
 
