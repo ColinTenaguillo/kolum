@@ -1,5 +1,5 @@
 use crate::board::{BoardSnapshot, load_board, sync_board};
-use crate::cache::Cache;
+use crate::store::{IssueArchive, Storage, Store};
 use crate::write::Write;
 use kolum_domain::{
     ActivityEntry, BULK_READ_MAX, BoardId, BoardSummary, Capabilities, Capability, Comment,
@@ -178,8 +178,10 @@ impl Service {
     /// signed-in user straight away: the board marks that user's cards.
     pub fn spawn(
         provider: Arc<dyn Provider>,
-        cache: Option<Cache>,
+        store: Option<Arc<dyn Storage>>,
     ) -> (Self, mpsc::UnboundedReceiver<Event>) {
+        let cache: Option<Arc<dyn Store>> = store.clone().map(|s| s as Arc<dyn Store>);
+        let archive: Option<Arc<dyn IssueArchive>> = store.map(|s| s as Arc<dyn IssueArchive>);
         let (commands, mut rx) = mpsc::unbounded_channel();
         let (events, events_rx) = mpsc::unbounded_channel();
         let service = Service {
@@ -187,15 +189,15 @@ impl Service {
             capabilities: provider.capabilities(),
             provider: provider.name().to_string(),
         };
-        let kept = cache.as_ref().map(Cache::layouts).unwrap_or_default();
+        let kept = cache.as_ref().map(|c| c.layouts()).unwrap_or_default();
         if !kept.is_empty() {
             let _ = events.send(Event::FieldLayouts(kept));
         }
         let prefetch = Arc::new(Prefetch::default());
         // Every issue kept, read off the way of the board's first showing.
-        let (kept, sent, state) = (cache.clone(), events.clone(), prefetch.clone());
+        let (kept, sent, state) = (archive.clone(), events.clone(), prefetch.clone());
         tokio::task::spawn_blocking(move || {
-            let read = kept.as_ref().map(Cache::issues).unwrap_or_default();
+            let read = kept.as_ref().map(|a| a.issues()).unwrap_or_default();
             read.iter().for_each(|d| state.keep(&d.issue));
             if !read.is_empty() {
                 let _ = sent.send(Event::ReadIssues(read));
@@ -217,6 +219,7 @@ impl Service {
                 let job = run(
                     provider.clone(),
                     cache.clone(),
+                    archive.clone(),
                     command.clone(),
                     events.clone(),
                     prefetch.clone(),
@@ -293,14 +296,10 @@ async fn within<T>(
     tokio::time::timeout(limit, request).await.map_err(late)?
 }
 
-/// The cache key of a board: its id, or `first` for "the provider's first".
-fn cache_key(id: &Option<BoardId>) -> String {
-    id.as_ref().map_or("first".into(), |id| id.to_string())
-}
-
 async fn run(
     provider: Arc<dyn Provider>,
-    cache: Option<Cache>,
+    cache: Option<Arc<dyn Store>>,
+    archive: Option<Arc<dyn IssueArchive>>,
     command: Command,
     events: mpsc::UnboundedSender<Event>,
     prefetched: Arc<Prefetch>,
@@ -309,17 +308,17 @@ async fn run(
         Command::LoadBoard(id, request) => {
             // The cache first, then the whole board: a board filtered by date
             // loses issues nobody touched, which no incremental sync reports.
-            if let Some((snapshot, _)) = cache.as_ref().and_then(|c| c.load(&cache_key(&id))) {
+            if let Some((snapshot, _)) = cache.as_ref().and_then(|c| c.board(id.as_ref())) {
                 let _ = events.send(Event::BoardLoaded { snapshot, fresh: false, request });
             }
-            fetch_board(provider.as_ref(), cache.as_ref(), (id, request), None).await
+            fetch_board(provider.as_ref(), cache.as_deref(), (id, request), None).await
         }
         Command::ReloadBoard(id, request) => {
-            fetch_board(provider.as_ref(), cache.as_ref(), (id, request), None).await
+            fetch_board(provider.as_ref(), cache.as_deref(), (id, request), None).await
         }
         Command::SyncBoard(id, request) => {
-            let cached = cache.as_ref().and_then(|c| c.load(&cache_key(&id)));
-            fetch_board(provider.as_ref(), cache.as_ref(), (id, request), cached).await
+            let cached = cache.as_ref().and_then(|c| c.board(id.as_ref()));
+            fetch_board(provider.as_ref(), cache.as_deref(), (id, request), cached).await
         }
         Command::Sprints(board) => Event::Sprints(provider.sprints(&board).await),
         Command::LoadBoards => match provider.boards().await {
@@ -359,8 +358,8 @@ async fn run(
                     tracing::warn!("keeping the field layout of {key}: {e}");
                 }
                 prefetched.keep(&detail.issue);
-                if let Some(cache) = &cache
-                    && let Err(e) = cache.save_issue(&detail)
+                if let Some(archive) = &archive
+                    && let Err(e) = archive.save_issue(&detail)
                 {
                     tracing::warn!("keeping {key}: {e}");
                 }
@@ -376,7 +375,7 @@ async fn run(
         tracing::warn!("{what}: {error}");
     }
     if let Event::BoardLoaded { snapshot, fresh: true, .. } = &event {
-        start_prefetch(&provider, &cache, snapshot, &events, prefetched);
+        start_prefetch(&provider, &archive, snapshot, &events, prefetched);
     }
     let _ = events.send(event);
 }
@@ -385,7 +384,7 @@ async fn run(
 /// background, if the provider can.
 fn start_prefetch(
     provider: &Arc<dyn Provider>,
-    cache: &Option<Cache>,
+    cache: &Option<Arc<dyn IssueArchive>>,
     snapshot: &BoardSnapshot,
     events: &mpsc::UnboundedSender<Event>,
     state: Arc<Prefetch>,
@@ -400,7 +399,7 @@ fn start_prefetch(
 /// at a time, each kept and sent on as it comes.
 async fn prefetch(
     provider: Arc<dyn Provider>,
-    cache: Option<Cache>,
+    cache: Option<Arc<dyn IssueArchive>>,
     wanted: Vec<(IssueKey, OffsetDateTime)>,
     events: mpsc::UnboundedSender<Event>,
     state: Arc<Prefetch>,
@@ -447,22 +446,21 @@ async fn prefetch(
 /// caught by the next one.
 async fn fetch_board(
     provider: &dyn Provider,
-    cache: Option<&Cache>,
+    cache: Option<&dyn Store>,
     (id, request): (Option<BoardId>, u64),
     cached: Option<(BoardSnapshot, time::OffsetDateTime)>,
 ) -> Event {
-    let key = cache_key(&id);
     let started = time::OffsetDateTime::now_utc();
     let result = match cached {
         Some((snapshot, since)) => sync_board(provider, snapshot, since).await,
-        None => load_board(provider, id).await,
+        None => load_board(provider, id.clone()).await,
     };
     match result {
         Ok(snapshot) => {
             if let Some(cache) = cache
-                && let Err(e) = cache.save(&key, &snapshot, started)
+                && let Err(e) = cache.save_board(id.as_ref(), &snapshot, started)
             {
-                tracing::warn!("saving the cache in {}: {e}", cache.dir().display());
+                tracing::warn!("keeping the board: {e}");
             }
             Event::BoardLoaded { snapshot, fresh: true, request }
         }
@@ -525,6 +523,7 @@ fn nicety<T>(result: kolum_domain::Result<T>, what: &str, key: &IssueKey) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::tests::Memory;
     use kolum_provider_fake::FakeProvider;
 
     #[tokio::test]
@@ -652,9 +651,9 @@ mod tests {
     #[tokio::test]
     async fn a_sync_brings_only_what_changed_without_the_cache_first() {
         use kolum_domain::{IssueUpdate, IssueWriter};
-        let dir = crate::cache::tests::temp_dir("service-sync");
+        let store = Arc::new(Memory::default());
         let fake = Arc::new(FakeProvider::new());
-        let (service, mut events) = Service::spawn(fake.clone(), Some(Cache::new(&dir)));
+        let (service, mut events) = Service::spawn(fake.clone(), Some(store.clone()));
         service.send(Command::LoadBoard(None, 1));
         next_board(&mut events).await;
         let key = IssueKey::parse("ACME-12");
@@ -665,25 +664,24 @@ mod tests {
         assert!(fresh, "straight to the synced board, no cached one before it");
         let title = synced.issues.iter().find(|i| i.key == key).map(|i| i.title.as_str());
         assert_eq!(title, Some("By an automation"));
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
     async fn a_warm_start_shows_the_cache_then_the_sync() {
         use kolum_domain::{IssueUpdate, IssueWriter};
-        let dir = crate::cache::tests::temp_dir("service-warm");
+        let store = Arc::new(Memory::default());
         let fake = Arc::new(FakeProvider::new());
-        let (service, mut events) = Service::spawn(fake.clone(), Some(Cache::new(&dir)));
+        let (service, mut events) = Service::spawn(fake.clone(), Some(store.clone()));
         service.send(Command::LoadBoard(None, 1));
         let (cold, fresh) = next_board(&mut events).await;
         assert!(fresh, "nothing cached: straight from the provider");
-        assert!(dir.join("first.json").exists());
+        assert!(store.board(None).is_some());
 
         let key = IssueKey::parse("ACME-12");
         fake.update(&key, IssueUpdate { title: Some("Renamed".into()), ..Default::default() })
             .await
             .unwrap();
-        let (service, mut events) = Service::spawn(fake.clone(), Some(Cache::new(&dir)));
+        let (service, mut events) = Service::spawn(fake.clone(), Some(store.clone()));
         service.send(Command::LoadBoard(None, 1));
         let (warm, fresh) = next_board(&mut events).await;
         assert!(!fresh);
@@ -696,7 +694,6 @@ mod tests {
         let (reloaded, fresh) = next_board(&mut events).await;
         assert!(fresh, "a reload skips the cache");
         assert_eq!(reloaded, synced);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// A board filtered by date (completed issues older than a week
@@ -704,21 +701,20 @@ mod tests {
     /// reports: a warm start reads the whole board again.
     #[tokio::test]
     async fn a_warm_start_drops_what_left_the_board_since() {
-        let dir = crate::cache::tests::temp_dir("service-left");
+        let store = Arc::new(Memory::default());
         let fake = Arc::new(FakeProvider::new());
         let mut cached = load_board(fake.as_ref(), None).await.unwrap();
         let mut gone = cached.issues[0].clone();
         gone.key = IssueKey::parse("ACME-999");
         cached.issues.push(gone);
-        Cache::new(&dir).save("first", &cached, time::OffsetDateTime::now_utc()).unwrap();
-        let (service, mut events) = Service::spawn(fake, Some(Cache::new(&dir)));
+        store.save_board(None, &cached, time::OffsetDateTime::now_utc()).unwrap();
+        let (service, mut events) = Service::spawn(fake, Some(store.clone()));
         service.send(Command::LoadBoard(None, 1));
         let has_gone = |b: &BoardSnapshot| b.issues.iter().any(|i| i.key.as_str() == "ACME-999");
         let (warm, _) = next_board(&mut events).await;
         assert!(has_gone(&warm), "the cache first, as it was");
         let (loaded, fresh) = next_board(&mut events).await;
         assert!(fresh && !has_gone(&loaded), "then the board as it is");
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
@@ -752,29 +748,28 @@ mod tests {
 
     #[tokio::test]
     async fn an_issue_layout_is_kept_for_the_next_run() {
-        let dir = crate::cache::tests::temp_dir("service-layouts");
+        let store = Arc::new(Memory::default());
         let fake = Arc::new(FakeProvider::new());
-        let (service, mut events) = Service::spawn(fake.clone(), Some(Cache::new(&dir)));
+        let (service, mut events) = Service::spawn(fake.clone(), Some(store.clone()));
         events.recv().await; // Me
         service.send(Command::LoadIssue(IssueKey::parse("ACME-5")));
         let Some(Event::IssueLoaded(detail)) = events.recv().await else { panic!() };
-        let (_again, mut events) = Service::spawn(fake, Some(Cache::new(&dir)));
+        let (_again, mut events) = Service::spawn(fake, Some(store.clone()));
         let Some(Event::FieldLayouts(layouts)) = events.recv().await else {
             panic!("the layouts come first")
         };
         assert_eq!(layouts.get(&layout_key(&detail.issue)), detail.layout.as_ref());
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
     async fn an_issue_read_is_kept_for_the_next_run() {
-        let dir = crate::cache::tests::temp_dir("service-issues");
+        let store = Arc::new(Memory::default());
         let fake = Arc::new(FakeProvider::new());
-        let (service, mut events) = Service::spawn(fake.clone(), Some(Cache::new(&dir)));
+        let (service, mut events) = Service::spawn(fake.clone(), Some(store.clone()));
         events.recv().await; // Me
         service.send(Command::LoadIssue(IssueKey::parse("ACME-5")));
         let Some(Event::IssueLoaded(detail)) = events.recv().await else { panic!() };
-        let (_again, mut events) = Service::spawn(fake, Some(Cache::new(&dir)));
+        let (_again, mut events) = Service::spawn(fake, Some(store.clone()));
         let read = loop {
             match events.recv().await {
                 Some(Event::ReadIssues(read)) => break read,
@@ -783,7 +778,6 @@ mod tests {
             }
         };
         assert_eq!(read, [*detail]);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// The next `ReadIssues`, or `None` when none comes in a moment.
@@ -801,9 +795,9 @@ mod tests {
     #[tokio::test]
     async fn a_board_prefetches_its_issues_in_full_then_only_what_changed() {
         use kolum_domain::{IssueUpdate, IssueWriter};
-        let dir = crate::cache::tests::temp_dir("service-prefetch");
+        let store = Arc::new(Memory::default());
         let fake = Arc::new(FakeProvider::new());
-        let (service, mut events) = Service::spawn(fake.clone(), Some(Cache::new(&dir)));
+        let (service, mut events) = Service::spawn(fake.clone(), Some(store.clone()));
         service.send(Command::LoadBoard(None, 1));
         let read = next_read(&mut events).await.expect("the board's issues, read in full");
         let board = load_board(fake.as_ref(), None).await.unwrap();
@@ -813,7 +807,7 @@ mod tests {
             !five.comments.is_empty() && !five.activity.is_empty(),
             "with comments and history"
         );
-        assert_eq!(Cache::new(&dir).issues().len(), board.issues.len(), "kept for the next run");
+        assert_eq!(store.issues().len(), board.issues.len(), "kept for the next run");
 
         service.send(Command::SyncBoard(None, 1));
         assert_eq!(next_read(&mut events).await, None, "nothing changed, nothing read");
@@ -827,19 +821,18 @@ mod tests {
         assert_eq!(read.iter().map(|d| d.issue.key.clone()).collect::<Vec<_>>(), [key]);
 
         // The next run starts from what is kept: nothing to read again.
-        let (service, mut events) = Service::spawn(fake.clone(), Some(Cache::new(&dir)));
+        let (service, mut events) = Service::spawn(fake.clone(), Some(store.clone()));
         service.send(Command::LoadBoard(None, 1));
         let kept = next_read(&mut events).await.expect("what the last run kept");
         assert_eq!(kept.len(), board.issues.len());
         assert_eq!(next_read(&mut events).await, None, "and no prefetch over it");
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// A prefetch reads no children nor layout: those an opening kept stay.
     #[tokio::test]
     async fn a_prefetch_keeps_the_children_an_opening_read() {
         use kolum_domain::IssueReader;
-        let dir = crate::cache::tests::temp_dir("service-children");
+        let store = Arc::new(Memory::default());
         let fake = Arc::new(FakeProvider::new());
         // ACME-5 as an earlier opening kept it, since updated.
         let key = IssueKey::parse("ACME-5");
@@ -853,8 +846,8 @@ mod tests {
             layout: Some(fake.field_layout(&key).await.unwrap()),
             children: vec![child],
         };
-        Cache::new(&dir).save_issue(&opened).unwrap();
-        let (service, mut events) = Service::spawn(fake.clone(), Some(Cache::new(&dir)));
+        store.save_issue(&opened).unwrap();
+        let (service, mut events) = Service::spawn(fake.clone(), Some(store.clone()));
         next_read(&mut events).await.expect("what the last run kept");
         service.send(Command::LoadBoard(None, 1));
         let read = next_read(&mut events).await.expect("the board read in full");
@@ -862,10 +855,9 @@ mod tests {
         assert!(prefetched.issue.updated > opened.issue.updated, "read again");
         assert_eq!(prefetched.children, opened.children);
         assert_eq!(prefetched.layout, opened.layout);
-        let kept = Cache::new(&dir).issues();
+        let kept = store.issues();
         let kept = kept.iter().find(|d| d.issue.key == key).unwrap();
         assert_eq!(kept.children, opened.children, "on disk too");
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// A refusal, a rate limit most likely, stops the prefetch for the run:

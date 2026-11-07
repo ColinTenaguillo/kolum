@@ -43,6 +43,7 @@ nucleo = "0.5"
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
 serde.workspace = true
+serde_json = "1"
 # Collects the settings serde would skip without a word: a misspelt key
 # that silently does nothing is worse than an error on screen.
 serde_ignored = "0.1"

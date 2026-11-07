@@ -210,7 +210,9 @@ fn app() -> anyhow::Result<()> {
     let writable = provider.capabilities().supports(kolum_domain::Capability::Write);
     let state_file = config::cache_dir().map(|d| d.join(&profile).join("state.toml"));
     let settings = with_state(Settings { board, writable, ..settings }, state_file.as_deref());
-    let cache = config::cache_dir().map(|d| kolum_app::Cache::new(d.join(&profile)));
+    let cache = config::cache_dir().map(|d| {
+        Arc::new(kolum::cache::Cache::new(d.join(&profile))) as Arc<dyn kolum_app::Storage>
+    });
     // Before raw mode: the probe talks to the terminal.
     let settings = Settings { images: kolum::images::probe(settings.ui.images), ..settings };
     let result = run_tui(provider, cache, state_file, settings);
@@ -294,7 +296,7 @@ fn load(args: &Args, config_dir: Option<PathBuf>) -> (config::Config, Settings) 
 
 fn run_tui(
     provider: Arc<dyn Provider>,
-    cache: Option<kolum_app::Cache>,
+    cache: Option<Arc<dyn kolum_app::Storage>>,
     state_file: Option<PathBuf>,
     settings: Settings,
 ) -> anyhow::Result<()> {
