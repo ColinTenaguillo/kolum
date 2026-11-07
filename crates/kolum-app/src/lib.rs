@@ -13,6 +13,6 @@ pub use cache::Cache;
 pub use query::parse_query;
 pub use service::{Command, Event, IssueDetail, Service, layout_key};
 pub use write::{
-    Change, Ledger, Write, apply, asks_for, move_issue, transition_to, transition_write,
-    transitions_into,
+    Change, Pending, Write, asks_for, land, move_issue, supersedes, transition_to,
+    transition_write, transitions_into, written,
 };

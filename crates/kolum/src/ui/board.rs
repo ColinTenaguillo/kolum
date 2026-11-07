@@ -82,16 +82,45 @@ impl BoardFilter {
 }
 impl BoardView {
     /// A fresh snapshot keeps the highlight on the same issue when it is
-    /// still there: a refresh must not throw the user back to the top.
+    /// still there: a refresh must not throw the user back to the top. Of
+    /// the same board, each column keeps its own on the same card, or on
+    /// the same row when the card left: a change shown at once, or a sync,
+    /// leaves the other columns alone.
     pub fn set_snapshot(&mut self, snapshot: BoardSnapshot) {
         let keep = self.selected().map(|i| i.key.clone());
-        self.cursor = vec![0; snapshot.board.columns.len()];
+        let same = self.snapshot.as_ref().is_some_and(|s| s.board.id == snapshot.board.id);
+        let held = if same { self.highlighted() } else { vec![] };
+        if !same {
+            self.cursor.clear();
+        }
+        self.cursor.resize(snapshot.board.columns.len(), 0);
         self.snapshot = Some(snapshot);
+        self.highlight(&held);
         match keep {
             Some(key) => self.select(&key),
             None => self.column = self.visible().first().copied().unwrap_or(0),
         }
         self.clamp();
+    }
+
+    /// The card highlighted in each column.
+    fn highlighted(&self) -> Vec<Option<IssueKey>> {
+        let cards = self.cards();
+        cards
+            .iter()
+            .zip(&self.cursor)
+            .map(|(col, &at)| col.get(at).map(|i| i.key.clone()))
+            .collect()
+    }
+
+    /// Each column's highlight on its card, where the card still is.
+    fn highlight(&mut self, held: &[Option<IssueKey>]) {
+        let found: Vec<Option<usize>> = (self.cards().iter().zip(held))
+            .map(|(col, key)| key.as_ref().and_then(|k| col.iter().position(|i| &i.key == k)))
+            .collect();
+        for (cursor, at) in self.cursor.iter_mut().zip(found) {
+            *cursor = at.unwrap_or(*cursor);
+        }
     }
 
     /// The cards of every column, after the filter.

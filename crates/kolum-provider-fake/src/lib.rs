@@ -19,6 +19,8 @@ const BOARD_ID: &str = "1";
 
 pub struct FakeProvider {
     state: Mutex<State>,
+    /// How long the next transition takes, for tests of slow replies.
+    delay: Mutex<Option<std::time::Duration>>,
 }
 
 struct State {
@@ -234,7 +236,12 @@ impl FakeProvider {
             .zip(data::ROWS)
             .map(|(i, row)| (i.key.clone(), history(i, user(row.reporter))))
             .collect();
-        Self { state: Mutex::new(State { issues, comments, activity }) }
+        Self { state: Mutex::new(State { issues, comments, activity }), delay: Mutex::default() }
+    }
+
+    /// The next transition answers only after `by`.
+    pub fn delay_next_transition(&self, by: std::time::Duration) {
+        *self.delay.lock().unwrap_or_else(|e| e.into_inner()) = Some(by);
     }
 
     /// A poisoned lock means a test panicked mid-write; the data is still
@@ -469,6 +476,10 @@ impl IssueWriter for FakeProvider {
     }
 
     async fn transition(&self, key: &IssueKey, transition: &TransitionId) -> Result<()> {
+        let delay = self.delay.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(by) = delay {
+            tokio::time::sleep(by).await;
+        }
         let target = transition
             .as_str()
             .strip_prefix("to-")

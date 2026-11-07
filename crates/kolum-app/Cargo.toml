@@ -18,6 +18,8 @@ tracing = "0.1"
 
 [dev-dependencies]
 kolum-provider-fake.workspace = true
+# A paused clock: a write's timeout in a test that does not wait for it.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

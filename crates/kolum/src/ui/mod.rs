@@ -267,14 +267,22 @@ pub struct App {
     /// Descriptions not saved, as their read failed: `from` and the text,
     /// which the next `e` on the issue opens.
     drafts: std::collections::HashMap<IssueKey, (String, String)>,
+    /// The saves of `e` on their way, by write: `from` and the text, kept
+    /// as a draft if the provider refuses them.
+    saving: std::collections::HashMap<u64, (String, String)>,
     remote_debounce: std::time::Duration,
     /// The board filter is one applied, kept for the next run; until then
     /// the config's starts each.
     filter_applied: bool,
     /// The time of the key being handled, for the debounce.
     now: Instant,
-    /// Changes shown before the provider confirmed them.
-    ledger: kolum_app::Ledger,
+    /// The number of the last board request sent.
+    board_request: u64,
+    /// The board as the provider last sent it; `board` shows it with the
+    /// writes in flight on top.
+    latest: Option<kolum_app::BoardSnapshot>,
+    /// The writes not yet seen in a board the provider sent.
+    pending: kolum_app::Pending,
     /// Transitions asked for these issues; `Some(column)` when they are
     /// for a move into that column.
     awaiting: Option<(Vec<IssueKey>, Option<usize>)>,
@@ -343,7 +351,8 @@ impl App {
             prompt: None,
             problems,
             message: None,
-            effects: vec![Effect::Send(Command::LoadBoard(settings.board.clone()))],
+            effects: vec![Effect::Send(Command::LoadBoard(settings.board.clone(), 1))],
+            board_request: 1,
             board_asked: settings.board.clone(),
             sync_due: None,
             waker,
@@ -358,10 +367,12 @@ impl App {
             read: Default::default(),
             describe_after: None,
             drafts: Default::default(),
+            saving: Default::default(),
             remote_debounce: settings.remote_debounce,
             filter_applied: settings.filter_applied,
             now: Instant::now(),
-            ledger: kolum_app::Ledger::default(),
+            latest: None,
+            pending: kolum_app::Pending::default(),
             awaiting: None,
             writable: settings.writable,
             opening: None,
@@ -384,7 +395,13 @@ impl App {
 
     fn load_board(&mut self, id: kolum_domain::BoardId) {
         self.board_asked = Some(id.clone());
-        self.effects.push(Effect::Send(Command::LoadBoard(Some(id))));
+        self.ask_board(|n| Command::LoadBoard(Some(id), n));
+    }
+
+    /// A board request, under the next number.
+    fn ask_board(&mut self, command: impl FnOnce(u64) -> Command) {
+        self.board_request += 1;
+        self.effects.push(Effect::Send(command(self.board_request)));
     }
 
     /// The next sync on its own, `sync_secs` from `now`; none at 0.
@@ -393,14 +410,10 @@ impl App {
         (every > 0).then(|| now + std::time::Duration::from_secs(every))
     }
 
-    /// What changed on the board, unless a change of yours is on its way:
-    /// the sync would show the board without it, until it lands.
+    /// What changed on the board; a change of yours on its way shows over it.
     fn sync_board(&mut self, now: Instant) {
-        if self.ledger.pending() > 0 {
-            self.sync_due = Some(now + AFTER_WRITE);
-            return;
-        }
-        self.effects.push(Effect::Send(Command::SyncBoard(self.board_asked.clone())));
+        let id = self.board_asked.clone();
+        self.ask_board(|n| Command::SyncBoard(id, n));
         self.sync_due = self.next_sync(now);
     }
 
@@ -415,7 +428,7 @@ impl App {
 
     /// The issue open in the detail view.
     pub fn open_issue(&self) -> Option<&IssueKey> {
-        self.detail.as_ref().map(|d| &d.issue.key)
+        self.detail.as_ref().map(|d| &d.issue().key)
     }
 
     fn focus(&self) -> Focus {
@@ -547,20 +560,8 @@ impl App {
                 self.me = Some(user);
                 self.board.clamp();
             }
-            Event::BoardLoaded { snapshot, fresh } => {
-                self.board_cached = !fresh;
-                if fresh {
-                    self.said_done(REFRESHING);
-                }
-                if fresh && self.sync_due.is_none() {
-                    self.sync_due = self.next_sync(self.now);
-                }
-                if let Some(d) = &mut self.detail
-                    && let Some(fresh) = snapshot.issues.iter().find(|i| i.key == d.issue.key)
-                {
-                    refresh_detail(&mut d.issue, fresh);
-                }
-                self.board.set_snapshot(snapshot);
+            Event::BoardLoaded { snapshot, fresh, request } => {
+                self.board_loaded(snapshot, fresh, request)
             }
             // In place of the open issue, if any: `gp` waits on the parent there.
             Event::IssueLoaded(detail) if self.opening.as_ref() == Some(&detail.issue.key) => {
@@ -569,14 +570,18 @@ impl App {
                 let mut view = DetailView::new(detail.issue.clone());
                 view.loaded = Some(*detail);
                 self.detail = Some(view);
+                self.show_detail();
                 self.want_avatar();
             }
             Event::IssueLoaded(detail) => {
+                // A read slower than a write's reply does not undo it.
                 if let Some(d) = &mut self.detail
-                    && d.issue.key == detail.issue.key
+                    && d.latest.key == detail.issue.key
+                    && kolum_app::supersedes(&detail.issue, &d.latest)
                 {
-                    d.issue = detail.issue.clone();
+                    d.latest = detail.issue.clone();
                     d.loaded = Some(*detail);
+                    self.show_detail();
                     self.want_avatar();
                 }
             }
@@ -600,33 +605,8 @@ impl App {
             Event::Transitions { key, result } => self.on_transitions(key, result),
             Event::EditableFields { key, result } => self.open_field_picker(key, result),
             Event::Sprints(result) => self.open_sprint_picker(result),
-            Event::Written { op, key, issue } => {
-                self.ledger.settle(op);
-                // Jira's automations act on it now: sync once they have.
-                let soon = Instant::now() + AFTER_WRITE;
-                self.sync_due = Some(self.sync_due.map_or(soon, |due| due.min(soon)));
-                if let (Some(snapshot), Some(issue)) = (&mut self.board.snapshot, issue) {
-                    snapshot.merge(vec![*issue]);
-                    self.board.clamp();
-                }
-                self.sync_detail(&key);
-                if self.open_issue() == Some(&key) {
-                    self.effects.push(Effect::Send(Command::LoadIssue(key.clone())));
-                }
-                self.say(format!("{key} saved"), Level::Info);
-            }
-            Event::WriteFailed { op, key, error } => {
-                if let Some(snapshot) = &mut self.board.snapshot {
-                    self.ledger.rollback(snapshot, op);
-                    self.board.clamp();
-                }
-                self.sync_detail(&key);
-                // The detail keeps fields the board lacks: read them back.
-                if self.open_issue() == Some(&key) {
-                    self.effects.push(Effect::Send(Command::LoadIssue(key.clone())));
-                }
-                self.say(format!("{key}: {error}; undone"), Level::Error);
-            }
+            Event::Written { op, key, issue } => self.written(op, key, issue.as_deref()),
+            Event::WriteFailed { op, key, error } => self.write_failed(op, key, error),
             Event::Image { url, result } => {
                 let decoded = result.map_err(|e| e.to_string()).and_then(|bytes| {
                     let picker = self.images.as_ref().ok_or("no pictures here")?;
@@ -644,9 +624,9 @@ impl App {
             }
             Event::Created(issue) => {
                 let key = issue.key.clone();
-                if let Some(snapshot) = &mut self.board.snapshot {
-                    snapshot.merge(vec![*issue]);
-                    self.board.clamp();
+                if let Some(latest) = &mut self.latest {
+                    latest.merge(vec![*issue]);
+                    self.show();
                     self.board.select(&key);
                 }
                 self.say(format!("Created {key}"), Level::Info);
@@ -662,12 +642,43 @@ impl App {
         }
     }
 
+    /// The provider's board, the cached copy or a fresh one: what is
+    /// shown is it, with the writes in flight on top.
+    fn board_loaded(&mut self, snapshot: kolum_app::BoardSnapshot, fresh: bool, request: u64) {
+        self.board_cached = !fresh;
+        if fresh {
+            self.fresh_board(request);
+        }
+        let snapshot = kolum_app::land(self.latest.as_ref(), snapshot);
+        if let Some(d) = &mut self.detail
+            && let Some(copy) = snapshot.issues.iter().find(|i| i.key == d.latest.key)
+            && kolum_app::supersedes(copy, &d.latest)
+        {
+            refresh_detail(&mut d.latest, copy);
+        }
+        self.latest = Some(snapshot);
+        self.show();
+    }
+
+    /// A board from the provider, not from the cache, answering `request`:
+    /// the writes it holds are settled, and the next sync is due.
+    fn fresh_board(&mut self, request: u64) {
+        self.said_done(REFRESHING);
+        self.pending.landed(request);
+        if self.sync_due.is_none() {
+            self.sync_due = self.next_sync(self.now);
+        }
+    }
+
     /// An issue read whole, kept; and what waited on its read, if anything.
     fn keep_read(&mut self, detail: &IssueDetail) -> Option<(IssueKey, AfterRead)> {
         if let Some(layout) = &detail.layout {
             self.layouts.insert(kolum_app::layout_key(&detail.issue), layout.clone());
         }
-        self.read.insert(detail.issue.key.clone(), detail.clone());
+        let kept = self.read.get(&detail.issue.key);
+        if kept.is_none_or(|kept| kolum_app::supersedes(&detail.issue, &kept.issue)) {
+            self.read.insert(detail.issue.key.clone(), detail.clone());
+        }
         self.describe_after.take_if(|(key, _)| *key == detail.issue.key)
     }
 
@@ -692,7 +703,7 @@ impl App {
         };
         let why = format!("loading {key} failed: {error}; not saved, kept as a draft for `e`");
         self.say(why, Level::Error);
-        self.drafts.insert(key, (from, text));
+        self.keep_draft(key, (from, text));
     }
 
     /// Lets the picker take in finished matches. Called before each draw.
@@ -731,7 +742,7 @@ impl App {
             }
             Action::Refresh => {
                 let id = self.board.snapshot.as_ref().map(|s| s.board.id.clone());
-                self.effects.push(Effect::Send(Command::ReloadBoard(id)));
+                self.ask_board(|n| Command::ReloadBoard(id, n));
                 self.say(REFRESHING, Level::Info);
             }
             Action::PickerIssues => self.open_issue_picker(),
@@ -989,16 +1000,16 @@ impl App {
             Action::NextTab => d.tab = d.tab.step(n),
             Action::PrevTab => d.tab = d.tab.step(-n),
             Action::CopyKey | Action::CopyUrl | Action::OpenBrowser => {
-                let issue = d.issue.clone();
+                let issue = d.issue().clone();
                 self.issue_effect(action, &issue);
             }
             Action::ViewPictures => self.open_viewer(),
             Action::OpenParent => {
-                let issue = d.issue.clone();
+                let issue = d.issue().clone();
                 self.open_parent(&issue);
             }
             _ => {
-                let keys = vec![d.issue.key.clone()];
+                let keys = vec![d.issue().key.clone()];
                 self.issue_action(action, keys);
             }
         }
@@ -1105,7 +1116,7 @@ impl App {
     fn issue(&self, key: &IssueKey) -> Option<&kolum_domain::Issue> {
         let on_board =
             self.board.snapshot.as_ref().and_then(|s| s.issues.iter().find(|i| &i.key == key));
-        on_board.or(self.detail.as_ref().map(|d| &d.issue).filter(|i| &i.key == key))
+        on_board.or(self.detail.as_ref().map(|d| d.issue()).filter(|i| &i.key == key))
     }
 
     /// `H` and `L`: to the next visible column, by whichever transition
@@ -1142,10 +1153,11 @@ impl App {
         } else {
             kolum_domain::Rank::Before(other)
         };
-        if let Some(op) = self.optimistic(&key, kolum_app::Change::Rank(rank.clone())) {
-            let write = kolum_app::Write::Rank(rank);
-            self.effects.push(Effect::Send(Command::Write { op, key: key.clone(), write }));
-        }
+        self.write(vec![(
+            key.clone(),
+            kolum_app::Change::Rank(rank.clone()),
+            kolum_app::Write::Rank(rank),
+        )]);
         let way = if delta > 0 { "down" } else { "up" };
         self.say(format!("{key} moved {way}"), Level::Info);
     }
@@ -1203,16 +1215,11 @@ impl App {
         // The transitions are those of the first.
         let status = |app: &Self, key| app.issue(key).map(|i| i.status.id.clone());
         let first = status(self, &keys[0]);
-        for key in &keys {
-            let here = status(self, key);
-            let Some(write) = kolum_app::transition_write(&t, first.as_ref(), here.as_ref()) else {
-                continue;
-            };
-            if let Some(op) = self.optimistic(key, kolum_app::Change::Status(t.to.clone())) {
-                self.effects.push(Effect::Send(Command::Write { op, key: key.clone(), write }));
-            }
-        }
-        self.board.select(&keys[0]);
+        let writes = keys.iter().filter_map(|key| {
+            let write = kolum_app::transition_write(&t, first.as_ref(), status(self, key).as_ref());
+            write.map(|write| (key.clone(), kolum_app::Change::Status(t.to.clone()), write))
+        });
+        self.write(writes.collect());
         let names: Vec<&str> = keys.iter().map(|k| k.as_str()).collect();
         self.say(format!("{} → {}", names.join(", "), t.to.name), Level::Info);
     }
@@ -1242,44 +1249,99 @@ impl App {
     }
 
     fn assign(&mut self, keys: Vec<IssueKey>, user: Option<kolum_domain::User>) {
-        for key in &keys {
-            if let Some(op) = self.optimistic(key, kolum_app::Change::Assignee(user.clone())) {
-                let write = kolum_app::Write::Assign(user.as_ref().map(|u| u.id.clone()));
-                self.effects.push(Effect::Send(Command::Write { op, key: key.clone(), write }));
-            }
-        }
+        let write = kolum_app::Write::Assign(user.as_ref().map(|u| u.id.clone()));
+        let change = kolum_app::Change::Assignee(user.clone());
+        self.write(keys.iter().map(|key| (key.clone(), change.clone(), write.clone())).collect());
         let who = user.as_ref().map_or("nobody".to_string(), |u| u.display_name.clone());
         self.say(format!("Assigned to {who}"), Level::Info);
     }
 
-    /// Shows the change on the board now; the id is the write's.
-    fn optimistic(&mut self, key: &IssueKey, change: kolum_app::Change) -> Option<u64> {
-        let snapshot = self.board.snapshot.as_mut()?;
-        let op = self.ledger.begin(snapshot, key, &change);
-        self.board.clamp();
-        self.board.select(key);
-        self.sync_detail(key);
-        // The board's copy may lack a field only the detail has.
-        if let Some(d) = &mut self.detail
-            && &d.issue.key == key
-        {
-            kolum_app::apply(&mut d.issue, &change);
+    /// Sends the writes of one action, each shown at once as its change
+    /// until the provider answers, on the board or off it; the first card
+    /// highlighted. Their ops, in order.
+    fn write(&mut self, writes: Vec<(IssueKey, kolum_app::Change, kolum_app::Write)>) -> Vec<u64> {
+        let first = writes.first().map(|(key, ..)| key.clone());
+        let ops = writes.into_iter().map(|(key, change, write)| {
+            let op = self.pending.begin(key.clone(), change);
+            self.effects.push(Effect::Send(Command::Write { op, key, write }));
+            op
+        });
+        let ops = ops.collect();
+        self.show();
+        if let Some(key) = first {
+            self.board.select(&key);
         }
-        Some(op)
+        ops
     }
 
-    /// The detail shows the board's copy of its issue, changes included.
-    fn sync_detail(&mut self, key: &IssueKey) {
-        let fresh = self
-            .board
-            .snapshot
-            .as_ref()
-            .and_then(|s| s.issues.iter().find(|i| &i.key == key))
-            .cloned();
-        if let (Some(d), Some(fresh)) = (&mut self.detail, fresh)
-            && &d.issue.key == key
-        {
-            refresh_detail(&mut d.issue, &fresh);
+    /// The provider took a write: it joins the provider's copies, under
+    /// the issue read back after, and the open issue is read again.
+    fn written(&mut self, op: u64, key: IssueKey, read: Option<&kolum_domain::Issue>) {
+        self.pending.written(op, read.is_some(), self.board_request);
+        self.sync_soon();
+        self.saving.remove(&op);
+        if let (Some(latest), Some(read)) = (&mut self.latest, read) {
+            kolum_app::written(latest, read);
+        }
+        if let Some(d) = self.detail.as_mut().filter(|d| d.latest.key == key) {
+            // The issue read whole, as an opening read is.
+            if let Some(read) = read.filter(|read| kolum_app::supersedes(read, &d.latest)) {
+                d.latest = read.clone();
+            }
+            self.effects.push(Effect::Send(Command::LoadIssue(key.clone())));
+        }
+        self.show();
+        self.say(format!("{key} saved"), Level::Info);
+    }
+
+    /// The provider refused a write: it is no longer shown, and the text of
+    /// an `e` is kept as a draft, for the next `e`.
+    fn write_failed(&mut self, op: u64, key: IssueKey, error: kolum_domain::DomainError) {
+        self.pending.refused(op);
+        self.show();
+        let draft = match self.saving.remove(&op) {
+            Some(draft) => {
+                self.keep_draft(key.clone(), draft);
+                "; yours kept as a draft for `e`"
+            }
+            None => "",
+        };
+        self.say(format!("{key}: {error}; undone{draft}"), Level::Error);
+    }
+
+    /// A draft of the issue, `from` and the text, over one kept already:
+    /// what either typed survives.
+    fn keep_draft(&mut self, key: IssueKey, draft: (String, String)) {
+        let draft = match self.drafts.remove(&key) {
+            Some(kept) => merge_drafts(&kept, &draft),
+            None => draft,
+        };
+        self.drafts.insert(key, draft);
+    }
+
+    /// Jira's automations act on a change now: sync once they have.
+    fn sync_soon(&mut self) {
+        let soon = Instant::now() + AFTER_WRITE;
+        self.sync_due = Some(self.sync_due.map_or(soon, |due| due.min(soon)));
+    }
+
+    /// What is on screen: the provider's latest board and open issue, with
+    /// the writes in flight on top. [`App::show_board`] and
+    /// [`App::show_detail`] are the one place each is written.
+    fn show(&mut self) {
+        self.show_board();
+        self.show_detail();
+    }
+
+    fn show_board(&mut self) {
+        if let Some(latest) = &self.latest {
+            self.board.set_snapshot(self.pending.over(latest));
+        }
+    }
+
+    fn show_detail(&mut self) {
+        if let Some(d) = &mut self.detail {
+            d.show(&self.pending);
         }
     }
 
@@ -1472,7 +1534,7 @@ impl App {
     }
 
     fn full_issue(&self, key: &IssueKey) -> Option<&kolum_domain::Issue> {
-        let open = self.detail.as_ref().map(|d| &d.issue).filter(|i| &i.key == key);
+        let open = self.detail.as_ref().map(|d| d.issue()).filter(|i| &i.key == key);
         open.or_else(|| self.issue(key))
     }
 
@@ -1502,9 +1564,12 @@ impl App {
     /// `e`: the title and the description in `$EDITOR`, from the issue read
     /// whole, read first when no read is as new as the board's copy.
     fn describe(&mut self, key: IssueKey) {
-        if let Some((saving, AfterRead::Save { .. })) = &self.describe_after {
-            let why = format!("{saving} is still being saved: `e` once it is");
-            return self.say(why, Level::Warn);
+        let saving = match &self.describe_after {
+            Some((saving, AfterRead::Save { .. })) => Some(saving.clone()),
+            _ => self.pending.saves_description(&key).then(|| key.clone()),
+        };
+        if let Some(saving) = saving {
+            return self.say(format!("{saving} is still being saved: `e` once it is"), Level::Warn);
         }
         if let Some((from, text)) = self.drafts.remove(&key) {
             let text = format!(
@@ -1528,7 +1593,7 @@ impl App {
     /// `$EDITOR` on the issue's title and description, or on `mine` in
     /// their place, theirs then shown below it.
     fn edit_description(&mut self, issue: &kolum_domain::Issue, mine: Option<&str>) {
-        let from = format!("# {}\n\n{}", issue.title, issue.description.to_markdown());
+        let from = titled(issue);
         let flattened = if issue.description.lossy { LOSSY } else { "" };
         let key = issue.key.clone();
         let help = format!(
@@ -1552,13 +1617,11 @@ impl App {
                 self.say("Nothing written: no comment", Level::Info)
             }
             EditPurpose::Comment(key) => {
+                // A comment changes nothing on the card.
                 let change = kolum_app::Change::Update(kolum_domain::IssueUpdate::default());
-                if let Some(op) = self.optimistic(&key, change) {
-                    let write =
-                        kolum_app::Write::Comment(kolum_domain::RichText::from_markdown(&text));
-                    self.effects.push(Effect::Send(Command::Write { op, key: key.clone(), write }));
-                    self.say(format!("Commenting on {key}…"), Level::Info);
-                }
+                let write = kolum_app::Write::Comment(kolum_domain::RichText::from_markdown(&text));
+                self.say(format!("Commenting on {key}…"), Level::Info);
+                self.write(vec![(key, change, write)]);
             }
             EditPurpose::Create { project, kind } => {
                 let (title, body) = split_title(&text);
@@ -1582,12 +1645,11 @@ impl App {
     }
 
     /// An edit shown at once and sent; undone if the provider refuses it.
-    fn save(&mut self, key: IssueKey, update: kolum_domain::IssueUpdate) {
-        if let Some(op) = self.optimistic(&key, kolum_app::Change::Update(update.clone())) {
-            let write = kolum_app::Write::Update(update);
-            self.effects.push(Effect::Send(Command::Write { op, key: key.clone(), write }));
-            self.say(format!("Saving {key}…"), Level::Info);
-        }
+    /// The write's op.
+    fn save(&mut self, key: IssueKey, update: kolum_domain::IssueUpdate) -> u64 {
+        self.say(format!("Saving {key}…"), Level::Info);
+        let change = kolum_app::Change::Update(update.clone());
+        self.write(vec![(key, change, kolum_app::Write::Update(update))])[0]
     }
 
     /// The title and the description back from `$EDITOR`. A description is
@@ -1599,7 +1661,7 @@ impl App {
             return self.say("No change", Level::Info);
         }
         if update.description.is_none() {
-            return self.save(key, update);
+            return self.save_typed(key, from, text);
         }
         self.read_then(key, AfterRead::Save { from, text });
     }
@@ -1613,7 +1675,13 @@ impl App {
             let why = format!("{key}: the description changed meanwhile; yours is in the editor");
             return self.say(why, Level::Warn);
         }
-        self.save(key, description_update(&from, &text));
+        self.save_typed(key, from, text);
+    }
+
+    /// What `e` saves: only what moved since `from`, which a refusal keeps.
+    fn save_typed(&mut self, key: IssueKey, from: String, text: String) {
+        let op = self.save(key, description_update(&from, &text));
+        self.saving.insert(op, (from, text));
     }
 
     /// One rich text field back from `$EDITOR`: empty or unchanged leaves it.
@@ -1633,8 +1701,8 @@ impl App {
     /// first image attachment.
     fn pictures(&self) -> [Option<String>; 2] {
         let Some(d) = &self.detail else { return [None, None] };
-        let avatar = d.issue.assignee.as_ref().and_then(|a| a.avatar_url.clone());
-        let shot = d.issue.attachments.iter().find(|a| a.is_image()).map(|a| a.url.clone());
+        let avatar = d.issue().assignee.as_ref().and_then(|a| a.avatar_url.clone());
+        let shot = d.issue().attachments.iter().find(|a| a.is_image()).map(|a| a.url.clone());
         [avatar, shot]
     }
 
@@ -1661,9 +1729,9 @@ impl App {
             return self.say("Pictures are off in this terminal", Level::Warn);
         }
         let pictures: Vec<_> =
-            d.issue.attachments.iter().filter(|a| a.is_image()).cloned().collect();
+            d.issue().attachments.iter().filter(|a| a.is_image()).cloned().collect();
         if pictures.is_empty() {
-            return self.say(format!("No pictures in {}", d.issue.key), Level::Info);
+            return self.say(format!("No pictures in {}", d.issue().key), Level::Info);
         }
         let url = pictures[0].url.clone();
         self.viewer = Some(Viewer { pictures, at: 0 });
@@ -1728,14 +1796,15 @@ impl App {
     /// if any; an issue not on the board (a remote search hit) opens when it
     /// has been read.
     fn open_detail(&mut self, key: IssueKey) {
-        let issue =
-            self.board.snapshot.as_ref().and_then(|s| s.issues.iter().find(|i| i.key == key));
+        let issue = self.latest.as_ref().and_then(|s| s.issues.iter().find(|i| i.key == key));
         match issue {
             Some(issue) => {
                 let view = match self.read.get(&key) {
                     Some(read) => {
                         let mut read = read.clone();
-                        refresh_detail(&mut read.issue, issue);
+                        if kolum_app::supersedes(issue, &read.issue) {
+                            refresh_detail(&mut read.issue, issue);
+                        }
                         let mut view = DetailView::new(read.issue.clone());
                         view.loaded = Some(read);
                         view
@@ -1743,6 +1812,7 @@ impl App {
                     None => DetailView::new(issue.clone()),
                 };
                 self.detail = Some(view);
+                self.show_detail();
                 self.opening = None;
                 self.want_avatar();
             }
@@ -2062,7 +2132,7 @@ impl App {
                 let shown = detail::Shown {
                     fields: self.ui.detail_fields.as_deref(),
                     sections: self.ui.detail_sections.as_deref(),
-                    layout: self.layouts.get(&kolum_app::layout_key(&d.issue)),
+                    layout: self.layouts.get(&kolum_app::layout_key(d.issue())),
                 };
                 d.draw(frame, main, &theme, shown, me, pictures)
             }
@@ -2314,6 +2384,31 @@ fn refresh_detail(shown: &mut kolum_domain::Issue, fresh: &kolum_domain::Issue) 
     if !newer {
         shown.description = description;
     }
+}
+
+/// Two drafts of one issue as one: the title, and the description, each
+/// from the later draft when it changed it, else from the one kept; with
+/// the text it was changed from, so a save sends only what moved.
+fn merge_drafts(kept: &(String, String), later: &(String, String)) -> (String, String) {
+    let (kept_from, kept_text) = (split_title(&kept.0), split_title(&kept.1));
+    let (later_from, later_text) = (split_title(&later.0), split_title(&later.1));
+    let (from_title, title) = match later_text.0 != later_from.0 {
+        true => (later_from.0, later_text.0),
+        false => (kept_from.0, kept_text.0),
+    };
+    let (from_body, body) = match later_text.1 != later_from.1 {
+        true => (later_from.1, later_text.1),
+        false => (kept_from.1, kept_text.1),
+    };
+    let join =
+        |title: Option<&str>, body: &str| format!("# {}\n\n{body}", title.unwrap_or_default());
+    (join(from_title, from_body), join(title, body))
+}
+
+/// The title and the description as `$EDITOR` has them: `# Title`, then
+/// Markdown.
+fn titled(issue: &kolum_domain::Issue) -> String {
+    format!("# {}\n\n{}", issue.title, issue.description.to_markdown())
 }
 
 /// `# Title` then Markdown, against the same it was edited from: only what

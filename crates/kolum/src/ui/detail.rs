@@ -58,7 +58,11 @@ impl Tab {
 }
 
 pub struct DetailView {
-    pub issue: Issue,
+    /// What is shown: `latest` with the writes in flight on top, set by
+    /// [`DetailView::show`] alone.
+    issue: Issue,
+    /// The issue as the provider last sent it.
+    pub latest: Issue,
     /// Comments and history arrive after the view opens.
     pub loaded: Option<IssueDetail>,
     pub tab: Tab,
@@ -72,6 +76,7 @@ pub struct DetailView {
 impl DetailView {
     pub fn new(issue: Issue) -> Self {
         DetailView {
+            latest: issue.clone(),
             issue,
             loaded: None,
             tab: Tab::Comments,
@@ -79,6 +84,15 @@ impl DetailView {
             page: Cell::new(10),
             length: Cell::new(0),
         }
+    }
+
+    pub fn issue(&self) -> &Issue {
+        &self.issue
+    }
+
+    /// Shows the provider's copy with the writes in flight on top.
+    pub fn show(&mut self, pending: &kolum_app::Pending) {
+        self.issue = pending.on(self.latest.clone());
     }
 
     pub fn scroll_by(&mut self, delta: i64) {

@@ -4,7 +4,7 @@
 
 use kolum::config::{PickerLayout, UiConfig};
 use kolum::keymap::{Key, Keymap, parse_keys};
-use kolum::ui::{App, Effect, Settings};
+use kolum::ui::{App, EditPurpose, Effect, Settings};
 use kolum_app::{Command, Event, IssueDetail, load_board};
 use kolum_domain::{IssueKey, IssueReader, UserDirectory};
 use kolum_provider_fake::FakeProvider;
@@ -33,11 +33,12 @@ fn settings() -> Settings {
 async fn loaded_with(settings: Settings) -> App {
     let fake = FakeProvider::new();
     let mut app = App::new(settings, Arc::new(|| {}));
-    assert_eq!(app.take_effects(), [Effect::Send(Command::LoadBoard(None))]);
+    assert_eq!(app.take_effects(), [Effect::Send(Command::LoadBoard(None, 1))]);
     app.on_event(Event::Me(fake.me().await.unwrap()));
     app.on_event(Event::BoardLoaded {
         snapshot: load_board(&fake, None).await.unwrap(),
         fresh: true,
+        request: 1,
     });
     app
 }
@@ -390,7 +391,7 @@ async fn a_board_sync_keeps_the_fields_only_the_detail_loaded() {
     for issue in &mut snapshot.issues {
         issue.fields.clear();
     }
-    app.on_event(Event::BoardLoaded { snapshot, fresh: true });
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true, request: 1 });
     assert!(screen(&mut app, 140, 40).contains("Tokens refresh before they expire"));
 }
 
@@ -404,7 +405,7 @@ async fn an_issue_opened_again_starts_from_what_it_last_read() {
     for issue in &mut snapshot.issues {
         issue.fields.clear();
     }
-    app.on_event(Event::BoardLoaded { snapshot, fresh: true });
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true, request: 1 });
     press(&mut app, "/ACME-10<CR><CR>");
     let issue = fake.issue(&IssueKey::parse("ACME-10")).await.unwrap();
     let detail =
@@ -426,7 +427,7 @@ async fn an_issue_read_on_an_earlier_run_opens_with_its_fields() {
     for issue in &mut snapshot.issues {
         issue.fields.clear();
     }
-    app.on_event(Event::BoardLoaded { snapshot, fresh: true });
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true, request: 1 });
     let issue = fake.issue(&IssueKey::parse("ACME-10")).await.unwrap();
     let comments = fake.comments(&issue.key).await.unwrap();
     assert!(!comments.is_empty());
@@ -489,7 +490,7 @@ async fn a_board_sync_keeps_the_description_the_detail_loaded() {
     for issue in &mut snapshot.issues {
         issue.description = kolum_domain::RichText::from_markdown("h3. Context{{raw}}");
     }
-    app.on_event(Event::BoardLoaded { snapshot, fresh: true });
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true, request: 1 });
     let shown = screen(&mut app, 140, 40);
     assert!(shown.contains("Offset pagination over a non-unique sort"), "{shown}");
     assert!(!shown.contains("h3. Context"), "{shown}");
@@ -518,7 +519,7 @@ async fn a_board_sync_brings_a_newer_description() {
             let issue = snapshot.issues.iter_mut().find(|i| &i.key == key).unwrap();
             issue.updated = updated + time::Duration::minutes(minutes);
             issue.description = description;
-            Event::BoardLoaded { snapshot, fresh: true }
+            Event::BoardLoaded { snapshot, fresh: true, request: 1 }
         }
     };
     app.on_event(sync(1, "").await);
@@ -799,7 +800,7 @@ async fn the_command_line_reports_what_it_cannot_do() {
     press(&mut app, ":refresh<CR>");
     assert_eq!(
         app.take_effects(),
-        [Effect::Send(Command::ReloadBoard(Some(kolum_domain::BoardId::new("1"))))]
+        [Effect::Send(Command::ReloadBoard(Some(kolum_domain::BoardId::new("1")), 2))]
     );
 }
 
@@ -811,6 +812,7 @@ async fn a_refresh_keeps_the_highlight_on_the_same_issue() {
     app.on_event(Event::BoardLoaded {
         snapshot: load_board(&FakeProvider::new(), None).await.unwrap(),
         fresh: true,
+        request: 1,
     });
     assert_eq!(selected(&app), before);
     app.on_event(Event::Failed {
@@ -893,7 +895,7 @@ async fn a_message_of_waiting_goes_once_it_is_done() {
     let epic = IssueKey::parse("ACME-1");
     let mut snapshot = load_board(&fake, None).await.unwrap();
     snapshot.issues.retain(|i| i.key != epic);
-    app.on_event(Event::BoardLoaded { snapshot: snapshot.clone(), fresh: true });
+    app.on_event(Event::BoardLoaded { snapshot: snapshot.clone(), fresh: true, request: 1 });
     assert!(!screen(&mut app, 150, 30).contains("Refreshing…"));
 
     assert_eq!(selected(&app), "ACME-9");
@@ -911,7 +913,7 @@ async fn a_message_of_waiting_goes_once_it_is_done() {
         what: "renaming".into(),
         error: kolum_domain::DomainError::Transport("down".into()),
     });
-    app.on_event(Event::BoardLoaded { snapshot, fresh: true });
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true, request: 1 });
     assert!(screen(&mut app, 150, 30).contains("down"), "a message said since stays");
 }
 
@@ -1115,7 +1117,9 @@ async fn one_field_is_edited_at_a_time() {
     let key = IssueKey::parse("ACME-10");
     let error = kolum_domain::DomainError::Conflict("stale".into());
     app.on_event(Event::WriteFailed { op, key: key.clone(), error });
-    assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(key))], "read back");
+    assert!(app.take_effects().is_empty(), "nothing to read back");
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("Tokens refresh before they expire"), "undone at once: {shown}");
 
     // A field Jira had to flatten says so before it is overwritten.
     let mut issue = FakeProvider::new().issue(&IssueKey::parse("ACME-10")).await.unwrap();
@@ -1415,12 +1419,12 @@ async fn e_falls_back_to_the_description_and_the_status() {
 
 /// The board keeps up with Jira by itself: what changed, every `sync_secs`;
 /// and 5 s after a change of yours, once Jira automations have run on it.
-/// Never while a change of yours is on its way: the sync would undo it.
+/// Each board request under the next number.
 #[tokio::test]
 async fn the_board_syncs_by_itself_and_soon_after_a_change() {
     use std::time::Duration;
     // The board as it was asked for: the provider's first here.
-    let sync = Effect::Send(Command::SyncBoard(None));
+    let sync = |n| Effect::Send(Command::SyncBoard(None, n));
     assert_eq!(loaded().await.deadline(), None, "sync_secs = 0: none on its own");
 
     let mut settings = settings();
@@ -1430,25 +1434,25 @@ async fn the_board_syncs_by_itself_and_soon_after_a_change() {
     let due = app.deadline().expect("the next sync");
     assert!(due >= start + Duration::from_secs(29), "in 30 s");
     wait_until(&mut app, due);
-    assert_eq!(app.take_effects(), std::slice::from_ref(&sync));
+    assert_eq!(app.take_effects(), [sync(2)]);
 
     press(&mut app, "<Space>A"); // assign the card to me: on its way
     let (op, key, _) = writes(app.take_effects()).remove(0);
     let due = app.deadline().unwrap();
     wait_until(&mut app, due);
-    assert!(!app.take_effects().contains(&sync), "not while the write is on its way");
+    assert!(app.take_effects().contains(&sync(3)), "the write on its way shows over it");
     let saved = Instant::now();
     app.on_event(Event::Written { op, key: IssueKey::parse(&key), issue: None });
     let due = app.deadline().unwrap();
     assert!(due <= saved + Duration::from_secs(6), "soon after Jira has it");
     wait_until(&mut app, due);
-    assert!(app.take_effects().contains(&sync));
+    assert!(app.take_effects().contains(&sync(4)));
 
     press(&mut app, ":board 7<CR>");
     app.on_event(Event::Written { op: 99, key: IssueKey::parse("ACME-5"), issue: None });
     let due = app.deadline().unwrap();
     wait_until(&mut app, due);
-    let seven = Effect::Send(Command::SyncBoard(Some(kolum_domain::BoardId::new("7"))));
+    let seven = Effect::Send(Command::SyncBoard(Some(kolum_domain::BoardId::new("7")), 6));
     assert!(app.take_effects().contains(&seven), "the board asked for since");
 }
 
@@ -1465,12 +1469,12 @@ async fn the_boards_picker_opens_another_board() {
     press(&mut app, "<CR>");
     assert_eq!(
         app.take_effects(),
-        [Effect::Send(Command::LoadBoard(Some(kolum_domain::BoardId::new("1"))))]
+        [Effect::Send(Command::LoadBoard(Some(kolum_domain::BoardId::new("1")), 2))]
     );
     press(&mut app, ":board 7<CR>");
     assert_eq!(
         app.take_effects(),
-        [Effect::Send(Command::LoadBoard(Some(kolum_domain::BoardId::new("7"))))]
+        [Effect::Send(Command::LoadBoard(Some(kolum_domain::BoardId::new("7")), 3))]
     );
 }
 
@@ -1479,9 +1483,9 @@ async fn a_cached_board_says_so_until_the_sync_lands() {
     let fake = FakeProvider::new();
     let snapshot = load_board(&fake, None).await.unwrap();
     let mut app = App::new(settings(), Arc::new(|| {}));
-    app.on_event(Event::BoardLoaded { snapshot: snapshot.clone(), fresh: false });
+    app.on_event(Event::BoardLoaded { snapshot: snapshot.clone(), fresh: false, request: 1 });
     assert!(screen(&mut app, 150, 40).contains("cached, syncing…"));
-    app.on_event(Event::BoardLoaded { snapshot, fresh: true });
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true, request: 1 });
     assert!(!screen(&mut app, 150, 40).contains("cached"));
 }
 
@@ -1560,6 +1564,165 @@ async fn l_moves_a_card_at_once_and_a_refusal_puts_it_back() {
     app.on_event(Event::WriteFailed { op: sent[0].0, key: IssueKey::parse("ACME-9"), error });
     assert_eq!(column_of(&mut app, "ACME-9"), 0, "undone");
     assert!(screen(&mut app, 150, 60).contains("ACME-9: conflict: workflow changed; undone"));
+}
+
+/// The board as the provider has it now: ACME-9 renamed and moved to Done
+/// by a colleague, ACME-11 ranked to the top.
+async fn synced_meanwhile() -> kolum_app::BoardSnapshot {
+    let mut fresh = load_board(&FakeProvider::new(), None).await.unwrap();
+    let done = fresh.issues.iter().find(|i| i.key.as_str() == "ACME-8").unwrap().status.clone();
+    let nine = fresh.issues.iter_mut().find(|i| i.key.as_str() == "ACME-9").unwrap();
+    nine.title = "Renamed by Ana".into();
+    nine.status = done;
+    let top = kolum_domain::Rank::Before(fresh.issues[0].key.clone());
+    kolum_app::move_issue(&mut fresh.issues, &IssueKey::parse("ACME-11"), &top);
+    fresh
+}
+
+#[tokio::test]
+async fn a_sync_before_the_reply_keeps_the_move_and_a_refusal_keeps_the_sync() {
+    let mut app = loaded().await;
+    app.take_effects();
+    press(&mut app, "L");
+    app.on_event(transitions_event("ACME-9").await);
+    let op = writes(app.take_effects())[0].0;
+    app.on_event(Event::BoardLoaded {
+        snapshot: synced_meanwhile().await,
+        fresh: true,
+        request: 1,
+    });
+    assert_eq!(column_of(&mut app, "ACME-9"), 1, "still where it was put");
+    assert!(screen(&mut app, 150, 60).contains("Renamed by Ana"));
+
+    let error = kolum_domain::DomainError::Conflict("workflow changed".into());
+    app.on_event(Event::WriteFailed { op, key: IssueKey::parse("ACME-9"), error });
+    assert_eq!(column_of(&mut app, "ACME-9"), 4, "where the sync has it: Done");
+    assert!(screen(&mut app, 150, 60).contains("Renamed by Ana"), "the colleague's change kept");
+}
+
+#[tokio::test]
+async fn a_sync_before_the_reply_keeps_the_rank_and_a_refusal_keeps_the_synced_order() {
+    let mut app = loaded().await;
+    press(&mut app, "ll"); // In Progress: ACME-5, 10, 11…
+    app.take_effects();
+    press(&mut app, "J");
+    let op = writes(app.take_effects())[0].0;
+    app.on_event(Event::BoardLoaded {
+        snapshot: synced_meanwhile().await,
+        fresh: true,
+        request: 1,
+    });
+    assert_eq!(&column_order(&mut app, 2)[..3], ["ACME-11", "ACME-10", "ACME-5"], "both");
+
+    let error = kolum_domain::DomainError::Conflict("Rank is not configured".into());
+    app.on_event(Event::WriteFailed { op, key: IssueKey::parse("ACME-5"), error });
+    assert_eq!(&column_order(&mut app, 2)[..3], ["ACME-11", "ACME-5", "ACME-10"], "the sync's");
+}
+
+/// The provider's copy of an issue read back after a write: a minute
+/// newer than the board's.
+async fn read_back(
+    key: &str,
+    change: impl FnOnce(&mut kolum_domain::Issue),
+) -> kolum_domain::Issue {
+    let mut issue = FakeProvider::new().issue(&IssueKey::parse(key)).await.unwrap();
+    change(&mut issue);
+    issue.updated += time::Duration::minutes(1);
+    issue
+}
+
+/// Replies come back out of order: a sync that left before the write's
+/// reply, and lands after it, does not undo the write.
+#[tokio::test]
+async fn a_sync_slower_than_the_write_does_not_undo_it() {
+    let mut app = loaded().await;
+    app.take_effects();
+    press(&mut app, "L");
+    app.on_event(transitions_event("ACME-9").await);
+    let op = writes(app.take_effects())[0].0;
+    let todo = load_board(&FakeProvider::new(), None).await.unwrap().issues;
+    let todo = todo.iter().find(|i| i.status.name == "To Do").unwrap().status.clone();
+    let issue = read_back("ACME-9", |i| i.status = todo).await;
+    app.on_event(Event::Written { op, key: issue.key.clone(), issue: Some(Box::new(issue)) });
+    let stale = load_board(&FakeProvider::new(), None).await.unwrap();
+    app.on_event(Event::BoardLoaded { snapshot: stale, fresh: true, request: 1 });
+    assert_eq!(column_of(&mut app, "ACME-9"), 1, "the write's copy is newer");
+}
+
+/// A read sent before a write, answered after its reply, does not undo
+/// the write on the open issue.
+#[tokio::test]
+async fn a_read_slower_than_the_write_does_not_undo_it_on_the_open_issue() {
+    let mut app = loaded().await;
+    press(&mut app, "/ACME-10<CR><CR>");
+    let before = FakeProvider::new().issue(&IssueKey::parse("ACME-10")).await.unwrap();
+    press(&mut app, "<Space>A");
+    let op = writes(app.take_effects())[0].0;
+    let me = FakeProvider::new().me().await.unwrap();
+    let issue = read_back("ACME-10", |i| i.assignee = Some(me)).await;
+    app.on_event(Event::Written { op, key: issue.key.clone(), issue: Some(Box::new(issue)) });
+    let detail = IssueDetail {
+        issue: before,
+        comments: vec![],
+        activity: vec![],
+        layout: None,
+        children: vec![],
+    };
+    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    assert!(detail_value(&mut app, "Assignee").contains("Colin Tenaguillo"));
+}
+
+/// Before the board has arrived, or after it failed, an issue opened from
+/// a search is still written to.
+#[tokio::test]
+async fn writes_reach_the_provider_with_no_board() {
+    use kolum::ui::EditPurpose;
+    let fake = FakeProvider::new();
+    let mut app = App::new(settings(), Arc::new(|| {}));
+    app.on_event(Event::Me(fake.me().await.unwrap()));
+    let key = IssueKey::parse("ACME-9");
+    press(&mut app, "<Space>F");
+    let due = app.deadline().unwrap();
+    wait_until(&mut app, due);
+    let issue = fake.issue(&key).await.unwrap();
+    app.on_event(Event::SearchResults { id: 1, result: Ok(vec![issue.clone()]) });
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    let detail =
+        IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
+    app.on_event(Event::IssueLoaded(Box::new(detail)));
+    assert_eq!(app.open_issue(), Some(&key));
+    app.take_effects();
+
+    press(&mut app, "<Space>A");
+    let me = kolum_app::Write::Assign(Some(kolum_domain::UserId::new("u-colin")));
+    assert_eq!(writes(app.take_effects()).pop().map(|w| w.2), Some(me));
+    press(&mut app, "t");
+    app.on_event(transitions_event("ACME-9").await);
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    let sent = writes(app.take_effects()).pop().map(|w| w.2);
+    assert!(matches!(sent, Some(kolum_app::Write::Transition(_))), "{sent:?}");
+    app.on_edited(EditPurpose::Comment(key), Ok("Looks good".into()));
+    let sent = writes(app.take_effects()).pop().map(|w| w.2);
+    assert!(matches!(sent, Some(kolum_app::Write::Comment(_))), "{sent:?}");
+}
+
+/// A field set at once on the open issue goes again when the provider
+/// refuses it, without waiting for a read.
+#[tokio::test]
+async fn a_refused_field_leaves_the_detail_at_once() {
+    let mut app = loaded().await;
+    press(&mut app, "/ACME-10<CR><CR>");
+    edit_field(&mut app, "reviewer").await;
+    press(&mut app, "ana");
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    let op = writes(app.take_effects())[0].0;
+    assert!(screen(&mut app, 140, 60).contains("Reviewer"), "shown at once");
+    let error = kolum_domain::DomainError::Conflict("stale".into());
+    app.on_event(Event::WriteFailed { op, key: IssueKey::parse("ACME-10"), error });
+    assert!(!screen(&mut app, 140, 60).contains("Reviewer"), "gone with the refusal");
 }
 
 #[tokio::test]
@@ -1743,7 +1906,7 @@ async fn an_edit_starts_from_a_read_as_new_as_the_board() {
     let mut snapshot = load_board(&fake, None).await.unwrap();
     let on_board = snapshot.issues.iter_mut().find(|i| i.key == key).unwrap();
     on_board.updated = read.updated + time::Duration::minutes(1);
-    app.on_event(Event::BoardLoaded { snapshot, fresh: true });
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true, request: 1 });
     app.on_edited(purpose, Ok(text.replace("An admin switch", "A switch")));
     assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(key.clone()))], "read again");
     let mut commented = read.clone();
@@ -1753,6 +1916,7 @@ async fn an_edit_starts_from_a_read_as_new_as_the_board() {
     let kolum_app::Write::Update(update) = &sent[0].2 else { panic!("{sent:?}") };
     let saved = update.description.as_ref().map(|d| d.plain_text()).unwrap_or_default();
     assert!(saved.starts_with("A switch"), "{saved}");
+    app.on_event(Event::Written { op: sent[0].0, key, issue: None });
     press(&mut app, "e");
     assert!(
         matches!(app.take_effects().pop(), Some(Effect::Edit { .. })),
@@ -1873,7 +2037,7 @@ async fn a_failed_read_leaves_nothing_waiting_on_it() {
     let epic = IssueKey::parse("ACME-1");
     let mut snapshot = load_board(&fake, None).await.unwrap();
     snapshot.issues.retain(|i| i.key != epic);
-    app.on_event(Event::BoardLoaded { snapshot, fresh: true });
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true, request: 1 });
     press(&mut app, "gp");
     app.on_event(failed(&epic));
     app.on_event(Event::IssueLoaded(Box::new(detail(fake.issue(&epic).await.unwrap()))));
@@ -1909,7 +2073,7 @@ async fn the_picker_previews_the_description_read_whole() {
     for issue in &mut snapshot.issues {
         issue.description = kolum_domain::RichText::default();
     }
-    app.on_event(Event::BoardLoaded { snapshot, fresh: true });
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true, request: 1 });
     let issue = fake.issue(&IssueKey::parse("ACME-10")).await.unwrap();
     let detail =
         IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
@@ -1945,6 +2109,195 @@ async fn a_read_only_provider_is_told_not_tried() {
         assert!(app.take_effects().is_empty(), "{keys} sent something");
         assert!(screen(&mut app, 120, 30).contains("read-only"), "{keys}");
     }
+}
+
+fn bare(issue: kolum_domain::Issue) -> IssueDetail {
+    IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] }
+}
+
+/// `e` on the open issue, its read answered, the editor's text changed by
+/// `edit`, and the save sent: a title alone at once, a description once
+/// the issue is read again. The write's op.
+async fn describe(app: &mut App, edit: impl Fn(&str) -> String) -> u64 {
+    let key = IssueKey::parse("ACME-9");
+    let read = FakeProvider::new().issue(&key).await.unwrap();
+    press(app, "e");
+    let asked = app.take_effects();
+    if asked.contains(&Effect::Send(Command::LoadIssue(key.clone()))) {
+        app.on_event(Event::IssueLoaded(Box::new(bare(read.clone()))));
+    }
+    let Some(Effect::Edit { purpose, text }) = app.take_effects().pop().or(asked.last().cloned())
+    else {
+        panic!("expected the editor")
+    };
+    app.on_edited(purpose, Ok(edit(&text)));
+    let mut sent = writes(app.take_effects());
+    if sent.is_empty() {
+        app.on_event(Event::IssueLoaded(Box::new(bare(read))));
+        sent = writes(app.take_effects());
+    }
+    sent[0].0
+}
+
+/// A refused save is kept against the text its editing began from, not a
+/// board copy, which on Jira Cloud has no description.
+#[tokio::test]
+async fn a_refused_description_keeps_the_text_it_was_edited_from() {
+    let mut app = loaded().await;
+    press(&mut app, "<CR>");
+    app.take_effects();
+    let op = describe(&mut app, |t| t.replace("An admin switch", "My switch")).await;
+    let mut cloud = load_board(&FakeProvider::new(), None).await.unwrap();
+    let nine = cloud.issues.iter_mut().find(|i| i.key.as_str() == "ACME-9").unwrap();
+    nine.description = kolum_domain::RichText::default();
+    nine.updated += time::Duration::minutes(1);
+    app.on_event(Event::BoardLoaded { snapshot: cloud, fresh: true, request: 1 });
+    let error = kolum_domain::DomainError::Conflict("stale".into());
+    app.on_event(Event::WriteFailed { op, key: IssueKey::parse("ACME-9"), error });
+    press(&mut app, "e");
+    let Some(Effect::Edit { purpose: EditPurpose::Describe { from, .. }, text }) =
+        app.take_effects().pop()
+    else {
+        panic!("expected the draft")
+    };
+    assert!(text.contains("My switch"), "{text}");
+    assert!(from.contains("An admin switch"), "the text it was edited from: {from}");
+}
+
+/// Two saves of one issue refused, in either order: the draft keeps the
+/// title typed in one and the description typed in the other.
+#[tokio::test]
+async fn two_refused_saves_make_one_draft() {
+    for title_first in [true, false] {
+        let mut app = loaded().await;
+        press(&mut app, "<CR>");
+        app.take_effects();
+        let title = describe(&mut app, |t| t.replacen("# Enforce SSO", "# Require SSO", 1)).await;
+        let body = describe(&mut app, |t| t.replace("An admin switch", "My switch")).await;
+        let key = IssueKey::parse("ACME-9");
+        let ops = if title_first { [title, body] } else { [body, title] };
+        for op in ops {
+            let error = kolum_domain::DomainError::Conflict("stale".into());
+            app.on_event(Event::WriteFailed { op, key: key.clone(), error });
+        }
+        press(&mut app, "e");
+        let Some(Effect::Edit { purpose: EditPurpose::Describe { from, .. }, text }) =
+            app.take_effects().pop()
+        else {
+            panic!("expected the draft")
+        };
+        assert!(text.contains("# Require SSO") && text.contains("My switch"), "{text}");
+        assert!(from.contains("# Enforce SSO") && from.contains("An admin switch"), "{from}");
+    }
+}
+
+/// The issue read back after a write is the issue whole: it replaces the
+/// open one, description included, over a board copy that has none.
+#[tokio::test]
+async fn a_read_back_replaces_the_open_issue_whole() {
+    let mut app = loaded().await;
+    press(&mut app, "<CR>");
+    let read = FakeProvider::new().issue(&IssueKey::parse("ACME-9")).await.unwrap();
+    app.on_event(Event::IssueLoaded(Box::new(bare(read.clone()))));
+    press(&mut app, "<Space>A");
+    let op = writes(app.take_effects())[0].0;
+    let mut saved = read.clone();
+    saved.description = kolum_domain::RichText::from_markdown("Rewritten meanwhile");
+    saved.updated += time::Duration::minutes(1);
+    let mut cloud = load_board(&FakeProvider::new(), None).await.unwrap();
+    let nine = cloud.issues.iter_mut().find(|i| i.key.as_str() == "ACME-9").unwrap();
+    (nine.description, nine.updated) = (kolum_domain::RichText::default(), saved.updated);
+    app.on_event(Event::BoardLoaded { snapshot: cloud, fresh: true, request: 1 });
+    app.on_event(Event::Written { op, key: read.key.clone(), issue: Some(Box::new(saved)) });
+    let shown = screen(&mut app, 120, 40);
+    assert!(shown.contains("Rewritten meanwhile"), "{shown}");
+}
+
+/// A read kept from before is not overwritten by an older board copy when
+/// the issue opens.
+#[tokio::test]
+async fn an_issue_opens_from_a_read_newer_than_the_board() {
+    let mut app = loaded().await;
+    let mut read = FakeProvider::new().issue(&IssueKey::parse("ACME-9")).await.unwrap();
+    read.title = "Renamed since the board".into();
+    read.updated += time::Duration::minutes(1);
+    app.on_event(Event::ReadIssues(vec![bare(read)]));
+    press(&mut app, "<CR>");
+    assert!(screen(&mut app, 120, 40).contains("Renamed since the board"));
+}
+
+/// A description on its way: `e` waits for it rather than open the old
+/// one; refused, the text typed is kept as a draft that `e` opens.
+#[tokio::test]
+async fn a_refused_description_is_kept_as_a_draft_and_e_waits_while_it_is_saved() {
+    let fake = FakeProvider::new();
+    let mut app = loaded().await;
+    let key = IssueKey::parse("ACME-9");
+    let read = fake.issue(&key).await.unwrap();
+    let detail = |issue| IssueDetail {
+        issue,
+        comments: vec![],
+        activity: vec![],
+        layout: None,
+        children: vec![],
+    };
+    press(&mut app, "<CR>");
+    app.on_event(Event::IssueLoaded(Box::new(detail(read.clone()))));
+    app.take_effects();
+    press(&mut app, "e");
+    let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else { panic!() };
+    app.on_edited(purpose, Ok(text.replace("An admin switch", "My switch")));
+    app.on_event(Event::IssueLoaded(Box::new(detail(read))));
+    let op = writes(app.take_effects())[0].0;
+    press(&mut app, "e");
+    assert!(app.take_effects().is_empty(), "`e` waits for the write");
+    assert!(screen(&mut app, 120, 40).contains("ACME-9 is still being saved"));
+
+    let error = kolum_domain::DomainError::Conflict("stale".into());
+    app.on_event(Event::WriteFailed { op, key, error });
+    assert!(screen(&mut app, 150, 40).contains("kept as a draft"));
+    press(&mut app, "e");
+    let Some(Effect::Edit { text, .. }) = app.take_effects().pop() else { panic!() };
+    assert!(text.contains("My switch"), "{text}");
+}
+
+/// A board asked for before a write was taken may not hold it: the write
+/// shows over it until one asked for after lands, which says where the
+/// provider put the card. A read back after a rank does not say.
+#[tokio::test]
+async fn a_board_asked_before_a_write_was_taken_does_not_undo_it() {
+    let mut app = loaded().await;
+    press(&mut app, "ll"); // In Progress: ACME-5, 10, 11…
+    app.take_effects();
+    press(&mut app, "J");
+    let op = writes(app.take_effects())[0].0;
+    let read = read_back("ACME-5", |_| {}).await;
+    app.on_event(Event::Written { op, key: read.key.clone(), issue: Some(Box::new(read)) });
+    let before = load_board(&FakeProvider::new(), None).await.unwrap();
+    app.on_event(Event::BoardLoaded { snapshot: before.clone(), fresh: true, request: 1 });
+    assert_eq!(&column_order(&mut app, 2)[..3], ["ACME-10", "ACME-5", "ACME-11"], "still moved");
+
+    let due = app.deadline().unwrap();
+    wait_until(&mut app, due);
+    assert!(app.take_effects().contains(&Effect::Send(Command::SyncBoard(None, 2))));
+    app.on_event(Event::BoardLoaded { snapshot: before, fresh: true, request: 2 });
+    assert_eq!(&column_order(&mut app, 2)[..3], ["ACME-5", "ACME-10", "ACME-11"], "settled");
+}
+
+/// Each column keeps its highlight on the same card when a sync moves the
+/// cards above it.
+#[tokio::test]
+async fn a_sync_keeps_each_columns_highlight_on_its_card() {
+    let mut app = loaded().await;
+    press(&mut app, "jj");
+    let held = selected(&app).to_string();
+    press(&mut app, "ll");
+    let mut synced = load_board(&FakeProvider::new(), None).await.unwrap();
+    let done = synced.issues.iter().find(|i| i.key.as_str() == "ACME-8").unwrap().status.clone();
+    synced.issues.iter_mut().find(|i| i.key.as_str() == "ACME-9").unwrap().status = done;
+    app.on_event(Event::BoardLoaded { snapshot: synced, fresh: true, request: 1 });
+    press(&mut app, "hh");
+    assert_eq!(selected(&app), held);
 }
 
 #[tokio::test]
@@ -2189,7 +2542,7 @@ async fn gp_opens_the_parent() {
 
     let board = load_board(&fake, None).await.unwrap();
     let orphan = board.issues.iter().find(|i| i.parent.is_none()).unwrap().key.clone();
-    app.on_event(Event::BoardLoaded { snapshot: board, fresh: true });
+    app.on_event(Event::BoardLoaded { snapshot: board, fresh: true, request: 1 });
     press(&mut app, &format!("q/{orphan}<CR>gp"));
     assert!(screen(&mut app, 140, 40).contains(&format!("{orphan} has no parent")));
 }
@@ -2619,7 +2972,7 @@ async fn repository_board() -> App {
         issue.key = IssueKey::new("python-language-server", "#", n as u64);
     }
     let mut app = App::new(settings(), Arc::new(|| {}));
-    app.on_event(Event::BoardLoaded { snapshot, fresh: true });
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true, request: 1 });
     app.take_effects();
     app
 }
@@ -2643,7 +2996,8 @@ async fn the_detail_names_the_repository_an_issue_is_in() {
     press(&mut app, "<CR>");
     let key = app.open_issue().cloned().unwrap();
     let mut issue = FakeProvider::new().issue(&IssueKey::parse("ACME-5")).await.unwrap();
-    (issue.key, issue.parent) = (key.clone(), None);
+    // Read after the board: as new as its copy at least.
+    (issue.key, issue.parent, issue.updated) = (key.clone(), None, time::OffsetDateTime::now_utc());
     let detail =
         IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
     app.on_event(Event::IssueLoaded(Box::new(detail)));
