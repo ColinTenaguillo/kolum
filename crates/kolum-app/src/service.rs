@@ -312,10 +312,7 @@ async fn run(ports: Ports, command: Command) {
     let event = match command {
         Command::LoadBoard(id, request) => ports.load_board(id, request).await,
         Command::ReloadBoard(id, request) => ports.fetch_board(id, request, None).await,
-        Command::SyncBoard(id, request) => {
-            let cached = ports.kept_board(id.clone()).await;
-            ports.fetch_board(id, request, cached).await
-        }
+        Command::SyncBoard(id, request) => ports.sync_board(id, request).await,
         Command::LoadIssue(key) => match ports.load_issue(key).await {
             Some(answer) => answer,
             None => return,
@@ -338,12 +335,14 @@ async fn run(ports: Ports, command: Command) {
         Command::Clone(key) => {
             or_failed(provider.clone_issue(&key).await, created, || format!("cloning {key}"))
         }
-        Command::Search { id, query } => {
-            let result = provider.search(&query, None).await.map(|page| page.items);
-            Event::SearchResults { id, result }
-        }
+        Command::Search { id, query } => search(provider, id, query).await,
     };
     ports.announce(event);
+}
+
+async fn search(provider: &dyn Provider, id: u64, query: kolum_domain::Query) -> Event {
+    let result = provider.search(&query, None).await.map(|page| page.items);
+    Event::SearchResults { id, result }
 }
 
 fn created(issue: Issue) -> Event {
@@ -370,6 +369,12 @@ impl Ports {
             let _ = self.events.send(Event::BoardLoaded { snapshot, fresh: false, request });
         }
         self.fetch_board(id, request, None).await
+    }
+
+    /// What changed since the board kept, or the whole board when none is.
+    async fn sync_board(&self, id: Option<BoardId>, request: u64) -> Event {
+        let cached = self.kept_board(id.clone()).await;
+        self.fetch_board(id, request, cached).await
     }
 
     async fn kept_board(&self, id: Option<BoardId>) -> Option<(BoardSnapshot, OffsetDateTime)> {

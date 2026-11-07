@@ -2,7 +2,7 @@
 //! board, the picker, the detail and the help page are pinned as
 //! snapshots; the rest is checked on what the keys did.
 
-use kolum::config::{PickerLayout, UiConfig};
+use kolum::config::UiConfig;
 use kolum::keymap::{Key, Keymap, parse_keys};
 use kolum::ui::{App, EditPurpose, Effect, Settings};
 use kolum_app::{Command, Event, IssueDetail, load_board};
@@ -13,21 +13,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 fn settings() -> Settings {
-    Settings {
-        keymap: Keymap::defaults(),
-        theme_name: "dark".into(),
-        themes_dir: None,
-        theme_overrides: toml::Table::new(),
-        // No sync on its own: deadlines stay the test's to decide.
-        ui: UiConfig { sync_secs: 0, ..UiConfig::default() },
-        picker_layout: PickerLayout::Horizontal,
-        problems: vec![],
-        board: None,
-        writable: true,
-        images: None,
-        remote_debounce: std::time::Duration::from_millis(250),
-        filter_applied: false,
-    }
+    // No sync on its own: deadlines stay the test's to decide.
+    let ui = UiConfig { sync_secs: 0, ..UiConfig::default() };
+    Settings { ui, writable: true, ..Settings::default() }
 }
 
 async fn loaded_with(settings: Settings) -> App {

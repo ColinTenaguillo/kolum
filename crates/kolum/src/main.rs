@@ -278,18 +278,9 @@ fn load(args: &Args, config_dir: Option<PathBuf>) -> (config::Config, Settings) 
     let (keymap, key_problems) = Keymap::from_config(&config.keys);
     problems.extend(key_problems);
     let settings = Settings {
-        keymap,
-        theme_name: config.ui.theme.clone(),
         themes_dir: config_dir.map(|d| d.join("themes")),
-        theme_overrides: config.theme.overrides.clone(),
-        ui: config.ui.clone(),
-        picker_layout: config.picker.layout,
         problems,
-        board: None,
-        writable: false,
-        images: None,
-        remote_debounce: std::time::Duration::from_millis(config.picker.remote_debounce_ms),
-        filter_applied: false,
+        ..Settings::from_config(&config, keymap)
     };
     (config, settings)
 }

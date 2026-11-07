@@ -219,6 +219,34 @@ pub struct Settings {
     pub filter_applied: bool,
 }
 
+impl Settings {
+    /// What the config says, with no board picked yet, nothing else to
+    /// report, and no writes until the provider says it takes them.
+    pub fn from_config(config: &crate::config::Config, keymap: Keymap) -> Self {
+        Settings {
+            keymap,
+            theme_name: config.ui.theme.clone(),
+            themes_dir: None,
+            theme_overrides: config.theme.overrides.clone(),
+            ui: config.ui.clone(),
+            picker_layout: config.picker.layout,
+            problems: vec![],
+            board: None,
+            writable: false,
+            images: None,
+            remote_debounce: std::time::Duration::from_millis(config.picker.remote_debounce_ms),
+            filter_applied: false,
+        }
+    }
+}
+
+/// A run with no config file.
+impl Default for Settings {
+    fn default() -> Self {
+        Settings::from_config(&crate::config::Config::default(), Keymap::defaults())
+    }
+}
+
 pub struct App {
     keymap: Keymap,
     resolver: Resolver,
