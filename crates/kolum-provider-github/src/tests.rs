@@ -144,7 +144,8 @@ async fn items_become_issues_with_their_project_fields() {
         ("In Progress", StatusCategory::Doing)
     );
     assert_eq!(issue.kind.kind, IssueKind::Bug, "labelled bug");
-    assert_eq!(issue.priority, Some(Priority::High));
+    let p1 = Priority { rank: 1, name: "P1".into() };
+    assert_eq!(issue.priority, Some(p1), "its name, ranked by its option's place");
     assert_eq!(issue.estimate, Some(Estimate::Points(3.0)));
     assert_eq!(issue.sprint.as_ref().unwrap().name, "Iteration 4");
     assert_eq!(issue.assignee.as_ref().unwrap().display_name, "Colin Tenaguillo");
@@ -156,6 +157,43 @@ async fn items_become_issues_with_their_project_fields() {
     assert_eq!(pr.kind.name, "Pull request");
     assert_eq!((draft.key.as_str(), draft.key.project()), ("draft-ccc333", None), "no repository");
     assert_eq!((draft.status.name.as_str(), draft.kind.name.as_str()), ("No Status", "Draft"));
+}
+
+/// Each option of the project's Priority field, read once with the
+/// project, ranks as the domain ranks a list: by its meaning (a field of
+/// three shows Low as low, listed either way), else by its place.
+#[test]
+fn priority_options_rank_by_meaning_else_by_place() {
+    let field = |names: &[&str]| {
+        let options: Vec<Value> =
+            names.iter().map(|n| json!({ "id": format!("o_{n}"), "name": n })).collect();
+        vec![
+            json!({ "id": "PVTSSF_status", "name": "Status", "options": [] }),
+            json!({ "id": "PVTSSF_prio", "name": "priority", "options": options }),
+        ]
+    };
+    let rank = |names: &[&str], option: &str| priority_ranks(&field(names))[option].rank;
+    assert_eq!((rank(&["P0", "P1", "P2"], "o_P0"), rank(&["P0", "P1", "P2"], "o_P2")), (0, 2));
+    assert_eq!(rank(&["High", "Medium", "Low"], "o_Low"), 3, "Low is low");
+    assert_eq!(rank(&["Low", "Medium", "High"], "o_Low"), 3, "listed the other way");
+    assert_eq!(rank(&["Now", "Soon", "Later"], "o_Later"), 4, "its own: by place");
+    assert_eq!(priority_ranks(&field(&["Now"]))["o_Now"].name, "Now");
+}
+
+/// An option the project did not list when read (added since) ranks by
+/// what its name means, else mid-way; never at the very bottom.
+#[test]
+fn an_unlisted_priority_option_ranks_by_its_name() {
+    let p0 = Priority { rank: 0, name: "P0".into() };
+    let ranks = HashMap::from([("p0".to_string(), p0.clone())]);
+    assert_eq!(priority(&ranks, "p0", "P0"), p0);
+    assert_eq!(priority(&ranks, "new", "P3").rank, 3);
+    assert_eq!(priority(&ranks, "new", "Soon").rank, 2);
+}
+
+#[test]
+fn an_item_does_not_ask_for_its_fields_options() {
+    assert!(!queries::items().contains("options"), "read once, with the project");
 }
 
 #[tokio::test]
@@ -399,10 +437,13 @@ fn a_parent_with_no_number_is_no_parent() {
     };
     let numbered =
         content(json!({ "number": 9, "title": "Epic", "repository": { "name": "tempo" } }));
-    let issue = issue_of(&numbered, &[], None, "Status").unwrap().issue;
+    let issue = issue_of(&numbered, &[], None, "Status", &HashMap::new()).unwrap().issue;
     assert_eq!(issue.parent.map(|p| p.key.to_string()).as_deref(), Some("tempo#9"));
     let unnumbered = content(json!({ "title": "Epic", "repository": { "name": "tempo" } }));
-    assert_eq!(issue_of(&unnumbered, &[], None, "Status").unwrap().issue.parent, None);
+    assert_eq!(
+        issue_of(&unnumbered, &[], None, "Status", &HashMap::new()).unwrap().issue.parent,
+        None
+    );
 }
 
 #[tokio::test]

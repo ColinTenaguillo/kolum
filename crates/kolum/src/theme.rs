@@ -179,14 +179,16 @@ impl Theme {
         }
     }
 
-    pub fn priority(&self, priority: Priority) -> Color {
-        match priority {
-            Priority::Highest => self.priority_highest,
-            Priority::High => self.priority_high,
-            Priority::Medium => self.priority_medium,
-            Priority::Low => self.priority_low,
-            Priority::Lowest => self.priority_lowest,
-        }
+    /// The colour of the priority's level, highest to lowest.
+    pub fn priority(&self, priority: &Priority) -> Color {
+        let levels: [Color; Priority::LEVELS] = [
+            self.priority_highest,
+            self.priority_high,
+            self.priority_medium,
+            self.priority_low,
+            self.priority_lowest,
+        ];
+        levels[priority.level()]
     }
 
     pub fn issue_type(&self, kind: IssueKind) -> Color {
@@ -262,6 +264,8 @@ mod tests {
         assert_eq!(theme.accent, rgb(0x7e9cd8));
         assert_eq!(theme.status_done, Color::Green);
         assert_eq!(theme.priority_high, rgb(0xff0000));
+        let ranked = |rank| theme.priority(&kolum_domain::Priority { rank, name: "p".into() });
+        assert_eq!((ranked(1), ranked(9)), (theme.priority_high, theme.priority_lowest));
         assert_eq!(theme.label_palette, [Color::Red, Color::Indexed(208)]);
         assert_eq!(
             problems,

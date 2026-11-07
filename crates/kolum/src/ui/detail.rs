@@ -6,7 +6,7 @@ use super::{glyph, rich};
 use crate::theme::Theme;
 use kolum_app::IssueDetail;
 use kolum_domain::{
-    CustomField, FieldId, FieldLayout, FieldValue, Issue, IssueRef, Priority, RichText, UserId,
+    CustomField, FieldId, FieldLayout, FieldValue, Issue, IssueRef, RichText, UserId,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -592,19 +592,14 @@ fn value_spans(
         (FieldId::ASSIGNEE | FieldId::REPORTER, Some(FieldValue::User(u))) => {
             user_spans(&u, theme, me)
         }
-        (FieldId::PRIORITY, Some(FieldValue::Text(name))) => priority_spans(name, theme),
+        (FieldId::PRIORITY, Some(FieldValue::Priority(p))) => {
+            vec![glyph::priority_span(&p, theme), Span::raw(format!(" {}", p.name))]
+        }
         (FieldId::LABELS, Some(FieldValue::Options(labels))) => label_spans(&labels, theme),
         (FieldId::EPIC, Some(FieldValue::Issue(p))) => {
             vec![Span::styled(format!("◆ {}", p.title), Style::new().fg(theme.type_epic))]
         }
         (_, Some(value)) => vec![Span::raw(field_value(&value))],
-    }
-}
-
-fn priority_spans(name: String, theme: &Theme) -> Vec<Span<'static>> {
-    match Priority::from_name(&name) {
-        Some(p) => vec![glyph::priority_span(p, theme), Span::raw(format!(" {}", p.name()))],
-        None => vec![Span::raw(name)],
     }
 }
 

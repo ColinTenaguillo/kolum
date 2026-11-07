@@ -20,6 +20,7 @@ fn ctx() -> Ctx {
         fields: map::detect_fields(&fields, &map::FieldIds::default()),
         names: map::custom_names(&fields),
         schemas: map::schemas(&fields),
+        priorities: vec![],
     }
 }
 
@@ -111,13 +112,20 @@ fn a_value_is_written_in_the_shape_its_field_takes() {
 #[test]
 fn the_editable_fields_say_how_each_is_edited() {
     let meta: dto::EditMetaDto = serde_json::from_str(fixture!("editmeta.json")).unwrap();
-    let fields = map::editable_fields(&meta, &ctx().fields, JiraFlavor::Cloud);
+    let fields = map::editable_fields(&meta, &ctx().fields, JiraFlavor::Cloud, &[]);
     let shown: Vec<(&str, &FieldKind, bool)> =
         fields.iter().map(|f| (f.name.as_str(), &f.kind, f.required)).collect();
     let choice = |o: &[&str], many| FieldKind::Choice {
         options: o.iter().map(|s| s.to_string()).collect(),
         many,
     };
+    let ranked = |rank, name: &str| Priority { rank, name: name.into() };
+    let priorities = FieldKind::Priority(vec![
+        ranked(2, "Showstopper"),
+        ranked(1, "High"),
+        ranked(2, "Medium"),
+        ranked(2, "Someday"),
+    ]);
     assert_eq!(
         shown,
         [
@@ -130,7 +138,7 @@ fn the_editable_fields_say_how_each_is_edited() {
             ("Fix versions", &choice(&["3.1.0", "3.2.0"], true), false),
             ("Labels", &FieldKind::Words, false),
             ("Parent", &FieldKind::Issue, false),
-            ("Priority", &choice(&["High", "Medium"], false), false),
+            ("Priority", &priorities, false),
             ("Reviewer", &FieldKind::User, false),
             ("Sprint", &FieldKind::Sprint, false),
             ("Story Points", &FieldKind::Number, false),
@@ -166,7 +174,7 @@ fn the_parent_is_set_by_the_field_the_issue_offers() {
             meta["fields"].as_object_mut().unwrap().remove(id);
         }
         let meta: dto::EditMetaDto = serde_json::from_value(meta).unwrap();
-        let fields = map::editable_fields(&meta, &ctx().fields, flavor);
+        let fields = map::editable_fields(&meta, &ctx().fields, flavor, &[]);
         let epics = fields.iter().filter(|f| f.id.as_str() == FieldId::EPIC);
         epics.map(|f| f.provider_id.to_string()).collect::<Vec<_>>()
     };
@@ -186,7 +194,7 @@ fn a_field_the_issue_is_not_read_for_is_not_on_it() {
         "schema": {"type": "string", "system": "environment"}
     });
     let meta: dto::EditMetaDto = serde_json::from_value(meta).unwrap();
-    let fields = map::editable_fields(&meta, &ctx().fields, JiraFlavor::Cloud);
+    let fields = map::editable_fields(&meta, &ctx().fields, JiraFlavor::Cloud, &[]);
     let environment = fields.iter().find(|f| f.name == "Environment").unwrap();
     assert!(!environment.on_issue);
 }
@@ -265,7 +273,7 @@ fn an_issue_maps_every_field() {
     assert_eq!(issue.kind, IssueType { name: "Bug".into(), kind: IssueKind::Bug });
     assert_eq!(issue.status.category, StatusCategory::Doing);
     assert_eq!(issue.status.id.as_str(), "3");
-    assert_eq!(issue.priority, Some(Priority::High));
+    assert_eq!(issue.priority, Some(Priority { rank: 1, name: "High".into() }));
     assert_eq!(issue.assignee.as_ref().unwrap().id.as_str(), "557058:colin");
     assert_eq!(
         issue.assignee.as_ref().unwrap().avatar_url.as_deref(),
@@ -312,7 +320,8 @@ fn an_issue_maps_every_field() {
 fn a_sparse_issue_falls_back_sensibly() {
     let issue = &issues()[1];
     assert_eq!(issue.status.category, StatusCategory::Todo);
-    assert_eq!(issue.priority, Some(Priority::Low), "Minor, from the older scheme");
+    let minor = Priority { rank: 3, name: "Minor".into() };
+    assert_eq!(issue.priority, Some(minor), "from the older scheme, by its name");
     assert!(issue.assignee.is_none() && issue.reporter.is_none());
     assert_eq!(issue.estimate, Some(Estimate::Seconds(7200)), "no points: the time estimate");
     assert_eq!(
@@ -410,23 +419,34 @@ fn an_issue_without_a_status_is_an_error_not_a_panic() {
     );
 }
 
+/// Jira's older scheme keeps its own names, Blocker and Critical apart.
+/// On a site that lists both schemes, a name ranks by what it means
+/// (Blocker, listed after Highest…Lowest, is still the most urgent) and
+/// an admin's own by its place in Jira's list: the same on every card.
 #[test]
-fn names_map_to_kinds_and_priorities() {
+fn a_priority_keeps_jiras_name_and_ranks_by_its_meaning_else_its_place() {
+    let listed: Vec<dto::NamedDto> = serde_json::from_str(fixture!("priorities.json")).unwrap();
+    let names: Vec<&str> = listed.iter().map(|p| p.name.as_str()).collect();
+    let ctx = Ctx { priorities: Priority::list(&names), ..ctx() };
+    let with = |name: &str| {
+        let mut dto: IssueDto = serde_json::from_str(fixture!("issue.json")).unwrap();
+        dto.fields.insert("priority".into(), serde_json::json!({ "id": "1", "name": name }));
+        map::issue(&dto, &ctx).unwrap().priority.unwrap()
+    };
+    let (blocker, critical) = (with("Blocker"), with("Critical"));
+    assert_eq!((blocker.name.as_str(), critical.name.as_str()), ("Blocker", "Critical"));
+    let ranks = ["Blocker", "Showstopper", "Major", "Low", "Someday"].map(|n| with(n).rank);
+    assert_eq!(ranks, [0, 0, 1, 3, 4]);
+}
+
+#[test]
+fn names_map_to_kinds() {
     let t = |name: &str| IssueTypeDto { name: name.into(), subtask: false, hierarchy_level: None };
     assert_eq!(map::kind(&t("Defect")), IssueKind::Bug);
     assert_eq!(map::kind(&t("User Story")), IssueKind::Story);
     assert_eq!(map::kind(&t("Task")), IssueKind::Task);
     assert_eq!(map::kind(&t("Epic")), IssueKind::Epic);
     assert_eq!(map::kind(&t("Spike")), IssueKind::Other);
-    for (name, p) in [
-        ("Blocker", Priority::Highest),
-        ("Major", Priority::High),
-        ("Normal", Priority::Medium),
-        ("Trivial", Priority::Lowest),
-    ] {
-        assert_eq!(map::priority(name), Some(p));
-    }
-    assert_eq!(map::priority("P3"), None);
     assert_eq!(
         map::datetime("2026-09-02T20:00:00+00:00"),
         Some(time::macros::datetime!(2026-09-02 20:00 UTC))
@@ -465,6 +485,7 @@ fn route(method: &str, target: &str) -> Option<(&'static str, &'static str)> {
         "200 OK",
         match path {
             "/rest/api/3/field" => fixture!("fields.json"),
+            "/rest/api/3/priority" => fixture!("priorities.json"),
             "/_edge/tenant_info" => r#"{"cloudId": "cloud-1"}"#,
             "/rest/agile/1.0/board" => fixture!("boards.json"),
             // Board 7: the same, on a Jira whose private API does not answer.
@@ -587,6 +608,60 @@ fn provider(jira: &FakeJira) -> JiraProvider {
         board: Some(42),
         fields: map::FieldIds::default(),
     })
+}
+
+/// The priorities in E's picker come in editmeta's own order, each ranked
+/// as a card read back ranks it, by Jira's list read once: a name by its
+/// meaning, an admin's own (Showstopper, listed first) by its place; one
+/// with no id kept by its name.
+#[tokio::test]
+async fn a_priority_ranks_the_same_in_the_picker_and_read_back() {
+    let jira = fake_jira(None).await;
+    let p = provider(&jira);
+    let key = IssueKey::parse("ACME-5");
+    assert_eq!(
+        picked(p.editable_fields(&key).await.unwrap()),
+        "Showstopper 0, High 1, Medium 2, Someday 4"
+    );
+    let high = p.issue(&key).await.unwrap().priority.unwrap();
+    assert_eq!((high.name.as_str(), high.rank), ("High", 1), "as in the picker");
+    p.editable_fields(&key).await.unwrap();
+    let seen = jira.seen.lock().unwrap().clone();
+    let reads = seen.iter().filter(|r| r.starts_with("/rest/api/3/priority")).count();
+    assert_eq!(reads, 1, "read once: {seen:?}");
+}
+
+/// When Jira's list of priorities does not answer: a name by its meaning,
+/// an admin's own in the middle, the same in the picker and read back.
+#[tokio::test]
+async fn without_jiras_list_a_priority_ranks_by_its_name_alone() {
+    let jira = fake_jira_with(None, Some("/rest/api/3/priority")).await;
+    let p = provider(&jira);
+    let key = IssueKey::parse("ACME-5");
+    assert_eq!(
+        picked(p.editable_fields(&key).await.unwrap()),
+        "Showstopper 2, High 1, Medium 2, Someday 2"
+    );
+    assert_eq!(p.issue(&key).await.unwrap().priority.unwrap().rank, 1, "High");
+}
+
+/// The Priority field's choices, by name and rank, as E offers them.
+fn picked(fields: Vec<EditableField>) -> String {
+    let field = fields.into_iter().find(|f| f.id.as_str() == FieldId::PRIORITY).unwrap();
+    let FieldKind::Priority(all) = field.kind else { panic!("{:?}", field.kind) };
+    all.iter().map(|p| format!("{} {}", p.name, p.rank)).collect::<Vec<_>>().join(", ")
+}
+
+/// A priority with no id, nor a place in Jira's list, ranks by what its
+/// name means, else mid-way: never at the very bottom.
+#[test]
+fn a_priority_without_an_id_ranks_by_its_name() {
+    let with = |name: &str| {
+        let mut dto: IssueDto = serde_json::from_str(fixture!("issue.json")).unwrap();
+        dto.fields.insert("priority".into(), serde_json::json!({ "name": name }));
+        map::issue(&dto, &ctx()).unwrap().priority.unwrap().rank
+    };
+    assert_eq!((with("Major"), with("Soon")), (1, 2));
 }
 
 #[tokio::test]
@@ -901,7 +976,7 @@ async fn writes_send_what_jira_expects() {
     assert_eq!(posted.body.plain_text(), "Looks good");
     let update = IssueUpdate {
         title: Some("New title".into()),
-        priority: Some(Priority::High),
+        priority: Some(Priority { rank: 1, name: "High".into() }),
         labels: Some(vec!["a".into()]),
         description: None,
         fields: vec![

@@ -29,6 +29,9 @@ pub struct Ctx {
     pub names: BTreeMap<String, String>,
     /// Every field's schema by id: how it takes a value.
     pub schemas: BTreeMap<String, FieldSchemaDto>,
+    /// Jira's priorities, ranked from its own list (`/priority`): empty
+    /// when that did not answer.
+    pub priorities: Vec<Priority>,
 }
 
 const ESTIMATE_NAMES: &[&str] = &["Story Points", "Story point estimate"];
@@ -85,6 +88,7 @@ pub fn field_json(
         // A sprint by its number.
         FieldValue::Sprint(s) => s.id.parse().map_or_else(|_| json!(s.id), whole),
         FieldValue::Issue(i) => one(&schema.kind, i.key.as_str()),
+        FieldValue::Priority(p) => one("priority", &p.name),
     }
 }
 
@@ -193,6 +197,7 @@ pub fn editable_fields(
     meta: &EditMetaDto,
     known: &FieldIds,
     flavor: JiraFlavor,
+    order: &[Priority],
 ) -> Vec<EditableField> {
     let offered = |id: Option<&str>| id.is_some_and(|id| meta.fields.contains_key(id));
     let (epic_link, parent) = (known.epic_link.as_deref(), Some("parent"));
@@ -212,7 +217,7 @@ pub fn editable_fields(
                 on_issue: member || read_as_field(id),
                 id: kolum,
                 name: f.name.clone(),
-                kind: edit_kind(id, f)?,
+                kind: edit_kind(id, f, order)?,
                 required: f.required,
             })
         })
@@ -221,7 +226,7 @@ pub fn editable_fields(
     out
 }
 
-fn edit_kind(id: &str, f: &EditMetaFieldDto) -> Option<FieldKind> {
+fn edit_kind(id: &str, f: &EditMetaFieldDto, order: &[Priority]) -> Option<FieldKind> {
     if !f.operations.iter().any(|o| o == "set") {
         return None;
     }
@@ -239,12 +244,13 @@ fn edit_kind(id: &str, f: &EditMetaFieldDto) -> Option<FieldKind> {
         _ if custom.ends_with(":gh-sprint") => FieldKind::Sprint,
         _ if custom.ends_with(":gh-epic-link") => FieldKind::Issue,
         ("issuelink", _) => FieldKind::Issue,
+        ("priority", _) if !options.is_empty() => FieldKind::Priority(allowed_priorities(f, order)),
         ("string", _) => FieldKind::Text,
         ("number", _) => FieldKind::Number,
         ("date", _) => FieldKind::Date,
         ("user", _) => FieldKind::User,
         ("array", Some("string")) => FieldKind::Words,
-        ("option" | "priority" | "version" | "component", _) if !options.is_empty() => {
+        ("option" | "version" | "component", _) if !options.is_empty() => {
             FieldKind::Choice { options, many: false }
         }
         ("array", Some("option" | "version" | "component")) if !options.is_empty() => {
@@ -326,16 +332,37 @@ pub fn kind(dto: &IssueTypeDto) -> IssueKind {
     }
 }
 
-/// Jira's default scheme, and the older one (Blocker…Trivial).
-pub fn priority(name: &str) -> Option<Priority> {
-    Some(match name.to_lowercase().as_str() {
-        "highest" | "blocker" | "critical" | "urgent" => Priority::Highest,
-        "high" | "major" => Priority::High,
-        "medium" | "normal" => Priority::Medium,
-        "low" | "minor" => Priority::Low,
-        "lowest" | "trivial" => Priority::Lowest,
-        _ => return None,
-    })
+/// A priority by Jira's own name, ranked as Jira's list (`order`, from
+/// `/priority`) ranks it, so the picker and every card agree; one the
+/// list lacks, or with the list unread, by its name.
+pub fn priority(order: &[Priority], name: &str) -> Priority {
+    let listed = order.iter().find(|p| p.name.eq_ignore_ascii_case(name));
+    listed.cloned().unwrap_or_else(|| unplaced(name))
+}
+
+/// Jira's list of priorities, ranked: none when it could not be read.
+pub fn priorities(listed: Result<Vec<NamedDto>>) -> Vec<Priority> {
+    let listed = listed.unwrap_or_default();
+    Priority::list(&listed.iter().map(|p| p.name.as_str()).collect::<Vec<_>>())
+}
+
+/// A priority with no place to rank it by: by what its name means, else
+/// the middle, said once per name that means nothing.
+fn unplaced(name: &str) -> Priority {
+    static SAID: std::sync::Mutex<std::collections::BTreeSet<String>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let mut said = SAID.lock().unwrap_or_else(|e| e.into_inner());
+    if Priority::known_level(name).is_none() && said.insert(name.to_string()) {
+        tracing::info!("priority {name}: not in Jira's list, ranked in the middle");
+    }
+    Priority::ranked(name, None)
+}
+
+/// The priorities editmeta offers, in its order (the scheme's), each
+/// ranked as [`priority`] ranks it.
+fn allowed_priorities(f: &EditMetaFieldDto, order: &[Priority]) -> Vec<Priority> {
+    let names = f.allowed_values.iter().filter_map(|v| v.name.as_deref());
+    names.map(|name| priority(order, name)).collect()
 }
 
 fn issue_ref(dto: &RefDto) -> IssueRef {
@@ -463,7 +490,7 @@ pub fn issue(dto: &IssueDto, ctx: &Ctx) -> Result<Issue> {
         title: get(f, "summary").unwrap_or_default(),
         kind: IssueType { kind: kind(&issuetype), name: issuetype.name },
         status: status(&status_dto),
-        priority: get::<NamedDto>(f, "priority").and_then(|p| priority(&p.name)),
+        priority: get::<NamedDto>(f, "priority").map(|p| priority(&ctx.priorities, &p.name)),
         assignee: get::<UserDto>(f, "assignee").map(|u| user(&u)),
         reporter: get::<UserDto>(f, "reporter").map(|u| user(&u)),
         labels: get(f, "labels").unwrap_or_default(),

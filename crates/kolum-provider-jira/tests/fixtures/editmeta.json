@@ -3,7 +3,7 @@
     "summary": {"required": true, "schema": {"type": "string", "system": "summary"}, "name": "Summary", "key": "summary", "operations": ["set"]},
     "description": {"required": false, "schema": {"type": "string", "system": "description"}, "name": "Description", "key": "description", "operations": ["set"]},
     "issuetype": {"required": true, "schema": {"type": "issuetype", "system": "issuetype"}, "name": "Issue Type", "key": "issuetype", "operations": [], "allowedValues": [{"id": "1", "name": "Bug"}]},
-    "priority": {"required": false, "schema": {"type": "priority", "system": "priority"}, "name": "Priority", "key": "priority", "operations": ["set"], "allowedValues": [{"id": "2", "name": "High"}, {"id": "3", "name": "Medium"}]},
+    "priority": {"required": false, "schema": {"type": "priority", "system": "priority"}, "name": "Priority", "key": "priority", "operations": ["set"], "allowedValues": [{"id": "10000", "name": "Showstopper"}, {"id": "2", "name": "High"}, {"id": "3", "name": "Medium"}, {"name": "Someday"}]},
     "labels": {"required": false, "schema": {"type": "array", "items": "string", "system": "labels"}, "name": "Labels", "key": "labels", "operations": ["add", "set", "remove"]},
     "duedate": {"required": false, "schema": {"type": "date", "system": "duedate"}, "name": "Due date", "key": "duedate", "operations": ["set"]},
     "assignee": {"required": false, "schema": {"type": "user", "system": "assignee"}, "name": "Assignee", "key": "assignee", "operations": ["set"]},

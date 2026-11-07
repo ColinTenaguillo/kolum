@@ -99,8 +99,8 @@ impl JiraProvider {
         if let Some(labels) = &update.labels {
             fields.insert("labels".into(), json!(labels));
         }
-        if let Some(priority) = update.priority {
-            fields.insert("priority".into(), json!({ "name": priority.name() }));
+        if let Some(priority) = &update.priority {
+            fields.insert("priority".into(), json!({ "name": priority.name }));
         }
         fields
     }
@@ -109,17 +109,27 @@ impl JiraProvider {
         self.settings.flavor.api()
     }
 
-    /// The custom field ids and names, read once per session.
+    /// The custom field ids and names, and the priorities' order, read
+    /// once per session.
     async fn ctx(&self) -> Result<&Ctx> {
         self.ctx
             .get_or_try_init(|| async {
-                let fields: Vec<FieldDto> =
-                    self.client.get(&format!("{}/field", self.api()), &[]).await?;
+                let paths = (format!("{}/field", self.api()), format!("{}/priority", self.api()));
+                let (fields, priorities) = tokio::join!(
+                    self.client.get::<Vec<FieldDto>>(&paths.0, &[]),
+                    self.client.get::<Vec<NamedDto>>(&paths.1, &[]),
+                );
+                let fields = fields?;
                 Ok(Ctx {
                     base_url: self.settings.base_url.clone(),
                     fields: map::detect_fields(&fields, &self.settings.fields),
                     names: map::custom_names(&fields),
                     schemas: map::schemas(&fields),
+                    priorities: map::priorities(
+                        priorities.inspect_err(|e| {
+                            tracing::info!("priorities: {e}; ranked by their names")
+                        }),
+                    ),
                 })
             })
             .await
@@ -520,7 +530,9 @@ impl IssueWriter for JiraProvider {
     async fn editable_fields(&self, key: &IssueKey) -> Result<Vec<EditableField>> {
         let meta: EditMetaDto =
             self.client.get(&format!("{}/issue/{key}/editmeta", self.api()), &[]).await?;
-        Ok(map::editable_fields(&meta, &self.known().await, self.settings.flavor))
+        let ctx = self.ctx().await.ok();
+        let order = ctx.map_or(&[][..], |c| &c.priorities);
+        Ok(map::editable_fields(&meta, &self.known().await, self.settings.flavor, order))
     }
 
     async fn transitions(&self, key: &IssueKey) -> Result<Vec<Transition>> {

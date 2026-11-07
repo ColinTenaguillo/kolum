@@ -13,9 +13,10 @@ use time::OffsetDateTime;
 /// Bumped when the shape of what is stored changes: an older file is then
 /// ignored, not misread. 2: fields by the domain's ids (`estimate`, `due`).
 /// 3: a copy says whether it carries the description; a Jira Cloud board's
-/// kept by 2 has an empty one, which 3 would read as emptied.
-const VERSION: u32 = 3;
-/// The layouts' own: 3 left their shape as it was, so they stay at 2.
+/// kept by 2 has an empty one, which 3 would read as emptied. 4: a
+/// priority is the provider's own name and rank, no longer one of five.
+const VERSION: u32 = 4;
+/// The layouts' own: 3 and 4 left their shape as it was, so they stay at 2.
 const LAYOUT_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
@@ -280,6 +281,32 @@ mod tests {
         )
         .unwrap();
         assert!(cache.board(Some(&BoardId::new("2"))).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Version 3 kept a priority as one of five words: its boards and
+    /// issues are no cache, read again from the provider.
+    #[tokio::test]
+    async fn a_board_or_an_issue_kept_by_version_3_is_no_cache() {
+        let dir = temp_dir("cache-v3");
+        let cache = Cache::new(&dir);
+        let snapshot = load_board(&FakeProvider::new(), None).await.unwrap();
+        cache.save_board(Some(&one()), &snapshot, OffsetDateTime::now_utc()).unwrap();
+        let detail = IssueDetail {
+            issue: snapshot.issues[0].clone(),
+            comments: vec![],
+            activity: vec![],
+            layout: None,
+            children: vec![],
+        };
+        cache.save_issue(&detail).unwrap();
+        assert!(cache.board(Some(&one())).is_some() && cache.issues().len() == 1, "kept");
+        for file in std::fs::read_dir(&dir).unwrap().flatten() {
+            let text = std::fs::read_to_string(file.path()).unwrap();
+            let old = text.replacen(&format!(r#""version":{VERSION}"#), r#""version":3"#, 1);
+            std::fs::write(file.path(), old).unwrap();
+        }
+        assert!(cache.board(Some(&one())).is_none() && cache.issues().is_empty());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

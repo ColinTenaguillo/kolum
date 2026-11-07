@@ -1,0 +1,11 @@
+[
+  {"self": "x", "id": "10000", "name": "Showstopper", "statusColor": "#ff0000"},
+  {"self": "x", "id": "1", "name": "Highest", "statusColor": "#d04437"},
+  {"self": "x", "id": "2", "name": "High", "statusColor": "#f15C75"},
+  {"self": "x", "id": "3", "name": "Medium", "statusColor": "#f79232"},
+  {"self": "x", "id": "4", "name": "Low", "statusColor": "#707070"},
+  {"self": "x", "id": "5", "name": "Lowest", "statusColor": "#999999"},
+  {"self": "x", "id": "10001", "name": "Blocker", "statusColor": "#ff0000"},
+  {"self": "x", "id": "10002", "name": "Major", "statusColor": "#f15C75"},
+  {"self": "x", "id": "10003", "name": "Someday", "statusColor": "#999999"}
+]

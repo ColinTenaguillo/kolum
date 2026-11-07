@@ -3,6 +3,24 @@
 
 use kolum_domain::{IssueKind, Priority};
 
+/// The priorities of Jira's default scheme, the most urgent first.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Prio {
+    Highest,
+    High,
+    Medium,
+    Low,
+    Lowest,
+}
+
+impl Prio {
+    pub const ALL: [Prio; 5] = [Prio::Highest, Prio::High, Prio::Medium, Prio::Low, Prio::Lowest];
+
+    pub fn priority(self) -> Priority {
+        Priority { rank: self as u32, name: format!("{self:?}") }
+    }
+}
+
 pub const PROJECT_KEY: &str = "ACME";
 pub const PROJECT_NAME: &str = "Acme Web";
 
@@ -40,7 +58,7 @@ pub struct Row {
     pub n: u32,
     pub kind: IssueKind,
     pub status: &'static str,
-    pub priority: Priority,
+    pub priority: Prio,
     /// Index into USERS.
     pub assignee: Option<usize>,
     pub reporter: usize,
@@ -53,7 +71,7 @@ pub struct Row {
 }
 
 use IssueKind::{Bug, Epic, Story, Task};
-use Priority::{High, Highest, Low, Lowest, Medium};
+use Prio::{High, Highest, Low, Lowest, Medium};
 
 macro_rules! rows {
     ($( $n:literal $kind:ident $status:literal $prio:ident $assignee:expr, $reporter:literal,

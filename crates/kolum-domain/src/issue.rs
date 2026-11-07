@@ -58,32 +58,66 @@ pub struct IssueType {
     pub kind: IssueKind,
 }
 
-/// Highest first, so `Ord` sorts the urgent ones to the top.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub enum Priority {
-    Highest,
-    High,
-    Medium,
-    Low,
-    Lowest,
+/// How urgent an issue is, by the provider's own name ("Blocker", "P1").
+/// `rank` orders them, the most urgent at 0: the adapter derives it from
+/// the provider's own order, so `Ord` sorts the urgent ones to the top.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Priority {
+    pub rank: u32,
+    pub name: String,
 }
 
 impl Priority {
-    pub const ALL: [Priority; 5] =
-        [Priority::Highest, Priority::High, Priority::Medium, Priority::Low, Priority::Lowest];
+    /// How many levels of urgency a colour or a glyph tells apart.
+    pub const LEVELS: usize = 5;
 
-    pub fn from_name(name: &str) -> Option<Priority> {
-        Priority::ALL.into_iter().find(|p| p.name().eq_ignore_ascii_case(name))
+    /// The level shown, 0 the most urgent: a rank past the last level
+    /// shows as the last.
+    pub fn level(&self) -> usize {
+        (self.rank as usize).min(Self::LEVELS - 1)
     }
 
-    pub fn name(self) -> &'static str {
-        match self {
-            Priority::Highest => "Highest",
-            Priority::High => "High",
-            Priority::Medium => "Medium",
-            Priority::Low => "Low",
-            Priority::Lowest => "Lowest",
+    /// The level a name in common use means, 0 the most urgent: P0 to P4,
+    /// Jira's two schemes and the usual words. `None` for a project's own.
+    pub fn known_level(name: &str) -> Option<u32> {
+        let name = name.trim().to_lowercase();
+        if let Some(n) = name.strip_prefix('p').and_then(|n| n.parse().ok()) {
+            return Some(n);
         }
+        Some(match name.as_str() {
+            "highest" | "blocker" | "critical" | "urgent" => 0,
+            "high" | "major" => 1,
+            "medium" | "normal" => 2,
+            "low" | "minor" => 3,
+            "lowest" | "trivial" => 4,
+            _ => return None,
+        })
+    }
+
+    /// A priority by its name: a name in common use at the level it
+    /// means, wherever it is listed; one of a project's own at its `place`
+    /// (index, length) in the list that defines it, spread over the
+    /// levels; with neither, the middle. The same name, read from the same
+    /// list, ranks the same in the picker, on the card and read back.
+    pub fn ranked(name: &str, place: Option<(usize, usize)>) -> Priority {
+        let last = Self::LEVELS - 1;
+        let spread = place.filter(|&(_, len)| len > 1).map(|(at, len)| {
+            let steps = len - 1;
+            ((at.min(steps) * last + steps / 2) / steps) as u32
+        });
+        let rank = Self::known_level(name).or(spread).unwrap_or(last as u32 / 2);
+        Priority { rank, name: name.into() }
+    }
+
+    /// A provider's priorities in its order, each [`Priority::ranked`]:
+    /// read from the end when the names it knows go from the least urgent
+    /// up ([Low, Medium, High]).
+    pub fn list(names: &[&str]) -> Vec<Priority> {
+        let known: Vec<u32> = names.iter().filter_map(|n| Self::known_level(n)).collect();
+        let upward = known.first() > known.last();
+        let len = names.len();
+        let place = |at: usize| if upward { len - 1 - at } else { at };
+        (0..len).map(|at| Self::ranked(names[at], Some((place(at), len)))).collect()
     }
 }
 
@@ -128,6 +162,7 @@ pub enum FieldValue {
     Sprint(Sprint),
     /// Another issue: a parent, an epic.
     Issue(IssueRef),
+    Priority(Priority),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -313,18 +348,16 @@ const MEMBERS: [Member; 10] = [
     Member {
         id: FieldId::PRIORITY,
         label: "Priority",
-        read: |i| Some(FieldValue::Text(i.priority?.name().into())),
-        // One kolum has no name for stays as it was until the provider
-        // reads it into one.
+        read: |i| i.priority.clone().map(FieldValue::Priority),
         write: |i, v| match v {
             None => i.priority = None,
-            Some(FieldValue::Text(name)) => i.priority = Priority::from_name(name).or(i.priority),
+            Some(FieldValue::Priority(p)) => i.priority = Some(p.clone()),
             Some(_) => {}
         },
         slot: |u, v| match v {
-            FieldValue::Text(name) => {
-                u.priority = Priority::from_name(name);
-                u.priority.is_some()
+            FieldValue::Priority(p) => {
+                u.priority = Some(p.clone());
+                true
             }
             _ => false,
         },
@@ -501,6 +534,8 @@ pub enum FieldKind {
     },
     /// One of the board's sprints.
     Sprint,
+    /// One of the provider's priorities, the most urgent first.
+    Priority(Vec<Priority>),
 }
 
 impl FieldKind {
@@ -541,6 +576,7 @@ impl FieldValue {
             FieldValue::RichText(r) => r.plain_text(),
             FieldValue::Sprint(s) => s.name.clone(),
             FieldValue::Issue(i) => i.key.to_string(),
+            FieldValue::Priority(p) => p.name.clone(),
         }
     }
 }
@@ -599,8 +635,8 @@ impl IssueUpdate {
         if let Some(l) = &self.labels {
             issue.labels = l.clone();
         }
-        if self.priority.is_some() {
-            issue.priority = self.priority;
+        if let Some(p) = &self.priority {
+            issue.priority = Some(p.clone());
         }
         for edit in &self.fields {
             issue.set(&edit.id, edit.name.as_deref(), edit.value.as_ref());
@@ -698,7 +734,8 @@ mod tests {
         });
         let text = |t: &str| Some(FieldValue::Text(t.into()));
         assert_eq!(issue.value(&id(FieldId::TITLE)), text("Login times out"));
-        assert_eq!(issue.value(&id(FieldId::PRIORITY)), text("High"));
+        let priority = issue.priority.clone().map(FieldValue::Priority);
+        assert_eq!(issue.value(&id(FieldId::PRIORITY)), priority);
         let parent = issue.parent.clone().map(FieldValue::Issue);
         assert_eq!(issue.value(&id(FieldId::EPIC)), parent);
         let labels = Some(FieldValue::Options(issue.labels.clone()));
@@ -726,7 +763,7 @@ mod tests {
             (FieldId::TITLE, FieldValue::Text("Renamed".into())),
             (FieldId::DESCRIPTION, FieldValue::RichText(RichText::from_markdown("New"))),
             (FieldId::LABELS, FieldValue::Options(vec!["ui".into()])),
-            (FieldId::PRIORITY, FieldValue::Text("Lowest".into())),
+            (FieldId::PRIORITY, FieldValue::Priority(priority(4, "Lowest"))),
             (FieldId::DUE, date.clone()),
             (FieldId::ASSIGNEE, bob.clone()),
             (FieldId::REPORTER, bob),
@@ -785,7 +822,7 @@ mod tests {
     }
 
     /// What a member cannot hold leaves it as it was: a value of another
-    /// kind, a priority kolum has no name for, a parent known by its key
+    /// kind, a priority by its name alone, a parent known by its key
     /// alone, until the provider reads it back.
     #[test]
     fn a_value_a_member_cannot_hold_changes_nothing() {
@@ -814,7 +851,7 @@ mod tests {
     }
 
     /// The members a provider writes by name take the value; the rest goes
-    /// by id, a priority kolum has no name for among them.
+    /// by id, a priority by its name alone among them.
     #[test]
     fn an_update_to_one_field_goes_through_the_member_the_provider_writes() {
         let text = |t: &str| Some(FieldValue::Text(t.into()));
@@ -833,7 +870,9 @@ mod tests {
         assert_eq!(described.description, Some(rich));
         let labels = set(FieldId::LABELS, Some(FieldValue::Options(vec!["a".into()])));
         assert_eq!(labels.labels, Some(vec!["a".into()]));
-        assert_eq!(set(FieldId::PRIORITY, text("high")).priority, Some(Priority::High));
+        let high = priority(1, "High");
+        let picked = set(FieldId::PRIORITY, Some(FieldValue::Priority(high.clone())));
+        assert_eq!(picked.priority, Some(high));
         let blocker = set(FieldId::PRIORITY, text("Blocker"));
         assert_eq!(blocker.fields, by_id(FieldId::PRIORITY, text("Blocker")));
         assert_eq!(set(FieldId::TITLE, None).fields, by_id(FieldId::TITLE, None));
@@ -841,24 +880,68 @@ mod tests {
         assert_eq!(set("customfield_1", text("x")).fields, by_id("customfield_1", text("x")));
     }
 
+    /// A priority picked among the provider's own (Jira's older scheme
+    /// here) is on the issue at once, by that name, before any read-back.
     #[test]
-    fn a_priority_is_found_by_its_name() {
-        assert_eq!(Priority::from_name("high"), Some(Priority::High));
-        assert_eq!(Priority::from_name("Urgent"), None);
+    fn a_priority_picked_among_the_providers_own_shows_at_once() {
+        let names = ["Blocker", "Critical", "Major", "Minor", "Trivial"];
+        let all: Vec<Priority> =
+            (0..).zip(names).map(|(rank, name)| priority(rank, name)).collect();
+        let picked = Some(FieldValue::Priority(all[2].clone()));
+        let field = EditableField { kind: FieldKind::Priority(all), ..field(FieldId::PRIORITY) };
+        let mut issue = crate::query::tests::issue();
+        IssueUpdate::set(&field, picked).apply_to(&mut issue);
+        let shown = issue.value(&FieldId::new(FieldId::PRIORITY)).map(|v| v.to_input());
+        assert_eq!(shown.as_deref(), Some("Major"));
+        assert_eq!(issue.priority, Some(priority(2, "Major")), "ranked as the provider has it");
+    }
+
+    fn priority(rank: u32, name: &str) -> Priority {
+        Priority { rank, name: name.into() }
     }
 
     fn user(name: &str) -> User {
         User { id: UserId::new("u"), display_name: name.into(), avatar_url: None }
     }
 
+    /// A name in common use takes the level it means, wherever it is
+    /// listed; one of a project's own takes its place in the list that
+    /// defines it, spread over the five levels; with neither, the middle.
     #[test]
-    fn priorities_sort_urgent_first_and_have_names() {
-        let mut shuffled =
-            [Priority::Low, Priority::Highest, Priority::Lowest, Priority::Medium, Priority::High];
+    fn a_priority_ranks_by_its_meaning_else_by_its_place() {
+        let rank = |name, place| Priority::ranked(name, place).rank;
+        let known = ["P0", "p3", "Blocker", "Major", "normal", "Trivial"].map(|n| rank(n, None));
+        assert_eq!(known, [0, 3, 0, 1, 2, 4]);
+        assert_eq!(rank("Blocker", Some((6, 11))), 0, "listed after Highest…Lowest, still 0");
+        let own = [(0, 3), (1, 3), (2, 3), (2, 9), (8, 9)].map(|place| rank("Hot", Some(place)));
+        assert_eq!(own, [0, 2, 4, 1, 4]);
+        assert_eq!((rank("Hot", None), rank("Hot", Some((0, 1)))), (2, 2), "nothing to go by");
+        assert_eq!(Priority::ranked("Soon", None).name, "Soon", "its own name kept");
+    }
+
+    /// A provider's list, each ranked: known names by their meaning, so a
+    /// three-option field shows Low as low; its own by their place, read
+    /// from the end when the known names go from the least urgent up.
+    #[test]
+    fn a_list_of_priorities_ranks_each_by_meaning_or_place() {
+        let ranks =
+            |names: &[&str]| Priority::list(names).iter().map(|p| p.rank).collect::<Vec<_>>();
+        assert_eq!(ranks(&["High", "Medium", "Low"]), [1, 2, 3]);
+        assert_eq!(ranks(&["Low", "Medium", "High"]), [3, 2, 1]);
+        assert_eq!(ranks(&["P0", "P1", "P2"]), [0, 1, 2]);
+        assert_eq!(ranks(&["Now", "Soon", "Later"]), [0, 2, 4], "none known: as listed");
+        assert_eq!(ranks(&["Later", "Low", "Soon", "Urgent"]), [4, 3, 1, 0], "least urgent first");
+        assert_eq!(Priority::list(&["Soon"])[0].name, "Soon");
+    }
+
+    #[test]
+    fn priorities_sort_by_rank_urgent_first_and_show_in_five_levels() {
+        let mut shuffled = [priority(3, "Low"), priority(1, "High"), priority(0, "Highest")];
         shuffled.sort();
-        assert_eq!(shuffled, Priority::ALL);
-        let names: Vec<_> = Priority::ALL.iter().map(|p| p.name()).collect();
-        assert_eq!(names, ["Highest", "High", "Medium", "Low", "Lowest"]);
+        let names: Vec<_> = shuffled.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Highest", "High", "Low"], "by rank, not by name");
+        let levels: Vec<_> = [0, 3, 4, 9].map(|rank| priority(rank, "p").level()).to_vec();
+        assert_eq!(levels, [0, 3, 4, 4], "past the last level, the last");
     }
 
     #[test]

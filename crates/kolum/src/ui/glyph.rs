@@ -30,21 +30,17 @@ pub fn kind(kind: IssueKind) -> &'static str {
     }
 }
 
-pub fn priority(p: Priority) -> &'static str {
-    match p {
-        Priority::Highest => "⇈",
-        Priority::High => "↑",
-        Priority::Medium => "=",
-        Priority::Low => "↓",
-        Priority::Lowest => "⇊",
-    }
+/// One glyph per level, the most urgent first.
+pub fn priority(p: &Priority) -> &'static str {
+    const GLYPHS: [&str; Priority::LEVELS] = ["⇈", "↑", "=", "↓", "⇊"];
+    GLYPHS[p.level()]
 }
 
 pub fn kind_span(issue: &Issue, theme: &Theme) -> Span<'static> {
     Span::styled(kind(issue.kind.kind), Style::new().fg(theme.issue_type(issue.kind.kind)))
 }
 
-pub fn priority_span(p: Priority, theme: &Theme) -> Span<'static> {
+pub fn priority_span(p: &Priority, theme: &Theme) -> Span<'static> {
     Span::styled(priority(p), Style::new().fg(theme.priority(p)).add_modifier(Modifier::BOLD))
 }
 

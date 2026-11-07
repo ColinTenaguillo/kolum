@@ -14,7 +14,7 @@ pub use settings::GithubSettings;
 use async_trait::async_trait;
 use kolum_domain::*;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex;
 use time::OffsetDateTime;
 use tokio::sync::OnceCell;
@@ -27,6 +27,8 @@ struct ProjectInfo {
     owner: String,
     status_field: Option<String>,
     options: Vec<(String, String)>,
+    /// Each option of the Priority field by id, ranked.
+    priorities: HashMap<String, Priority>,
 }
 
 /// What a key stands for, to reach it again: the project item (for its
@@ -110,15 +112,35 @@ fn category(name: &str) -> StatusCategory {
     }
 }
 
-fn priority(name: &str) -> Option<Priority> {
-    Some(match name.to_lowercase().as_str() {
-        "p0" | "urgent" | "critical" | "highest" => Priority::Highest,
-        "p1" | "high" => Priority::High,
-        "p2" | "medium" | "normal" => Priority::Medium,
-        "p3" | "low" => Priority::Low,
-        "p4" | "lowest" => Priority::Lowest,
-        _ => return None,
-    })
+/// Each option of the project's Priority field by id, ranked as the
+/// domain ranks a provider's list: by its meaning, else by its place.
+fn priority_ranks(fields: &[Value]) -> HashMap<String, Priority> {
+    let field = fields.iter().find(|f| {
+        f["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case("priority"))
+            && f["options"].is_array()
+    });
+    let options =
+        field.and_then(|f| f["options"].as_array()).map(Vec::as_slice).unwrap_or_default();
+    let names: Vec<&str> = options.iter().map(|o| o["name"].as_str().unwrap_or("")).collect();
+    let ids = options.iter().map(|o| o["id"].as_str().unwrap_or("").to_string());
+    ids.zip(Priority::list(&names)).collect()
+}
+
+/// A priority by its option, as the project's field ranks it; an option
+/// the project did not list when read (added since) by its name.
+fn priority(ranks: &HashMap<String, Priority>, option: &str, name: &str) -> Priority {
+    ranks.get(option).cloned().unwrap_or_else(|| unplaced(name))
+}
+
+/// A priority with no place to rank it by: by what its name means, else
+/// the middle, said once per name that means nothing.
+fn unplaced(name: &str) -> Priority {
+    static SAID: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+    let mut said = SAID.lock().unwrap_or_else(|e| e.into_inner());
+    if Priority::known_level(name).is_none() && said.insert(name.to_string()) {
+        tracing::info!("priority {name}: not among the project's options, ranked in the middle");
+    }
+    Priority::ranked(name, None)
 }
 
 const ESTIMATE_FIELDS: &[&str] = &["estimate", "size", "points", "story points"];
@@ -148,6 +170,7 @@ fn issue_of(
     fields: &[Value],
     item: Option<&str>,
     status_field: &str,
+    ranks: &HashMap<String, Priority>,
 ) -> Option<Known> {
     let kind = content["__typename"].as_str()?.to_string();
     let content_id = content["id"].as_str()?.to_string();
@@ -191,7 +214,7 @@ fn issue_of(
                     category: category(value),
                 };
             } else if name.eq_ignore_ascii_case("priority") {
-                prio = priority(value);
+                prio = Some(priority(ranks, option, value));
             } else {
                 custom.push(CustomField {
                     id: FieldId::new(&name),
@@ -249,9 +272,9 @@ fn issue_of(
     Some(Known { item: item.map(String::from), content: content_id, kind, issue })
 }
 
-fn item_of(node: &Value, status_field: &str) -> Option<Known> {
+fn item_of(node: &Value, status_field: &str, ranks: &HashMap<String, Priority>) -> Option<Known> {
     let fields = node["fieldValues"]["nodes"].as_array().cloned().unwrap_or_default();
-    issue_of(&node["content"], &fields, node["id"].as_str(), status_field)
+    issue_of(&node["content"], &fields, node["id"].as_str(), status_field, ranks)
 }
 
 impl GithubProvider {
@@ -311,7 +334,8 @@ impl GithubProvider {
                             self.settings.owner, self.settings.number
                         ))
                     })?;
-                let status = p["fields"]["nodes"].as_array().into_iter().flatten().find(|f| {
+                let fields = p["fields"]["nodes"].as_array().map(Vec::as_slice).unwrap_or_default();
+                let status = fields.iter().find(|f| {
                     f["name"].as_str() == Some(&self.settings.status_field)
                         && f["options"].is_array()
                 });
@@ -329,6 +353,7 @@ impl GithubProvider {
                     owner: self.settings.owner.clone(),
                     status_field: status.and_then(|s| s["id"].as_str()).map(String::from),
                     options,
+                    priorities: priority_ranks(fields),
                 })
             })
             .await
@@ -395,6 +420,7 @@ impl BoardSource for GithubProvider {
         page: Option<PageToken>,
     ) -> Result<Page<Issue>> {
         let first = page.is_none();
+        let ranks = &self.project().await?.priorities;
         let data = self
             .graphql(&queries::items(), json!({ "id": id.as_str(), "after": page.map(|p| p.0) }))
             .await?;
@@ -403,7 +429,7 @@ impl BoardSource for GithubProvider {
             .as_array()
             .into_iter()
             .flatten()
-            .filter_map(|n| item_of(n, &self.settings.status_field))
+            .filter_map(|n| item_of(n, &self.settings.status_field, ranks))
             .collect();
         self.remember(&known);
         let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
@@ -424,8 +450,9 @@ impl IssueReader for GithubProvider {
     async fn issue(&self, key: &IssueKey) -> Result<Issue> {
         let known = self.known(key)?;
         let Some(item) = &known.item else { return Ok(known.issue) };
+        let ranks = &self.project().await?.priorities;
         let data = self.graphql(&queries::item(), json!({ "id": item })).await?;
-        let fresh = item_of(&data["node"], &self.settings.status_field)
+        let fresh = item_of(&data["node"], &self.settings.status_field, ranks)
             .ok_or_else(|| DomainError::NotFound(key.to_string()))?;
         self.remember(std::slice::from_ref(&fresh));
         Ok(fresh.issue)
@@ -509,11 +536,10 @@ impl IssueSearch for GithubProvider {
         let data =
             self.graphql(queries::SEARCH, json!({ "q": q, "after": page.map(|p| p.0) })).await?;
         let search = &data["search"];
-        let hits = search["nodes"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|n| issue_of(n, &[], None, &self.settings.status_field));
+        let hits =
+            search["nodes"].as_array().into_iter().flatten().filter_map(|n| {
+                issue_of(n, &[], None, &self.settings.status_field, &HashMap::new())
+            });
         let next = (search["pageInfo"]["hasNextPage"] == true)
             .then(|| search["pageInfo"]["endCursor"].as_str().map(|c| PageToken(c.into())))
             .flatten();
@@ -621,7 +647,7 @@ impl IssueWriter for GithubProvider {
             .as_str()
             .ok_or_else(|| transport("GitHub created no item"))?;
         let data = self.graphql(&queries::item(), json!({ "id": item })).await?;
-        let known = item_of(&data["node"], &self.settings.status_field)
+        let known = item_of(&data["node"], &self.settings.status_field, &p.priorities)
             .ok_or_else(|| transport("an unreadable new item"))?;
         self.remember(std::slice::from_ref(&known));
         Ok(known.issue)

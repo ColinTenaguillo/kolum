@@ -1466,7 +1466,11 @@ impl App {
             }
             kolum_domain::FieldKind::User => self.open_user_picker(vec![key], Some(field)),
             kolum_domain::FieldKind::Choice { options, .. } => {
-                let options = options.clone();
+                let options = options.iter().cloned().map(kolum_domain::FieldValue::Text).collect();
+                self.open_option_picker(key, field, options)
+            }
+            kolum_domain::FieldKind::Priority(all) => {
+                let options = all.iter().cloned().map(kolum_domain::FieldValue::Priority).collect();
                 self.open_option_picker(key, field, options)
             }
             kolum_domain::FieldKind::Sprint => self.ask_sprints(key, field),
@@ -1479,7 +1483,7 @@ impl App {
         &mut self,
         key: IssueKey,
         field: kolum_domain::EditableField,
-        options: Vec<String>,
+        options: Vec<kolum_domain::FieldValue>,
     ) {
         let options = kolum_app::field_choices(&field, options);
         let source = sources::OptionChoice { key, field, options };

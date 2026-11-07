@@ -138,8 +138,8 @@ pub fn field_update(
 
 /// What a choice field can be set to: its options, and nothing when it
 /// may be emptied.
-pub fn field_choices(field: &EditableField, options: Vec<String>) -> Vec<Option<String>> {
-    let mut choices: Vec<Option<String>> = options.into_iter().map(Some).collect();
+pub fn field_choices<T>(field: &EditableField, options: Vec<T>) -> Vec<Option<T>> {
+    let mut choices: Vec<Option<T>> = options.into_iter().map(Some).collect();
     if !field.required {
         choices.push(None);
     }

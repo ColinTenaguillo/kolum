@@ -104,7 +104,7 @@ pub(crate) mod tests {
                 name: "In Review".into(),
                 category: StatusCategory::Doing,
             },
-            priority: Some(Priority::High),
+            priority: Some(Priority { rank: 1, name: "High".into() }),
             assignee: Some(ana),
             reporter: None,
             labels: vec!["backend".into()],

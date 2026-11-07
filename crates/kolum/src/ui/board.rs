@@ -503,7 +503,7 @@ fn lane(mode: Swimlanes, issue: &Issue) -> Option<((bool, String), String)> {
             "Unassigned",
         ),
         Swimlanes::Priority => (
-            issue.priority.map(|p| (format!("{:?}", p as u8), p.name().to_string())),
+            issue.priority.as_ref().map(|p| (format!("{:010} {}", p.rank, p.name), p.name.clone())),
             "No priority",
         ),
     };
@@ -525,7 +525,7 @@ fn card(frame: &mut Frame, area: Rect, issue: &Issue, selected: bool, marked: bo
     // The stripe says the priority; the cursor's is thicker, as its border was.
     let stripe = Span::styled(
         if selected { "┃" } else { "▍" },
-        Style::new().fg(match issue.priority {
+        Style::new().fg(match &issue.priority {
             _ if selected => theme.border_focus,
             Some(p) if ctx.fields.contains(&CardField::Priority) => theme.priority(p),
             _ => theme.border,
@@ -597,7 +597,7 @@ fn meta(issue: &Issue, ctx: &DrawCtx, cols: usize) -> Line<'static> {
         left.push(Span::styled(format!("{} ", issue.key), Style::new().fg(theme.muted)));
     }
     if show(CardField::Priority)
-        && let Some(p) = issue.priority
+        && let Some(p) = &issue.priority
     {
         left.push(glyph::priority_span(p, theme));
     }
@@ -641,4 +641,49 @@ fn right_aligned(
     left.push(Span::raw(" ".repeat(cols.saturating_sub(used))));
     left.extend(right);
     Line::from(left)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kolum_domain::Priority;
+
+    async fn board() -> BoardView {
+        let fake = kolum_provider_fake::FakeProvider::new();
+        let mut view = BoardView::default();
+        view.set_snapshot(kolum_app::load_board(&fake, None).await.unwrap());
+        view
+    }
+
+    /// The lanes of each column, top to bottom.
+    fn lanes(view: &BoardView) -> Vec<Vec<String>> {
+        let lanes_of = |col: &Vec<&Issue>| {
+            let mut labels: Vec<String> =
+                col.iter().filter_map(|i| lane(view.swimlanes, i).map(|(_, l)| l)).collect();
+            labels.dedup();
+            labels
+        };
+        view.cards().iter().map(lanes_of).collect()
+    }
+
+    /// Lanes by priority go by its rank, the most urgent first, whatever
+    /// its name; the cards with none last.
+    #[tokio::test]
+    async fn priority_lanes_go_by_rank_not_by_name() {
+        let mut view = board().await;
+        let mut snapshot = view.snapshot.take().unwrap();
+        let named = |rank, name: &str| Some(Priority { rank, name: name.into() });
+        for (n, issue) in snapshot.issues.iter_mut().enumerate() {
+            issue.priority = [named(1, "Alpha"), named(0, "Zulu"), None][n % 3].clone();
+        }
+        view.set_snapshot(snapshot);
+        view.swimlanes = Swimlanes::Priority;
+        let order = ["Zulu", "Alpha", "No priority"];
+        for column in lanes(&view) {
+            let at: Vec<usize> =
+                column.iter().map(|l| order.iter().position(|o| o == l).unwrap()).collect();
+            assert!(at.is_sorted(), "{column:?}");
+        }
+        assert!(lanes(&view).iter().any(|c| c.len() == 3), "all three somewhere");
+    }
 }

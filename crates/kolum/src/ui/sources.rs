@@ -91,11 +91,11 @@ impl PickerSource for IssueSource {
             glyph::kind_span(issue, theme),
             Span::styled(format!(" {}", issue.kind.name), muted),
         ];
-        if let Some(p) = issue.priority {
+        if let Some(p) = &issue.priority {
             head.extend([
                 Span::styled(" · ", muted),
                 glyph::priority_span(p, theme),
-                Span::styled(format!(" {}", p.name()), muted),
+                Span::styled(format!(" {}", p.name), muted),
             ]);
         }
         let title = super::text::truncate(&issue.title, (cols as usize).saturating_sub(2));
@@ -362,16 +362,17 @@ impl PickerSource for SprintChoice {
     }
 }
 
-/// The values a choice field allows, and `None` to empty it when it may
-/// be empty. Tab marks several for a field that takes many.
+/// The values a choice field allows (a priority with its rank), and
+/// `None` to empty it when it may be empty. Tab marks several for a field
+/// that takes many.
 pub struct OptionChoice {
     pub key: kolum_domain::IssueKey,
     pub field: kolum_domain::EditableField,
-    pub options: Vec<Option<String>>,
+    pub options: Vec<Option<kolum_domain::FieldValue>>,
 }
 
 impl PickerSource for OptionChoice {
-    type Item = Option<String>;
+    type Item = Option<kolum_domain::FieldValue>;
 
     fn title(&self) -> String {
         format!("{} of {}", self.field.name, self.key)
@@ -382,7 +383,7 @@ impl PickerSource for OptionChoice {
     }
 
     fn haystack(&self, option: &Self::Item) -> String {
-        option.clone().unwrap_or_else(|| "None".into())
+        option.as_ref().map_or_else(|| "None".into(), |v| v.to_input())
     }
 
     fn act(&self, chosen: &[Self::Item], action: Action) -> Option<Pick> {
@@ -390,12 +391,14 @@ impl PickerSource for OptionChoice {
         if action != Action::Confirm {
             return None;
         }
-        let picked: Vec<String> = chosen.iter().flatten().cloned().collect();
+        let picked: Vec<&FieldValue> = chosen.iter().flatten().collect();
         let many = matches!(self.field.kind, FieldKind::Choice { many: true, .. });
         let value = match picked.first() {
             None => None,
-            Some(_) if many => Some(FieldValue::Options(picked)),
-            Some(one) => Some(FieldValue::Text(one.clone())),
+            Some(_) if many => {
+                Some(FieldValue::Options(picked.iter().map(|v| v.to_input()).collect()))
+            }
+            Some(&one) => Some(one.clone()),
         };
         Some(Pick::SetField { key: self.key.clone(), field: self.field.clone(), value })
     }
@@ -432,5 +435,47 @@ impl PickerSource for PeopleChoice {
     fn act(&self, people: &[Self::Item], action: Action) -> Option<Pick> {
         (action == Action::Confirm)
             .then(|| Pick::People(people.iter().map(|(token, _)| token.clone()).collect()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kolum_domain::{EditableField, FieldId, FieldKind, FieldValue, IssueKey, Priority};
+
+    /// What confirming the row holding `option` sets the field to.
+    fn pick(kind: FieldKind, options: Vec<FieldValue>, option: usize) -> Option<FieldValue> {
+        let field = EditableField {
+            id: FieldId::new("f"),
+            provider_id: FieldId::new("f"),
+            name: "Field".into(),
+            kind,
+            required: false,
+            on_issue: true,
+        };
+        let options: Vec<Option<FieldValue>> = options.into_iter().map(Some).collect();
+        let row = options[option].clone();
+        let source = OptionChoice { key: IssueKey::parse("ACME-1"), field, options };
+        let picked = source.act(&[row], Action::Confirm);
+        let Some(Pick::SetField { value, .. }) = picked else { panic!("{picked:?}") };
+        value
+    }
+
+    /// An option is set as the provider spells it, spaces and all.
+    #[test]
+    fn an_option_is_picked_as_it_is() {
+        let kind = FieldKind::Choice { options: vec!["Mobile ".into()], many: false };
+        let mobile = FieldValue::Text("Mobile ".into());
+        assert_eq!(pick(kind, vec![mobile.clone()], 0), Some(mobile));
+    }
+
+    /// The priority on the row picked, rank and all, even beside one whose
+    /// name differs only in case.
+    #[test]
+    fn a_priority_is_the_one_on_the_row_picked() {
+        let named = |rank, name: &str| FieldValue::Priority(Priority { rank, name: name.into() });
+        let (loud, high) = (named(0, "HIGH"), named(1, "High"));
+        let kind = FieldKind::Priority(vec![]);
+        assert_eq!(pick(kind, vec![loud, high.clone()], 1), Some(high));
     }
 }

@@ -141,6 +141,10 @@ the tokens it changes, the same way `[theme.overrides]` does. Theme tokens:
 `status.{todo,doing,done}`, `priority.{highest,high,medium,low,lowest}`,
 `type.{bug,story,task,epic,subtask}`, `error warn ok`, `badge_fg` (the text on status, label and mode badges), `mode.{command,visual}`,
 `label_palette`. `bg = "reset"` leaves the terminal's own background, transparency included.
+Priorities keep the provider's own names (Blocker, P1) and take one of the
+five `priority` colours: a name in common use (Highest…Lowest, Blocker…Trivial,
+P0…P4, Urgent, Major, Minor) by what it means, a project's own by its place in
+the provider's list, spread over the five.
 
 The last board of each profile is kept in `~/.cache/kolum/<profile>/`: at
 start it is on screen at once, marked "cached, syncing…", while the whole board

@@ -170,7 +170,7 @@ fn issue(row: &data::Row) -> Issue {
         title: row.title.into(),
         kind: IssueType { name: type_name(row.kind).into(), kind: row.kind },
         status: status(row.status),
-        priority: Some(row.priority),
+        priority: Some(row.priority.priority()),
         assignee: row.assignee.map(user),
         reporter: Some(user(row.reporter)),
         labels: row.labels.iter().map(|l| l.to_string()).collect(),
@@ -182,7 +182,7 @@ fn issue(row: &data::Row) -> Issue {
         sprint: in_sprint.then(|| Sprint { id: "14".into(), name: "Sprint 14".into() }),
         created,
         updated: created + Duration::hours(3 * i64::from(row.n % 9)),
-        due: (row.priority == Priority::Highest).then(|| (created + Duration::days(10)).date()),
+        due: (row.priority == data::Prio::Highest).then(|| (created + Duration::days(10)).date()),
         description: Some(RichText::from_markdown(row.description)),
         fields: vec![
             CustomField {
@@ -526,14 +526,13 @@ impl IssueWriter for FakeProvider {
             on_issue: true,
         };
         let words = |w: &[&str]| w.iter().map(|s| s.to_string()).collect();
-        let priorities = Priority::ALL.iter().map(|p| p.name().to_string()).collect();
         Ok(vec![
             field(FieldId::TITLE, "Summary", FieldKind::Text),
             field(FieldId::DESCRIPTION, "Description", FieldKind::RichText),
             field(
                 FieldId::PRIORITY,
                 "Priority",
-                FieldKind::Choice { options: priorities, many: false },
+                FieldKind::Priority(data::Prio::ALL.map(data::Prio::priority).to_vec()),
             ),
             field(FieldId::LABELS, "Labels", FieldKind::Words),
             field(FieldId::DUE, "Due date", FieldKind::Date),

@@ -1224,7 +1224,8 @@ async fn e_edits_every_field_the_issue_lets_set() {
     press(&mut app, "lowest");
     settle(&mut app);
     press(&mut app, "<CR>");
-    let lowest = IssueUpdate { priority: Some(Priority::Lowest), ..Default::default() };
+    let lowest = Priority { rank: 4, name: "Lowest".into() };
+    let lowest = IssueUpdate { priority: Some(lowest), ..Default::default() };
     assert_eq!(updates(&mut app), [lowest]);
 
     edit_field(&mut app, "summary").await;
@@ -3027,10 +3028,9 @@ async fn a_card_stripe_has_the_colour_of_its_priority() {
         panic!("{key} on the board")
     };
     let theme = kolum::theme::Theme::builtin("dark").unwrap();
-    use kolum_domain::Priority;
-    assert_eq!(stripe_of("ACME-7 "), theme.priority(Priority::Medium), "a story, medium");
-    assert_eq!(stripe_of("ACME-10 "), theme.priority(Priority::High), "a bug, high");
-    assert_eq!(stripe_of("ACME-26 "), theme.priority(Priority::Lowest), "a task, lowest");
+    assert_eq!(stripe_of("ACME-7 "), theme.priority_medium, "a story, medium");
+    assert_eq!(stripe_of("ACME-10 "), theme.priority_high, "a bug, high");
+    assert_eq!(stripe_of("ACME-26 "), theme.priority_lowest, "a task, lowest");
 }
 
 #[tokio::test]
