@@ -423,30 +423,38 @@ fn description(value: &Value) -> RichText {
     }
 }
 
+/// A custom field's value as the detail shows it: text, a number, rich
+/// text, a person, or a list; `None` for what has no text to show.
 fn field_value(value: &Value) -> Option<FieldValue> {
-    Some(match value {
-        Value::String(s) => FieldValue::Text(s.clone()),
-        Value::Number(n) => FieldValue::Number(n.as_f64()?),
-        Value::Object(o) if o.get("type").and_then(Value::as_str) == Some("doc") => {
-            FieldValue::RichText(adf::to_rich_text(value))
+    match value {
+        Value::String(s) => Some(FieldValue::Text(s.clone())),
+        Value::Number(n) => n.as_f64().map(FieldValue::Number),
+        Value::Object(o) => object_value(o, value),
+        Value::Array(items) => {
+            Some(FieldValue::Options(items.iter().filter_map(item_text).collect()))
         }
-        Value::Object(o) if o.contains_key("displayName") => {
-            FieldValue::User(user(&serde_json::from_value(value.clone()).ok()?))
-        }
-        Value::Object(o) => {
-            FieldValue::Text(o.get("value").or(o.get("name"))?.as_str()?.to_string())
-        }
-        Value::Array(items) => FieldValue::Options(
-            items
-                .iter()
-                .filter_map(|i| match field_value(i)? {
-                    FieldValue::Text(t) => Some(t),
-                    _ => None,
-                })
-                .collect(),
-        ),
-        _ => return None,
-    })
+        _ => None,
+    }
+}
+
+/// An object: an ADF document, a person, or an option by its value or
+/// name.
+fn object_value(o: &serde_json::Map<String, Value>, value: &Value) -> Option<FieldValue> {
+    if o.get("type").and_then(Value::as_str) == Some("doc") {
+        return Some(FieldValue::RichText(adf::to_rich_text(value)));
+    }
+    if o.contains_key("displayName") {
+        return Some(FieldValue::User(user(&serde_json::from_value(value.clone()).ok()?)));
+    }
+    Some(FieldValue::Text(o.get("value").or(o.get("name"))?.as_str()?.to_string()))
+}
+
+/// An item of a list, kept when it reads as text.
+fn item_text(item: &Value) -> Option<String> {
+    match field_value(item)? {
+        FieldValue::Text(t) => Some(t),
+        _ => None,
+    }
 }
 
 pub fn issue(dto: &IssueDto, ctx: &Ctx) -> Result<Issue> {

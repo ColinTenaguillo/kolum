@@ -316,6 +316,52 @@ fn an_issue_maps_every_field() {
     );
 }
 
+/// Every shape a custom field's value comes in reads as the detail shows
+/// it; what has no text to show (a bare id, a flag, nothing) is left out.
+#[test]
+fn custom_field_values_read_in_every_shape() {
+    let mut dto: IssueDto = serde_json::from_str(fixture!("issue.json")).unwrap();
+    dto.fields.retain(|id, _| !id.starts_with("customfield_"));
+    let doc = serde_json::json!({ "type": "doc", "version": 1, "content": [
+        { "type": "paragraph", "content": [{ "type": "text", "text": "Steps" }] }] });
+    for (id, value) in [
+        ("customfield_1", serde_json::json!("plain")),
+        ("customfield_2", serde_json::json!(2.5)),
+        ("customfield_3", doc),
+        ("customfield_4", serde_json::json!({ "accountId": "a1", "displayName": "Ana" })),
+        ("customfield_5", serde_json::json!({ "id": "1", "value": "Platform" })),
+        ("customfield_6", serde_json::json!({ "id": "2", "name": "3.1.0" })),
+        ("customfield_7", serde_json::json!({ "id": "3" })),
+        ("customfield_8", serde_json::json!(["iOS", { "value": "Android" }, 3])),
+        ("customfield_9", serde_json::json!(true)),
+        ("customfield_10", serde_json::json!({ "displayName": 5 })),
+    ] {
+        dto.fields.insert(id.into(), value);
+    }
+    let issue = map::issue(&dto, &ctx()).unwrap();
+    let read: Vec<(&str, String)> = (issue.fields.iter())
+        .map(|f| match &f.value {
+            FieldValue::User(u) => (f.id.as_str(), format!("user {}", u.display_name)),
+            FieldValue::RichText(r) => (f.id.as_str(), format!("rich {}", r.plain_text())),
+            FieldValue::Number(n) => (f.id.as_str(), format!("number {n}")),
+            other => (f.id.as_str(), other.to_input()),
+        })
+        .collect();
+    let want = |id: &'static str, text: &str| (id, text.to_string());
+    assert_eq!(
+        read,
+        [
+            want("customfield_1", "plain"),
+            want("customfield_2", "number 2.5"),
+            want("customfield_3", "rich Steps"),
+            want("customfield_4", "user Ana"),
+            want("customfield_5", "Platform"),
+            want("customfield_6", "3.1.0"),
+            want("customfield_8", "iOS Android"),
+        ]
+    );
+}
+
 #[test]
 fn a_sparse_issue_falls_back_sensibly() {
     let issue = &issues()[1];

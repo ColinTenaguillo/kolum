@@ -17,6 +17,14 @@ fn answer(query: &str, variables: &Value) -> &'static str {
     let has = |s: &str| query.contains(s);
     match () {
         _ if variables["id"] == "PVTI_new999" => fixture!("draft_item.json"),
+        // A draft GitHub adds no item for, and one whose item is gone.
+        _ if variables["title"] == "No item" => {
+            r#"{"data":{"addProjectV2DraftIssue":{"projectItem":null}}}"#
+        }
+        _ if variables["title"] == "Gone" => {
+            r#"{"data":{"addProjectV2DraftIssue":{"projectItem":{"id":"PVTI_gone"}}}}"#
+        }
+        _ if variables["id"] == "PVTI_gone" => r#"{"data":{"node":null}}"#,
         _ if has("projectV2(number") => fixture!("project.json"),
         _ if variables["after"] == "Y3Vyc29yOjM=" => fixture!("items_last.json"),
         _ if has("items(first") => fixture!("items.json"),
@@ -286,6 +294,29 @@ async fn creating_and_cloning_add_a_draft_to_the_project() {
     assert_eq!(add["variables"]["title"], "CLONE - Picker opens slowly");
 }
 
+/// A new draft is the item GitHub adds, read back; no item, or one that
+/// cannot be read, is an error, not a card.
+#[tokio::test]
+async fn creating_reads_the_new_item_back_or_says_why_not() {
+    let gh = fake_github(200, None).await;
+    let p = provider(&gh);
+    let new = |title: &str| NewIssue {
+        project: "ColinTenaguillo".into(),
+        kind: IssueType { name: "Draft".into(), kind: IssueKind::Task },
+        title: title.into(),
+        description: RichText::from_markdown("Body"),
+        parent: None,
+    };
+    let created = p.create(new("Write the docs")).await.unwrap();
+    assert_eq!(created.key.as_str(), "draft-new999");
+    p.issue(&created.key).await.unwrap();
+    for (title, why) in [("No item", "GitHub created no item"), ("Gone", "an unreadable new item")]
+    {
+        let refused = p.create(new(title)).await;
+        assert!(matches!(&refused, Err(DomainError::Transport(m)) if m == why), "{refused:?}");
+    }
+}
+
 #[tokio::test]
 async fn search_runs_inside_the_project_and_keeps_what_the_board_knows() {
     let gh = fake_github(200, None).await;
@@ -443,6 +474,62 @@ fn a_parent_with_no_number_is_no_parent() {
     assert_eq!(
         issue_of(&unnumbered, &[], None, "Status", &HashMap::new()).unwrap().issue.parent,
         None
+    );
+}
+
+/// Every kind of content and of field value an item can hold, read as the
+/// domain has it: the type by kind and label, the status from the item's
+/// Status value or, for a search hit, from open or closed; options,
+/// numbers and iterations by the field they belong to.
+#[test]
+fn an_items_content_and_values_read_in_every_shape() {
+    let content = |kind: &str, state: &str, labels: &[&str]| {
+        json!({ "__typename": kind, "id": "C_1", "number": 7, "title": "t", "state": state,
+                "repository": { "name": "loki" }, "createdAt": "2026-01-01T00:00:00Z",
+                "labels": { "nodes": labels.iter().map(|l| json!({ "name": l })).collect::<Vec<_>>() } })
+    };
+    let read = |c: &Value, fields: &[Value], item: Option<&str>| {
+        let ranks = HashMap::from([("p0".to_string(), Priority { rank: 0, name: "P0".into() })]);
+        issue_of(c, fields, item, "Status", &ranks).unwrap().issue
+    };
+    let typed = |c: Value| read(&c, &[], None).kind.name;
+    assert_eq!(typed(content("PullRequest", "OPEN", &[])), "Pull request");
+    assert_eq!(typed(content("DraftIssue", "OPEN", &[])), "Draft");
+    assert_eq!(typed(content("Issue", "OPEN", &["Bug: UI"])), "Bug");
+    assert_eq!(typed(content("Issue", "OPEN", &["docs"])), "Issue");
+    let status = |state: &str, item| read(&content("Issue", state, &[]), &[], item).status.name;
+    assert_eq!(
+        [
+            status("CLOSED", None),
+            status("MERGED", None),
+            status("OPEN", None),
+            status("OPEN", Some("I"))
+        ],
+        ["Closed", "Closed", "Open", "No Status"]
+    );
+    let field = |name: &str| json!({ "name": name });
+    let values = [
+        json!({ "name": "Doing", "optionId": "o_doing", "field": field("Status") }),
+        json!({ "name": "P0", "optionId": "p0", "field": field("Priority") }),
+        json!({ "name": "Core", "optionId": "o_core", "field": field("Team") }),
+        json!({ "number": 5.0, "field": field("Size") }),
+        json!({ "number": 2.0, "field": field("Effort") }),
+        json!({ "title": "Iteration 2", "iterationId": "it2", "field": field("Iteration") }),
+        json!({ "text": "free text", "field": field("Notes") }),
+    ];
+    let issue = read(&content("Issue", "OPEN", &[]), &values, Some("I"));
+    assert_eq!(
+        (issue.status.name.as_str(), issue.status.category),
+        ("Doing", StatusCategory::Doing)
+    );
+    assert_eq!(issue.priority, Some(Priority { rank: 0, name: "P0".into() }));
+    assert_eq!(issue.estimate, Some(Estimate::Points(5.0)), "Size is an estimate");
+    assert_eq!(issue.sprint, Some(Sprint { id: "it2".into(), name: "Iteration 2".into() }));
+    let custom: Vec<(&str, &FieldValue)> =
+        issue.fields.iter().map(|f| (f.name.as_str(), &f.value)).collect();
+    assert_eq!(
+        custom,
+        [("Team", &FieldValue::Text("Core".into())), ("Effort", &FieldValue::Number(2.0))]
     );
 }
 

@@ -162,6 +162,111 @@ fn draft_key(id: &str) -> IssueKey {
     IssueKey::parse(format!("draft-{}", &id[start..]))
 }
 
+/// What a project item's field values say beyond its content: the
+/// Status and Priority options, the estimate, the iteration, and the
+/// other fields by name.
+#[derive(Default)]
+struct ItemFields {
+    status: Option<Status>,
+    priority: Option<Priority>,
+    estimate: Option<Estimate>,
+    sprint: Option<Sprint>,
+    custom: Vec<CustomField>,
+}
+
+impl ItemFields {
+    fn read(fields: &[Value], status_field: &str, ranks: &HashMap<String, Priority>) -> Self {
+        let mut read = ItemFields::default();
+        for v in fields {
+            let name = v["field"]["name"].as_str().unwrap_or("");
+            if let (Some(option), Some(value)) = (v["optionId"].as_str(), v["name"].as_str()) {
+                read.option(name, option, value, status_field, ranks);
+            } else if let Some(n) = v["number"].as_f64() {
+                read.number(name, n);
+            } else if let (Some(id), Some(title)) = (v["iterationId"].as_str(), v["title"].as_str())
+            {
+                read.sprint = Some(Sprint { id: id.into(), name: title.into() });
+            }
+        }
+        read
+    }
+
+    fn option(
+        &mut self,
+        name: &str,
+        option: &str,
+        value: &str,
+        status_field: &str,
+        ranks: &HashMap<String, Priority>,
+    ) {
+        if name == status_field {
+            let category = category(value);
+            self.status = Some(Status { id: StatusId::new(option), name: value.into(), category });
+        } else if name.eq_ignore_ascii_case("priority") {
+            self.priority = Some(priority(ranks, option, value));
+        } else {
+            self.custom.push(custom(name, FieldValue::Text(value.into())));
+        }
+    }
+
+    fn number(&mut self, name: &str, n: f64) {
+        if ESTIMATE_FIELDS.contains(&name.to_lowercase().as_str()) {
+            self.estimate = Some(Estimate::Points(n));
+        } else {
+            self.custom.push(custom(name, FieldValue::Number(n)));
+        }
+    }
+}
+
+fn custom(name: &str, value: FieldValue) -> CustomField {
+    CustomField { id: FieldId::new(name), name: name.into(), value }
+}
+
+/// A pull request, a draft, an issue labelled as a bug, or an issue.
+fn issue_type(kind: &str, labels: &[String]) -> IssueType {
+    match kind {
+        "PullRequest" => IssueType { name: "Pull request".into(), kind: IssueKind::Other },
+        "DraftIssue" => IssueType { name: "Draft".into(), kind: IssueKind::Task },
+        _ if labels.iter().any(|l| l.to_lowercase().contains("bug")) => {
+            IssueType { name: "Bug".into(), kind: IssueKind::Bug }
+        }
+        _ => IssueType { name: "Issue".into(), kind: IssueKind::Task },
+    }
+}
+
+/// A search hit's status, from open or closed; an item's with no Status
+/// value is "No Status".
+fn content_status(content: &Value, item: Option<&str>) -> Status {
+    let status = |id: &str, name: &str, category| Status {
+        id: StatusId::new(id),
+        name: name.into(),
+        category,
+    };
+    match content["state"].as_str() {
+        Some("CLOSED" | "MERGED") if item.is_none() => {
+            status("closed", "Closed", StatusCategory::Done)
+        }
+        Some(_) if item.is_none() => status("open", "Open", StatusCategory::Todo),
+        _ => no_status(),
+    }
+}
+
+fn labels_of(content: &Value) -> Vec<String> {
+    let nodes = content["labels"]["nodes"].as_array().into_iter().flatten();
+    nodes.filter_map(|l| l["name"].as_str().map(String::from)).collect()
+}
+
+/// The parent issue, an epic to the board, when it has a number.
+fn parent_of(content: &Value) -> Option<IssueRef> {
+    let p = &content["parent"];
+    numbered(p).map(|key| IssueRef {
+        key,
+        title: p["title"].as_str().unwrap_or("").into(),
+        kind: IssueKind::Epic,
+        status: None,
+    })
+}
+
 /// An issue, pull request or draft as the domain has it. `fields` are the
 /// project item's values, absent for a search hit, whose status then
 /// comes from open or closed.
@@ -175,96 +280,30 @@ fn issue_of(
     let kind = content["__typename"].as_str()?.to_string();
     let content_id = content["id"].as_str()?.to_string();
     let key = numbered(content).unwrap_or_else(|| draft_key(item.unwrap_or(&content_id)));
-    let labels: Vec<String> = content["labels"]["nodes"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|l| l["name"].as_str().map(String::from))
-        .collect();
-    let issue_type = match &*kind {
-        "PullRequest" => IssueType { name: "Pull request".into(), kind: IssueKind::Other },
-        "DraftIssue" => IssueType { name: "Draft".into(), kind: IssueKind::Task },
-        _ if labels.iter().any(|l| l.to_lowercase().contains("bug")) => {
-            IssueType { name: "Bug".into(), kind: IssueKind::Bug }
-        }
-        _ => IssueType { name: "Issue".into(), kind: IssueKind::Task },
-    };
-    let field_name = |v: &Value| v["field"]["name"].as_str().unwrap_or("").to_string();
-    let mut status = match content["state"].as_str() {
-        Some("CLOSED" | "MERGED") if item.is_none() => Status {
-            id: StatusId::new("closed"),
-            name: "Closed".into(),
-            category: StatusCategory::Done,
-        },
-        Some(_) if item.is_none() => Status {
-            id: StatusId::new("open"),
-            name: "Open".into(),
-            category: StatusCategory::Todo,
-        },
-        _ => no_status(),
-    };
-    let (mut prio, mut estimate, mut sprint, mut custom) = (None, None, None, vec![]);
-    for v in fields {
-        let name = field_name(v);
-        if let (Some(option), Some(value)) = (v["optionId"].as_str(), v["name"].as_str()) {
-            if name == status_field {
-                status = Status {
-                    id: StatusId::new(option),
-                    name: value.into(),
-                    category: category(value),
-                };
-            } else if name.eq_ignore_ascii_case("priority") {
-                prio = Some(priority(ranks, option, value));
-            } else {
-                custom.push(CustomField {
-                    id: FieldId::new(&name),
-                    name: name.clone(),
-                    value: FieldValue::Text(value.into()),
-                });
-            }
-        } else if let Some(n) = v["number"].as_f64() {
-            if ESTIMATE_FIELDS.contains(&name.to_lowercase().as_str()) {
-                estimate = Some(Estimate::Points(n));
-            } else {
-                custom.push(CustomField {
-                    id: FieldId::new(&name),
-                    name: name.clone(),
-                    value: FieldValue::Number(n),
-                });
-            }
-        } else if let (Some(id), Some(title)) = (v["iterationId"].as_str(), v["title"].as_str()) {
-            sprint = Some(Sprint { id: id.into(), name: title.into() });
-        }
-    }
+    let labels = labels_of(content);
+    let read = ItemFields::read(fields, status_field, ranks);
     let created = datetime(&content["createdAt"])?;
-    let p = &content["parent"];
-    let parent = numbered(p).map(|key| IssueRef {
-        key,
-        title: p["title"].as_str().unwrap_or("").into(),
-        kind: IssueKind::Epic,
-        status: None,
-    });
     let author = content.get("author").or(content.get("creator"));
     let issue = Issue {
         id: IssueId::new(item.unwrap_or(&content_id)),
         key,
         title: content["title"].as_str().unwrap_or("").into(),
-        kind: issue_type,
-        status,
-        priority: prio,
+        kind: issue_type(&kind, &labels),
+        status: read.status.unwrap_or_else(|| content_status(content, item)),
+        priority: read.priority,
         assignee: content["assignees"]["nodes"].as_array().and_then(|a| a.first()).and_then(user),
         reporter: author.and_then(user),
         labels,
-        parent,
+        parent: parent_of(content),
         subtasks: vec![],
         links: vec![],
-        estimate,
-        sprint,
+        estimate: read.estimate,
+        sprint: read.sprint,
         created,
         updated: datetime(&content["updatedAt"]).unwrap_or(created),
         due: None,
         description: Some(RichText::from_markdown(content["body"].as_str().unwrap_or(""))),
-        fields: custom,
+        fields: read.custom,
         url: content["url"].as_str().map(String::from),
         // GitHub keeps files as links in the Markdown body, not as a list.
         attachments: vec![],
