@@ -1577,8 +1577,9 @@ async fn synced_meanwhile() -> kolum_app::BoardSnapshot {
     let nine = fresh.issues.iter_mut().find(|i| i.key.as_str() == "ACME-9").unwrap();
     nine.title = "Renamed by Ana".into();
     nine.status = done;
-    let top = kolum_domain::Rank::Before(fresh.issues[0].key.clone());
-    kolum_app::move_issue(&mut fresh.issues, &IssueKey::parse("ACME-11"), &top);
+    let eleven = fresh.issues.iter().position(|i| i.key.as_str() == "ACME-11").unwrap();
+    let eleven = fresh.issues.remove(eleven);
+    fresh.issues.insert(0, eleven);
     fresh
 }
 
@@ -1794,6 +1795,30 @@ async fn transitions_that_cannot_be_done_here_say_why() {
         !screen(&mut app, 150, 30).contains("No transition"),
         "a reply for another issue is ignored"
     );
+}
+
+/// Picked while a colleague moved the card there: nothing is sent, and
+/// nothing claims a move.
+#[tokio::test]
+async fn a_transition_to_where_the_card_already_is_sends_nothing() {
+    let mut app = loaded().await;
+    app.take_effects();
+    press(&mut app, "t");
+    let mut to_done = transitions_event("ACME-9").await;
+    if let Event::Transitions { result: Ok(ts), .. } = &mut to_done {
+        ts.retain(|t| t.to.name == "Done");
+    }
+    app.on_event(to_done);
+    settle(&mut app);
+    app.on_event(Event::BoardLoaded {
+        snapshot: synced_meanwhile().await,
+        fresh: true,
+        request: 1,
+    });
+    press(&mut app, "<CR>");
+    assert!(writes(app.take_effects()).is_empty());
+    let shown = screen(&mut app, 150, 30);
+    assert!(shown.contains("ACME-9 already in Done"), "{shown}");
 }
 
 #[tokio::test]

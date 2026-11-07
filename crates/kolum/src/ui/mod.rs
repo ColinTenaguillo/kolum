@@ -21,7 +21,7 @@ use crate::theme::{self, Theme};
 use board::{BoardView, DrawCtx};
 use detail::DetailView;
 use input::Input;
-use kolum_app::{Command, Event, IssueDetail};
+use kolum_app::{Command, Event, IssueDetail, description_update, merge_drafts, titled};
 use kolum_domain::{IssueKey, User};
 use picker::{AnyPicker, Pick, Picker, Waker};
 use ratatui::Frame;
@@ -869,43 +869,22 @@ impl App {
     /// Everyone, me, then whoever has a card on the board by name, then no
     /// one; with how many cards each has, and those already shown flagged.
     fn open_people_picker(&mut self) {
-        let issues = self.board.snapshot.iter().flat_map(|s| &s.issues);
-        let mut counts: Vec<(Option<kolum_domain::User>, usize)> = vec![];
-        for issue in issues {
-            match counts
-                .iter_mut()
-                .find(|(u, _)| u.as_ref().map(|u| &u.id) == issue.assignee.as_ref().map(|a| &a.id))
-            {
-                Some((_, n)) => *n += 1,
-                None => counts.push((issue.assignee.clone(), 1)),
-            }
-        }
-        let me = self.me.as_ref().map(|u| u.id.clone());
         let cards = |n: usize| if n == 1 { "1 card".to_string() } else { format!("{n} cards") };
-        let count_of = |id: Option<&kolum_domain::UserId>| {
-            counts.iter().find(|(u, _)| u.as_ref().map(|u| &u.id) == id).map_or(0, |(_, n)| *n)
+        let me = self.me.as_ref().map(|u| &u.id);
+        let row = |(user, n): (Option<User>, usize)| match user {
+            Some(u) if Some(&u.id) == me => {
+                ("@me".into(), format!("{} (me)  {}", u.display_name, cards(n)))
+            }
+            Some(u) => (
+                format!("@{}", u.display_name.replace(' ', "")),
+                format!("{}  {}", u.display_name, cards(n)),
+            ),
+            None => ("@none".into(), format!("Unassigned  {}", cards(n))),
         };
-        let mut people = vec![(String::new(), "Everyone".to_string())];
-        if let Some(me_user) = &self.me {
-            people.push((
-                "@me".into(),
-                format!("{} (me)  {}", me_user.display_name, cards(count_of(me.as_ref()))),
-            ));
-        }
-        let mut others: Vec<&kolum_domain::User> = counts
-            .iter()
-            .filter_map(|(u, _)| u.as_ref())
-            .filter(|u| Some(&u.id) != me.as_ref())
-            .collect();
-        others.sort_by(|a, b| a.display_name.cmp(&b.display_name));
-        for u in others {
-            let token = format!("@{}", u.display_name.replace(' ', ""));
-            people.push((token, format!("{}  {}", u.display_name, cards(count_of(Some(&u.id))))));
-        }
-        let unassigned = count_of(None);
-        if unassigned > 0 {
-            people.push(("@none".into(), format!("Unassigned  {}", cards(unassigned))));
-        }
+        let everyone = (String::new(), "Everyone".to_string());
+        let on_board = kolum_app::assignees(self.me.as_ref(), self.board_issues());
+        let mut people: Vec<(String, String)> =
+            std::iter::once(everyone).chain(on_board.into_iter().map(row)).collect();
         // Those already shown say so rather than being marked: with marks,
         // Enter would act on them and not on the person highlighted.
         let shown: Vec<&str> =
@@ -1109,6 +1088,11 @@ impl App {
         self.writable
     }
 
+    /// The issues of the board on screen; none before it arrives.
+    fn board_issues(&self) -> &[kolum_domain::Issue] {
+        self.board.snapshot.as_ref().map(|s| s.issues.as_slice()).unwrap_or_default()
+    }
+
     fn issue(&self, key: &IssueKey) -> Option<&kolum_domain::Issue> {
         let on_board =
             self.board.snapshot.as_ref().and_then(|s| s.issues.iter().find(|i| &i.key == key));
@@ -1144,16 +1128,7 @@ impl App {
         if !self.can_write() {
             return;
         }
-        let rank = if delta > 0 {
-            kolum_domain::Rank::After(other)
-        } else {
-            kolum_domain::Rank::Before(other)
-        };
-        self.write(vec![(
-            key.clone(),
-            kolum_app::Change::Rank(rank.clone()),
-            kolum_app::Write::Rank(rank),
-        )]);
+        self.write(vec![kolum_app::rank_write(key.clone(), other, delta > 0)]);
         let way = if delta > 0 { "down" } else { "up" };
         self.say(format!("{key} moved {way}"), Level::Info);
     }
@@ -1176,26 +1151,20 @@ impl App {
             Err(e) => return self.say(format!("{key}: {e}"), Level::Error),
         };
         let board = self.board.snapshot.as_ref().map(|s| &s.board);
-        // Jira's team-managed projects offer a transition to the status the
-        // issue is already in: valid there, nothing to choose here.
         let here = self.issue(&key).map(|i| i.status.id.clone());
-        let transitions: Vec<_> =
-            transitions.into_iter().filter(|t| Some(&t.to.id) != here.as_ref()).collect();
-        let transitions = match (column, board) {
-            (Some(c), Some(board)) => kolum_app::transitions_into(board, c, &transitions),
-            _ => transitions,
-        };
-        match (column, transitions.len()) {
-            (Some(c), 0) => {
-                let name = board
-                    .and_then(|b| b.columns.get(c))
-                    .map_or("there", |c| c.name.as_str())
-                    .to_string();
-                self.say(format!("No transition takes {key} to {name} from here"), Level::Warn)
+        match kolum_app::offer(transitions, here.as_ref(), board, column) {
+            kolum_app::Offer::Nothing(closed) => {
+                let why = match closed {
+                    kolum_app::Closed::Here => format!("No transition is open to {key}"),
+                    kolum_app::Closed::Into(name) => {
+                        let name = name.as_deref().unwrap_or("there");
+                        format!("No transition takes {key} to {name} from here")
+                    }
+                };
+                self.say(why, Level::Warn)
             }
-            (None, 0) => self.say(format!("No transition is open to {key}"), Level::Warn),
-            (Some(_), 1) => self.transition(keys, transitions[0].clone()),
-            _ => {
+            kolum_app::Offer::Take(t) => self.transition(keys, t),
+            kolum_app::Offer::Choose(transitions) => {
                 let source = sources::TransitionChoice { keys, transitions };
                 self.open_picker(Box::new(Picker::new(source, self.waker.clone())));
             }
@@ -1205,19 +1174,21 @@ impl App {
     /// A transition that asks for fields (a resolution on the way to Done)
     /// is left to the web app, which has the form for them.
     fn transition(&mut self, keys: Vec<IssueKey>, t: kolum_domain::Transition) {
-        if let Some(why) = kolum_app::asks_for(&t) {
-            return self.say(format!("{why}: press o to do it in the browser"), Level::Warn);
+        let statuses: Vec<_> =
+            keys.iter().map(|k| (k.clone(), self.issue(k).map(|i| i.status.id.clone()))).collect();
+        let names = keys.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", ");
+        match kolum_app::transition_writes(&t, &statuses) {
+            Ok(writes) => {
+                self.write(writes);
+                self.say(format!("{names} → {}", t.to.name), Level::Info);
+            }
+            Err(kolum_app::Unmoved::AlreadyThere) => {
+                self.say(format!("{names} already in {}", t.to.name), Level::Info)
+            }
+            Err(kolum_app::Unmoved::AsksFor(why)) => {
+                self.say(format!("{why}: press o to do it in the browser"), Level::Warn)
+            }
         }
-        // The transitions are those of the first.
-        let status = |app: &Self, key| app.issue(key).map(|i| i.status.id.clone());
-        let first = status(self, &keys[0]);
-        let writes = keys.iter().filter_map(|key| {
-            let write = kolum_app::transition_write(&t, first.as_ref(), status(self, key).as_ref());
-            write.map(|write| (key.clone(), kolum_app::Change::Status(t.to.clone()), write))
-        });
-        self.write(writes.collect());
-        let names: Vec<&str> = keys.iter().map(|k| k.as_str()).collect();
-        self.say(format!("{} → {}", names.join(", "), t.to.name), Level::Info);
     }
 
     /// Who an issue can go to: me, then whoever is on the board.
@@ -1227,27 +1198,13 @@ impl App {
         keys: Vec<IssueKey>,
         field: Option<kolum_domain::EditableField>,
     ) {
-        let mut users: Vec<kolum_domain::User> = self.me.clone().into_iter().collect();
-        let mut others: Vec<kolum_domain::User> = vec![];
-        for issue in self.board.snapshot.iter().flat_map(|s| &s.issues) {
-            for u in [&issue.assignee, &issue.reporter].into_iter().flatten() {
-                if !users.iter().chain(&others).any(|o| o.id == u.id) {
-                    others.push(u.clone());
-                }
-            }
-        }
-        others.sort_by(|a, b| a.display_name.cmp(&b.display_name));
-        users.extend(others);
-        let mut choices: Vec<Option<kolum_domain::User>> = users.into_iter().map(Some).collect();
-        choices.push(None);
-        let source = sources::UserChoice { keys, users: choices, field };
+        let users = kolum_app::assignable(self.me.as_ref(), self.board_issues());
+        let source = sources::UserChoice { keys, users, field };
         self.open_picker(Box::new(Picker::new(source, self.waker.clone())));
     }
 
     fn assign(&mut self, keys: Vec<IssueKey>, user: Option<kolum_domain::User>) {
-        let write = kolum_app::Write::Assign(user.as_ref().map(|u| u.id.clone()));
-        let change = kolum_app::Change::Assignee(user.clone());
-        self.write(keys.iter().map(|key| (key.clone(), change.clone(), write.clone())).collect());
+        self.write(kolum_app::assign_writes(&keys, user.as_ref()));
         let who = user.as_ref().map_or("nobody".to_string(), |u| u.display_name.clone());
         self.say(format!("Assigned to {who}"), Level::Info);
     }
@@ -1255,7 +1212,7 @@ impl App {
     /// Sends the writes of one action, each shown at once as its change
     /// until the provider answers, on the board or off it; the first card
     /// highlighted. Their ops, in order.
-    fn write(&mut self, writes: Vec<(IssueKey, kolum_app::Change, kolum_app::Write)>) -> Vec<u64> {
+    fn write(&mut self, writes: Vec<kolum_app::Outgoing>) -> Vec<u64> {
         let first = writes.first().map(|(key, ..)| key.clone());
         let ops = writes.into_iter().map(|(key, change, write)| {
             let op = self.pending.begin(key.clone(), change);
@@ -1449,11 +1406,8 @@ impl App {
         field: kolum_domain::EditableField,
         options: Vec<String>,
     ) {
-        let mut choices: Vec<Option<String>> = options.into_iter().map(Some).collect();
-        if !field.required {
-            choices.push(None);
-        }
-        let source = sources::OptionChoice { key, field, options: choices };
+        let options = kolum_app::field_choices(&field, options);
+        let source = sources::OptionChoice { key, field, options };
         self.open_picker(Box::new(Picker::new(source, self.waker.clone())));
     }
 
@@ -1507,10 +1461,10 @@ impl App {
         field: &kolum_domain::EditableField,
         value: Option<kolum_domain::FieldValue>,
     ) {
-        if value.is_none() && field.required {
-            return self.say(format!("{} is required", field.name), Level::Warn);
+        match kolum_app::field_update(field, value) {
+            Ok(update) => _ = self.save(key, update),
+            Err(why) => self.say(why, Level::Warn),
         }
-        self.save(key, kolum_domain::IssueUpdate::set(field, value));
     }
 
     /// The issue whole, from its last full read brought up to the board's
@@ -1603,27 +1557,17 @@ impl App {
                 self.say("Nothing written: no comment", Level::Info)
             }
             EditPurpose::Comment(key) => {
-                // A comment changes nothing on the card.
-                let change = kolum_app::Change::Update(kolum_domain::IssueUpdate::default());
-                let write = kolum_app::Write::Comment(kolum_domain::RichText::from_markdown(&text));
                 self.say(format!("Commenting on {key}…"), Level::Info);
-                self.write(vec![(key, change, write)]);
+                self.write(vec![kolum_app::comment_write(key, &text)]);
             }
             EditPurpose::Create { project, kind } => {
-                let (title, body) = split_title(&text);
-                let Some(title) = title.filter(|t| !t.is_empty()) else {
-                    return self.say("No title: nothing created", Level::Info);
-                };
-                let description = kolum_domain::RichText::from_markdown(body);
-                let new = kolum_domain::NewIssue {
-                    project,
-                    kind,
-                    title: title.to_string(),
-                    description,
-                    parent: None,
-                };
-                self.effects.push(Effect::Send(Command::Create(new)));
-                self.say("Creating…", Level::Info);
+                match kolum_app::new_issue(project, kind, &text) {
+                    Some(new) => {
+                        self.effects.push(Effect::Send(Command::Create(new)));
+                        self.say("Creating…", Level::Info);
+                    }
+                    None => self.say("No title: nothing created", Level::Info),
+                }
             }
             EditPurpose::Field { key, field } => self.save_field(key, field, &text),
             EditPurpose::Describe { key, from } => self.save_description(key, from, text),
@@ -1634,8 +1578,7 @@ impl App {
     /// The write's op.
     fn save(&mut self, key: IssueKey, update: kolum_domain::IssueUpdate) -> u64 {
         self.say(format!("Saving {key}…"), Level::Info);
-        let change = kolum_app::Change::Update(update.clone());
-        self.write(vec![(key, change, kolum_app::Write::Update(update))])[0]
+        self.write(vec![kolum_app::update_write(key, update)])[0]
     }
 
     /// The title and the description back from `$EDITOR`. A description is
@@ -1656,7 +1599,7 @@ impl App {
     /// the editing began goes back to the editor, with the text.
     fn save_read(&mut self, key: IssueKey, from: String, text: String) {
         let Some(issue) = self.read.get(&key).map(|d| d.issue.clone()) else { return };
-        if issue.description_or_empty().to_markdown().trim() != split_title(&from).1 {
+        if kolum_app::changed_since(&issue, &from) {
             self.edit_description(&issue, Some(&text));
             let why = format!("{key}: the description changed meanwhile; yours is in the editor");
             return self.say(why, Level::Warn);
@@ -1829,7 +1772,7 @@ impl App {
     /// The board's issues, each as read whole when it has been: the board's
     /// copy has no description on Jira Cloud.
     fn open_issue_picker(&mut self) {
-        let board = self.board.snapshot.as_ref().map(|s| s.issues.as_slice()).unwrap_or_default();
+        let board = self.board_issues();
         let issues =
             board.iter().map(|i| self.issue_in_full(&i.key).unwrap_or_else(|| i.clone())).collect();
         let me = self.me.as_ref().map(|u| u.id.clone());
@@ -2353,58 +2296,6 @@ fn reading(key: &IssueKey) -> String {
 
 fn opening(key: &IssueKey) -> String {
     format!("Opening {key}…")
-}
-
-/// Two drafts of one issue as one: the title, and the description, each
-/// from the later draft when it changed it, else from the one kept; with
-/// the text it was changed from, so a save sends only what moved.
-fn merge_drafts(kept: &(String, String), later: &(String, String)) -> (String, String) {
-    let (kept_from, kept_text) = (split_title(&kept.0), split_title(&kept.1));
-    let (later_from, later_text) = (split_title(&later.0), split_title(&later.1));
-    let (from_title, title) = match later_text.0 != later_from.0 {
-        true => (later_from.0, later_text.0),
-        false => (kept_from.0, kept_text.0),
-    };
-    let (from_body, body) = match later_text.1 != later_from.1 {
-        true => (later_from.1, later_text.1),
-        false => (kept_from.1, kept_text.1),
-    };
-    let join =
-        |title: Option<&str>, body: &str| format!("# {}\n\n{body}", title.unwrap_or_default());
-    (join(from_title, from_body), join(title, body))
-}
-
-/// The title and the description as `$EDITOR` has them: `# Title`, then
-/// Markdown.
-fn titled(issue: &kolum_domain::Issue) -> String {
-    format!("# {}\n\n{}", issue.title, issue.description_or_empty().to_markdown())
-}
-
-/// `# Title` then Markdown, against the same it was edited from: only what
-/// moved is sent. The description is compared as Markdown, so a rich text
-/// that does not survive the round trip exactly is not rewritten for nothing.
-fn description_update(from: &str, text: &str) -> kolum_domain::IssueUpdate {
-    let (was_title, was) = split_title(from);
-    let (title, body) = split_title(text);
-    kolum_domain::IssueUpdate {
-        title: title.filter(|t| !t.is_empty() && Some(*t) != was_title).map(String::from),
-        description: (body != was).then(|| kolum_domain::RichText::from_markdown(body)),
-        ..Default::default()
-    }
-}
-
-/// `# Title` on the first line, if there is one, and the rest.
-fn split_title(text: &str) -> (Option<&str>, &str) {
-    let text = text.trim_start();
-    match text.split_once('\n') {
-        Some((first, rest)) if first.trim() == "#" || first.starts_with("# ") => {
-            (Some(first.trim_start_matches('#').trim()), rest.trim())
-        }
-        None if text.starts_with("# ") || text.trim() == "#" => {
-            (Some(text.trim_start_matches('#').trim()), "")
-        }
-        _ => (None, text.trim()),
-    }
 }
 
 /// gh-dash's logo, on the right of the tab row: the name on a pill of

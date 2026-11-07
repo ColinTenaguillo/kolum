@@ -4,21 +4,146 @@
 
 use crate::board::BoardSnapshot;
 use kolum_domain::{
-    Board, Issue, IssueKey, IssueUpdate, Rank, RichText, Status, StatusId, Transition,
-    TransitionId, User, UserId,
+    Board, EditableField, FieldValue, Issue, IssueKey, IssueUpdate, Rank, RichText, Status,
+    StatusId, Transition, TransitionId, User, UserId,
 };
 use std::collections::BTreeMap;
 
 /// What a card moved into `column` can take: the transitions whose target
 /// status that column holds. Several is a choice for the user; none means
 /// the workflow does not allow the move from here.
-pub fn transitions_into(
-    board: &Board,
-    column: usize,
-    transitions: &[Transition],
-) -> Vec<Transition> {
+fn transitions_into(board: &Board, column: usize, transitions: &[Transition]) -> Vec<Transition> {
     let Some(column) = board.columns.get(column) else { return vec![] };
     transitions.iter().filter(|t| column.statuses.contains(&t.to.id)).cloned().collect()
+}
+
+/// What a move offers, once the provider listed the issue's transitions.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Offer {
+    /// No transition leads where the move goes.
+    Nothing(Closed),
+    /// The one way into the column asked for: taken without asking.
+    Take(Transition),
+    /// The user picks.
+    Choose(Vec<Transition>),
+}
+
+/// Why a move has nothing to offer.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Closed {
+    /// No transition is open from where the issue is.
+    Here,
+    /// None leads into the column asked for, named when the board says.
+    Into(Option<String>),
+}
+
+/// The transitions to offer an issue in status `here`: those to another
+/// status (Jira's team-managed projects offer one to the status the issue
+/// is already in: valid there, nothing to choose here); for a move into
+/// `column`, only those into it when the board is known, a lone one taken
+/// at once.
+pub fn offer(
+    transitions: Vec<Transition>,
+    here: Option<&StatusId>,
+    board: Option<&Board>,
+    column: Option<usize>,
+) -> Offer {
+    let elsewhere: Vec<_> = transitions.into_iter().filter(|t| Some(&t.to.id) != here).collect();
+    let mut offered = match (board, column) {
+        (Some(board), Some(column)) => transitions_into(board, column, &elsewhere),
+        _ => elsewhere,
+    };
+    match (column, offered.len()) {
+        (Some(c), 0) => {
+            let name = board.and_then(|b| b.columns.get(c)).map(|c| c.name.clone());
+            Offer::Nothing(Closed::Into(name))
+        }
+        (None, 0) => Offer::Nothing(Closed::Here),
+        (Some(_), 1) => Offer::Take(offered.remove(0)),
+        _ => Offer::Choose(offered),
+    }
+}
+
+/// A write as it is sent: the issue, how it shows at once, and what goes
+/// to the provider.
+pub type Outgoing = (IssueKey, Change, Write);
+
+/// Why a transition moves none of a selection.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Unmoved {
+    /// It asks for fields, which the web app has the form for: why, in words.
+    AsksFor(String),
+    /// Every issue is in its status already.
+    AlreadyThere,
+}
+
+/// The writes that move a selection by `t`, picked among the transitions
+/// of the first issue, each issue given with its status.
+pub fn transition_writes(
+    t: &Transition,
+    statuses: &[(IssueKey, Option<StatusId>)],
+) -> Result<Vec<Outgoing>, Unmoved> {
+    if let Some(why) = asks_for(t) {
+        return Err(Unmoved::AsksFor(why));
+    }
+    let first = statuses.first().and_then(|(_, status)| status.as_ref());
+    let writes: Vec<_> = statuses
+        .iter()
+        .filter_map(|(key, here)| {
+            let write = transition_write(t, first, here.as_ref())?;
+            Some((key.clone(), Change::Status(t.to.clone()), write))
+        })
+        .collect();
+    if writes.is_empty() {
+        return Err(Unmoved::AlreadyThere);
+    }
+    Ok(writes)
+}
+
+/// The issues given to `user`, or to no one.
+pub fn assign_writes(keys: &[IssueKey], user: Option<&User>) -> Vec<Outgoing> {
+    let write = Write::Assign(user.map(|u| u.id.clone()));
+    let change = Change::Assignee(user.cloned());
+    keys.iter().map(|key| (key.clone(), change.clone(), write.clone())).collect()
+}
+
+/// A comment, in Markdown, on the issue: it changes nothing on the card.
+pub fn comment_write(key: IssueKey, markdown: &str) -> Outgoing {
+    let change = Change::Update(IssueUpdate::default());
+    (key, change, Write::Comment(RichText::from_markdown(markdown)))
+}
+
+/// The issue next to `other` in the provider's order: after it when it
+/// goes `down`, before it otherwise.
+pub fn rank_write(key: IssueKey, other: IssueKey, down: bool) -> Outgoing {
+    let rank = if down { Rank::After(other) } else { Rank::Before(other) };
+    (key, Change::Rank(rank.clone()), Write::Rank(rank))
+}
+
+/// An edit of the issue, shown as it is sent.
+pub fn update_write(key: IssueKey, update: IssueUpdate) -> Outgoing {
+    (key, Change::Update(update.clone()), Write::Update(update))
+}
+
+/// One field set to `value`, or emptied; or why not: it is required.
+pub fn field_update(
+    field: &EditableField,
+    value: Option<FieldValue>,
+) -> Result<IssueUpdate, String> {
+    if value.is_none() && field.required {
+        return Err(format!("{} is required", field.name));
+    }
+    Ok(IssueUpdate::set(field, value))
+}
+
+/// What a choice field can be set to: its options, and nothing when it
+/// may be emptied.
+pub fn field_choices(field: &EditableField, options: Vec<String>) -> Vec<Option<String>> {
+    let mut choices: Vec<Option<String>> = options.into_iter().map(Some).collect();
+    if !field.required {
+        choices.push(None);
+    }
+    choices
 }
 
 /// A change sent to the provider.
@@ -60,7 +185,7 @@ fn apply(issue: &mut Issue, change: &Change) {
 
 /// Why a transition is not done here: it asks for fields, which the web
 /// app has the form for.
-pub fn asks_for(t: &Transition) -> Option<String> {
+fn asks_for(t: &Transition) -> Option<String> {
     let fields: Vec<&str> = t.required_fields.iter().map(|f| f.as_str()).collect();
     (!fields.is_empty()).then(|| format!("`{}` asks for {}", t.name, fields.join(", ")))
 }
@@ -87,7 +212,7 @@ pub fn transition_to(
 /// How one issue of a selection moves by `t`, picked among the transitions
 /// of the first, in status `first`: by it from the same status, by its own
 /// from another; not at all when it is there already.
-pub fn transition_write(
+fn transition_write(
     t: &Transition,
     first: Option<&StatusId>,
     here: Option<&StatusId>,
@@ -103,14 +228,16 @@ pub fn transition_write(
 
 /// Takes the issue out of the list and puts it back next to the other;
 /// nothing moves when either is not there.
-pub fn move_issue(issues: &mut Vec<Issue>, key: &IssueKey, rank: &Rank) {
+fn move_issue(issues: &mut Vec<Issue>, key: &IssueKey, rank: &Rank) {
     let (Rank::Before(other) | Rank::After(other)) = rank;
-    let Some(from) = issues.iter().position(|i| &i.key == key) else { return };
-    if key == other || !issues.iter().any(|i| &i.key == other) {
+    let place = |key: &IssueKey| issues.iter().position(|i| &i.key == key);
+    let (Some(from), Some(to)) = (place(key), place(other)) else { return };
+    if from == to {
         return;
     }
     let issue = issues.remove(from);
-    let at = issues.iter().position(|i| &i.key == other).unwrap_or(0);
+    // The other is one place up once the issue is out from above it.
+    let at = to - usize::from(to > from);
     issues.insert(if matches!(rank, Rank::After(_)) { at + 1 } else { at }, issue);
 }
 
@@ -280,7 +407,7 @@ impl Pending {
 mod tests {
     use super::*;
     use crate::load_board;
-    use kolum_domain::IssueWriter;
+    use kolum_domain::{IssueReader, IssueWriter};
     use kolum_provider_fake::FakeProvider;
 
     #[tokio::test]
@@ -330,29 +457,137 @@ mod tests {
         assert!(asks.contains("resolution"), "{asks}");
     }
 
-    /// One issue of a selection moved by the transition picked among the
-    /// first's: by it when in the first's status, by its own when not, and
-    /// not at all when there already.
+    fn names(ts: &[Transition]) -> Vec<&str> {
+        ts.iter().map(|t| t.to.name.as_str()).collect()
+    }
+
+    /// A move into a column takes its lone way at once and asks among
+    /// several; `t`, into no column, always asks; none says why.
+    #[tokio::test]
+    async fn a_move_offers_the_transitions_to_another_status() {
+        let fake = FakeProvider::new();
+        let board = load_board(&fake, None).await.unwrap().board;
+        let key = IssueKey::parse("ACME-12"); // To Do
+        let mut ts = fake.transitions(&key).await.unwrap();
+        let todo = fake.issue(&key).await.unwrap().status;
+        let mut to_itself = ts[0].clone();
+        to_itself.to = todo.clone();
+        ts.push(to_itself);
+        let here = Some(&todo.id);
+        let board = Some(&board);
+        let Offer::Choose(all) = offer(ts.clone(), here, board, None) else { panic!() };
+        assert_eq!(all.len(), ts.len() - 1, "not to where it is: {:?}", names(&all));
+        let Offer::Take(review) = offer(ts.clone(), here, board, Some(3)) else { panic!() };
+        assert_eq!(review.to.name, "In Review", "the lone way in, taken");
+        let Offer::Choose(two) = offer(ts.clone(), here, board, Some(2)) else { panic!() };
+        assert_eq!(names(&two), ["In Progress", "Blocked"]);
+        let to_do = Offer::Nothing(Closed::Into(Some("To Do".into())));
+        assert_eq!(offer(ts.clone(), here, board, Some(1)), to_do, "already there");
+        let nowhere = Offer::Nothing(Closed::Into(None));
+        assert_eq!(offer(ts.clone(), here, board, Some(9)), nowhere, "no such column");
+        assert_eq!(offer(vec![], here, board, None), Offer::Nothing(Closed::Here));
+        let one = vec![review.clone()];
+        assert_eq!(offer(one.clone(), here, board, None), Offer::Choose(one.clone()), "`t` asks");
+        // A column with no board to say what it holds: every way counts.
+        assert_eq!(offer(one.clone(), here, None, Some(3)), Offer::Take(review), "lone, taken");
+        assert_eq!(offer(vec![], here, None, Some(3)), nowhere);
+    }
+
+    /// The first issue's transition, each other issue by its own, none for
+    /// one there already; not at all when the transition asks for fields.
     #[test]
-    fn each_issue_of_a_selection_moves_by_what_its_status_allows() {
-        use kolum_domain::{StatusCategory, StatusId};
+    fn a_selection_moves_unless_the_transition_asks_for_fields() {
+        use kolum_domain::{FieldId, StatusCategory};
         let status = |id: &str| Status {
             id: StatusId::new(id),
             name: id.into(),
             category: StatusCategory::Doing,
         };
-        let t = Transition {
+        let mut t = Transition {
             id: TransitionId::new("51"),
-            name: "Won't do".into(),
+            name: "Done".into(),
             to: status("done"),
             required_fields: vec![],
         };
-        let (todo, doing, done) = (status("todo").id, status("doing").id, status("done").id);
-        let write = |here: &StatusId| transition_write(&t, Some(&todo), Some(here));
-        assert_eq!(write(&todo), Some(Write::Transition(t.id.clone())));
+        let key = |k: &str| IssueKey::parse(k);
+        let statuses = [
+            (key("A-1"), Some(status("todo").id)),
+            (key("A-2"), Some(status("doing").id)),
+            (key("A-3"), Some(status("done").id)),
+            (key("A-4"), Some(status("todo").id)),
+        ];
+        let writes = transition_writes(&t, &statuses).unwrap();
+        let by = |w: &Outgoing| (w.0.to_string(), w.2.clone());
         let by_its_own = Write::TransitionTo { id: t.id.clone(), to: t.to.clone() };
-        assert_eq!(write(&doing), Some(by_its_own));
-        assert_eq!(write(&done), None, "there already");
+        assert_eq!(
+            writes.iter().map(by).collect::<Vec<_>>(),
+            [
+                ("A-1".into(), Write::Transition(t.id.clone())),
+                ("A-2".into(), by_its_own),
+                ("A-4".into(), Write::Transition(t.id.clone())),
+            ]
+        );
+        assert!(writes.iter().all(|w| w.1 == Change::Status(t.to.clone())), "shown at once");
+        let there = transition_writes(&t, &statuses[2..3]);
+        assert_eq!(there, Err(Unmoved::AlreadyThere), "nothing to send");
+        t.required_fields = vec![FieldId::new("resolution")];
+        let Err(Unmoved::AsksFor(why)) = transition_writes(&t, &statuses) else { panic!() };
+        assert!(why.contains("`Done` asks for resolution"), "{why}");
+    }
+
+    /// Each write shows at once as what it changes on the card.
+    #[test]
+    fn each_action_is_a_write_and_the_change_it_shows() {
+        let (one, two) = (IssueKey::parse("A-1"), IssueKey::parse("A-2"));
+        let ana = User { id: UserId::new("u-ana"), display_name: "Ana".into(), avatar_url: None };
+        let to_ana = assign_writes(&[one.clone(), two.clone()], Some(&ana));
+        let ana_on = |key: &IssueKey| {
+            (key.clone(), Change::Assignee(Some(ana.clone())), Write::Assign(Some(ana.id.clone())))
+        };
+        assert_eq!(to_ana, [ana_on(&one), ana_on(&two)]);
+        let nobody = (one.clone(), Change::Assignee(None), Write::Assign(None));
+        assert_eq!(assign_writes(std::slice::from_ref(&one), None), [nobody]);
+
+        let (key, change, write) = comment_write(one.clone(), "*hi*");
+        assert_eq!(key, one);
+        assert_eq!(change, Change::Update(IssueUpdate::default()), "a comment changes no field");
+        assert_eq!(write, Write::Comment(RichText::from_markdown("*hi*")));
+
+        let after = Rank::After(two.clone());
+        assert_eq!(rank_write(one.clone(), two.clone(), true).2, Write::Rank(after.clone()));
+        assert_eq!(rank_write(one.clone(), two.clone(), true).1, Change::Rank(after));
+        let before = Write::Rank(Rank::Before(two.clone()));
+        assert_eq!(rank_write(one.clone(), two.clone(), false).2, before);
+
+        let update = IssueUpdate { title: Some("New".into()), ..Default::default() };
+        let sent = update_write(one.clone(), update.clone());
+        assert_eq!(sent, (one, Change::Update(update.clone()), Write::Update(update)));
+    }
+
+    fn field(required: bool) -> EditableField {
+        EditableField {
+            id: kolum_domain::FieldId::new("customfield_1"),
+            provider_id: kolum_domain::FieldId::new("customfield_1"),
+            name: "Team".into(),
+            kind: kolum_domain::FieldKind::Text,
+            required,
+            on_issue: true,
+        }
+    }
+
+    #[test]
+    fn a_required_field_cannot_be_emptied() {
+        let set = Some(FieldValue::Text("Core".into()));
+        assert_eq!(field_update(&field(true), None), Err("Team is required".into()));
+        assert_eq!(field_update(&field(false), None), Ok(IssueUpdate::set(&field(false), None)));
+        let update = IssueUpdate::set(&field(true), set.clone());
+        assert_eq!(field_update(&field(true), set), Ok(update));
+        let options = vec!["a".to_string(), "b".to_string()];
+        let some = |o: &[&str]| o.iter().map(|o| Some(o.to_string())).collect::<Vec<_>>();
+        assert_eq!(field_choices(&field(true), options.clone()), some(&["a", "b"]));
+        let mut emptied = some(&["a", "b"]);
+        emptied.push(None);
+        assert_eq!(field_choices(&field(false), options), emptied, "none to empty it");
     }
 
     fn done() -> Status {
@@ -421,6 +656,8 @@ mod tests {
         move_issue(&mut nothing.issues, &seven, &Rank::Before(IssueKey::parse("NOPE")));
         move_issue(&mut nothing.issues, &IssueKey::parse("NOPE"), &Rank::Before(five.clone()));
         assert_eq!(nothing, provider, "either not there");
+        move_issue(&mut nothing.issues, &seven, &Rank::Before(five.clone()));
+        assert_eq!(order(&nothing), ["ACME-7", "ACME-5", "ACME-6"], "up, before the other");
     }
 
     /// An issue off the board is not added to it; its own copy, the open
