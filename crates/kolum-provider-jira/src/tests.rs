@@ -320,13 +320,24 @@ fn a_sparse_issue_falls_back_sensibly() {
         "ACME-1",
         "from the old Epic Link field"
     );
-    assert!(issue.description.is_empty() && issue.sprint.is_none());
+    assert!(issue.sprint.is_none());
+    assert_eq!(issue.description, Some(RichText::default()), "`null`: none written");
+}
+
+/// A Cloud board is not asked for the description: its copy carries none,
+/// which is not one emptied.
+#[test]
+fn a_copy_without_the_description_field_carries_none() {
+    let mut page: OffsetPage = serde_json::from_str(fixture!("board_issues.json")).unwrap();
+    let mut dto = page.issues.remove(0);
+    dto.fields.remove("description");
+    assert_eq!(map::issue(&dto, &ctx()).unwrap().description, None);
 }
 
 #[test]
 fn adf_becomes_rich_text() {
-    let blocks = &issues()[0].description.blocks;
-    let text = issues()[0].description.plain_text();
+    let description = issues()[0].description.clone().unwrap();
+    let (blocks, text) = (&description.blocks, description.plain_text());
     assert!(matches!(&blocks[0], Block::Heading { level: 2, .. }));
     assert!(
         matches!(&blocks[2], Block::List { ordered: true, items } if items[1].len() == 2),
@@ -387,7 +398,7 @@ fn data_center_sprints_and_wiki_descriptions_are_read() {
     dto.fields.insert("description".into(), serde_json::json!("h2. Steps\n\nIt *fails*."));
     let issue = map::issue(&dto, &ctx()).unwrap();
     assert_eq!(issue.sprint, Some(Sprint { id: "3".into(), name: "Sprint 3".into() }));
-    assert_eq!(issue.description.to_markdown(), "## Steps\n\nIt **fails**.\n");
+    assert_eq!(issue.description.unwrap().to_markdown(), "## Steps\n\nIt **fails**.\n");
 }
 
 #[test]

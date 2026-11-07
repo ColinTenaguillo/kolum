@@ -12,7 +12,11 @@ use time::OffsetDateTime;
 
 /// Bumped when the shape of what is stored changes: an older file is then
 /// ignored, not misread. 2: fields by the domain's ids (`estimate`, `due`).
-const VERSION: u32 = 2;
+/// 3: a copy says whether it carries the description; a Jira Cloud board's
+/// kept by 2 has an empty one, which 3 would read as emptied.
+const VERSION: u32 = 3;
+/// The layouts' own: 3 left their shape as it was, so they stay at 2.
+const LAYOUT_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 struct Entry {
@@ -165,14 +169,15 @@ impl Store for Cache {
         let read = |f: std::fs::DirEntry| {
             let entry: LayoutEntry =
                 serde_json::from_str(&std::fs::read_to_string(f.path()).ok()?).ok()?;
-            (entry.version == VERSION).then_some((entry.key, entry.layout))
+            (entry.version == LAYOUT_VERSION).then_some((entry.key, entry.layout))
         };
         self.files(LAYOUT_FILE).into_iter().filter_map(read).collect()
     }
 
     /// The field layout of a project's issue type, as the provider last gave it.
     fn save_layout(&self, key: &str, layout: &FieldLayout) -> std::io::Result<()> {
-        let entry = LayoutEntry { version: VERSION, key: key.into(), layout: layout.clone() };
+        let entry =
+            LayoutEntry { version: LAYOUT_VERSION, key: key.into(), layout: layout.clone() };
         self.write(&format!("{LAYOUT_FILE}{key}"), &serde_json::to_vec(&entry)?)
     }
 }
@@ -307,6 +312,20 @@ mod tests {
         let old = r#"{"version":1,"key":"ACME/Bug","layout":{"side":[],"body":[]}}"#;
         std::fs::write(dir.join(file_name(&format!("{LAYOUT_FILE}ACME/Bug"))), old).unwrap();
         assert!(cache.layouts().is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// What changed the boards' and issues' version left the layouts'
+    /// shape as it was: one kept by version 2 still reads.
+    #[test]
+    fn a_layout_kept_by_version_2_still_reads() {
+        let dir = temp_dir("cache-layouts-2");
+        let cache = Cache::new(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let kept = r#"{"version":2,"key":"ACME/Bug","layout":{"side":[],"body":["description"]}}"#;
+        std::fs::write(dir.join(file_name(&format!("{LAYOUT_FILE}ACME/Bug"))), kept).unwrap();
+        let body = cache.layouts().get("ACME/Bug").map(|l| l.body.len());
+        assert_eq!(body, Some(1));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

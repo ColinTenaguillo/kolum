@@ -627,7 +627,7 @@ impl IssueWriter for JiraProvider {
             project: key.project().unwrap_or_default().into(),
             kind: source.kind,
             title: format!("CLONE - {}", source.title),
-            description: source.description,
+            description: source.description.unwrap_or_default(),
             parent: source.parent.map(|p| p.key),
         };
         self.create(new).await

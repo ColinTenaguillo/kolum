@@ -117,7 +117,7 @@ impl PickerSource for IssueSource {
             Line::from(status),
             Line::default(),
         ];
-        lines.extend(rich::lines(&issue.description, theme, cols));
+        lines.extend(rich::lines(issue.description_or_empty(), theme, cols));
         Some(Text::from(lines))
     }
 

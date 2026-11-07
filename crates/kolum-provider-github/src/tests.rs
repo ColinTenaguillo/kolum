@@ -151,7 +151,7 @@ async fn items_become_issues_with_their_project_fields() {
     assert_eq!(issue.reporter.as_ref().unwrap().display_name, "anasilva", "no name: the login");
     let parent = &issue.parent.as_ref().unwrap().key;
     assert_eq!((parent.as_str(), parent.project()), ("kolum#10", Some("kolum")));
-    assert_eq!(issue.description.plain_text(), "It takes 2 s.\non Jira\nwith 2k issues");
+    assert_eq!(issue.description_or_empty().plain_text(), "It takes 2 s.\non Jira\nwith 2k issues");
     assert_eq!(issue.fields[0].name, "Team");
     assert_eq!(pr.kind.name, "Pull request");
     assert_eq!((draft.key.as_str(), draft.key.project()), ("draft-ccc333", None), "no repository");

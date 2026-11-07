@@ -240,7 +240,7 @@ fn issue_of(
         created,
         updated: datetime(&content["updatedAt"]).unwrap_or(created),
         due: None,
-        description: RichText::from_markdown(content["body"].as_str().unwrap_or("")),
+        description: Some(RichText::from_markdown(content["body"].as_str().unwrap_or(""))),
         fields: custom,
         url: content["url"].as_str().map(String::from),
         // GitHub keeps files as links in the Markdown body, not as a list.
@@ -661,7 +661,7 @@ impl IssueWriter for GithubProvider {
             project: self.settings.owner.clone(),
             kind: source.kind,
             title: format!("CLONE - {}", source.title),
-            description: source.description,
+            description: source.description.unwrap_or_default(),
             parent: None,
         };
         self.create(new).await

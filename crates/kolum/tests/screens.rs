@@ -488,7 +488,7 @@ async fn a_board_sync_keeps_the_description_the_detail_loaded() {
     app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail)));
     let mut snapshot = load_board(&fake, None).await.unwrap();
     for issue in &mut snapshot.issues {
-        issue.description = kolum_domain::RichText::from_markdown("h3. Context{{raw}}");
+        issue.description = Some(kolum_domain::RichText::from_markdown("h3. Context{{raw}}"));
     }
     app.on_event(Event::BoardLoaded { snapshot, fresh: true, request: 1 });
     let shown = screen(&mut app, 140, 40);
@@ -497,8 +497,8 @@ async fn a_board_sync_keeps_the_description_the_detail_loaded() {
 }
 
 /// A board copy newer than the detail's read takes its description when it
-/// has one (Data Center's boards do), and keeps the detail's when it has
-/// none (Jira Cloud's do not).
+/// carries one (Data Center's boards do), emptied or not, and keeps the
+/// detail's when it carries none (Jira Cloud's do not).
 #[tokio::test]
 async fn a_board_sync_brings_a_newer_description() {
     let fake = FakeProvider::new();
@@ -510,10 +510,10 @@ async fn a_board_sync_brings_a_newer_description() {
     let detail =
         IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
     app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail)));
-    let sync = |minutes, description: &str| {
+    let sync = |minutes, description: Option<&str>| {
         let fake = &fake;
         let key = &key;
-        let description = kolum_domain::RichText::from_markdown(description);
+        let description = description.map(kolum_domain::RichText::from_markdown);
         async move {
             let mut snapshot = load_board(fake, None).await.unwrap();
             let issue = snapshot.issues.iter_mut().find(|i| &i.key == key).unwrap();
@@ -522,13 +522,16 @@ async fn a_board_sync_brings_a_newer_description() {
             Event::BoardLoaded { snapshot, fresh: true, request: 1 }
         }
     };
-    app.on_event(sync(1, "").await);
-    let shown = screen(&mut app, 140, 40);
-    assert!(shown.contains("Offset pagination over a non-unique sort"), "{shown}");
-    app.on_event(sync(2, "Rewritten by a colleague").await);
+    let read = "Offset pagination over a non-unique sort";
+    app.on_event(sync(1, None).await);
+    assert!(screen(&mut app, 140, 40).contains(read), "a Cloud board's copy carries none");
+    app.on_event(sync(2, Some("Rewritten by a colleague")).await);
     let shown = screen(&mut app, 140, 40);
     assert!(shown.contains("Rewritten by a colleague"), "{shown}");
-    assert!(!shown.contains("Offset pagination over a non-unique sort"), "{shown}");
+    assert!(!shown.contains(read), "{shown}");
+    app.on_event(sync(3, Some("")).await);
+    let shown = screen(&mut app, 140, 40);
+    assert!(!shown.contains("Rewritten by a colleague"), "emptied since: {shown}");
 }
 
 /// Unset, the right-hand column shows every field: the built-in ones, then
@@ -1897,7 +1900,7 @@ async fn an_edit_starts_from_a_read_as_new_as_the_board() {
     let mut app = loaded().await;
     let key = IssueKey::parse("ACME-9");
     let mut read = fake.issue(&key).await.unwrap();
-    read.description = kolum_domain::RichText { lossy: true, ..read.description };
+    read.description = read.description.map(|d| kolum_domain::RichText { lossy: true, ..d });
     let detail = |issue| IssueDetail {
         issue,
         comments: vec![],
@@ -1958,7 +1961,7 @@ async fn a_description_changed_meanwhile_reopens_the_editor_on_the_text() {
     let Some(Effect::Edit { purpose, text }) = app.take_effects().pop() else { panic!() };
 
     let mut theirs = read.clone();
-    theirs.description = kolum_domain::RichText::from_markdown("Their rewrite");
+    theirs.description = Some(kolum_domain::RichText::from_markdown("Their rewrite"));
     theirs.updated = read.updated + time::Duration::minutes(1);
     app.on_edited(purpose, Ok(text.replace("An admin switch", "My switch")));
     let read_first = [Effect::Send(Command::LoadIssue(key.clone()))];
@@ -2082,7 +2085,7 @@ async fn the_picker_previews_the_description_read_whole() {
     let mut app = loaded().await;
     let mut snapshot = load_board(&fake, None).await.unwrap();
     for issue in &mut snapshot.issues {
-        issue.description = kolum_domain::RichText::default();
+        issue.description = None;
     }
     app.on_event(Event::BoardLoaded { snapshot, fresh: true, request: 1 });
     let issue = fake.issue(&IssueKey::parse("ACME-10")).await.unwrap();
@@ -2160,7 +2163,7 @@ async fn a_refused_description_keeps_the_text_it_was_edited_from() {
     let op = describe(&mut app, |t| t.replace("An admin switch", "My switch")).await;
     let mut cloud = load_board(&FakeProvider::new(), None).await.unwrap();
     let nine = cloud.issues.iter_mut().find(|i| i.key.as_str() == "ACME-9").unwrap();
-    nine.description = kolum_domain::RichText::default();
+    nine.description = None;
     nine.updated += time::Duration::minutes(1);
     app.on_event(Event::BoardLoaded { snapshot: cloud, fresh: true, request: 1 });
     let error = kolum_domain::DomainError::Conflict("stale".into());
@@ -2213,11 +2216,11 @@ async fn a_read_back_replaces_the_open_issue_whole() {
     press(&mut app, "<Space>A");
     let op = writes(app.take_effects())[0].0;
     let mut saved = read.clone();
-    saved.description = kolum_domain::RichText::from_markdown("Rewritten meanwhile");
+    saved.description = Some(kolum_domain::RichText::from_markdown("Rewritten meanwhile"));
     saved.updated += time::Duration::minutes(1);
     let mut cloud = load_board(&FakeProvider::new(), None).await.unwrap();
     let nine = cloud.issues.iter_mut().find(|i| i.key.as_str() == "ACME-9").unwrap();
-    (nine.description, nine.updated) = (kolum_domain::RichText::default(), saved.updated);
+    (nine.description, nine.updated) = (None, saved.updated);
     app.on_event(Event::BoardLoaded { snapshot: cloud, fresh: true, request: 1 });
     app.on_event(Event::Written { op, key: read.key.clone(), issue: Some(Box::new(saved)) });
     let shown = screen(&mut app, 120, 40);
@@ -2282,7 +2285,7 @@ async fn created() -> (kolum_domain::Issue, kolum_app::BoardSnapshot, kolum_app:
         project: "ACME".into(),
         kind: template.kind,
         title: "Later".into(),
-        description: template.description,
+        description: template.description.unwrap_or_default(),
         parent: None,
     };
     let created = fake.create(new).await.unwrap();

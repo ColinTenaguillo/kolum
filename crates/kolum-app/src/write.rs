@@ -146,8 +146,9 @@ pub fn supersedes(arrived: &Issue, held: &Issue) -> bool {
 /// A copy of an issue, a board's most often, in place of the one shown,
 /// keeping what the shown one read better: Jira sends rich text fields for
 /// one issue and not for a board, and no description to a Jira Cloud
-/// board. The description shown stays unless the copy has one and is
-/// newer, as a Data Center board's can be.
+/// board. The description shown stays unless the copy carries one, even
+/// emptied, and is newer, as a Data Center board's can be; or the one shown
+/// carries none.
 pub fn refresh(shown: &mut Issue, fresh: &Issue) {
     let only_here: Vec<_> = shown
         .fields
@@ -155,7 +156,8 @@ pub fn refresh(shown: &mut Issue, fresh: &Issue) {
         .filter(|f| !fresh.fields.iter().any(|x| x.id == f.id))
         .cloned()
         .collect();
-    let newer = !fresh.description.is_empty() && fresh.updated > shown.updated;
+    let newer = fresh.description.is_some()
+        && (shown.description.is_none() || fresh.updated > shown.updated);
     let description = std::mem::take(&mut shown.description);
     *shown = fresh.clone();
     shown.fields.extend(only_here);
@@ -539,20 +541,20 @@ mod tests {
         assert!(!pending.saves_description(&key), "taken");
     }
 
-    /// A board's copy over the issue read whole: its own fields, and those
-    /// only the read has, once each; the read's description unless the
-    /// copy has one and is newer. Not newer than the read, the copy brings
-    /// it up to date; newer, the read is not whole any more.
+    /// A board's copy over the issue read whole: its description only when
+    /// it carries one, emptied or not, and is newer, or the read has none;
+    /// the fields only the read has stay. Not newer than the read, the
+    /// copy brings it up to date; newer, the read is not whole any more.
     #[tokio::test]
-    async fn a_copy_refreshes_the_read_keeping_what_it_lacks() {
+    async fn a_copy_brings_its_description_only_when_it_carries_one() {
         use kolum_domain::IssueReader;
         let read = FakeProvider::new().issue(&IssueKey::parse("ACME-10")).await.unwrap();
-        let copy = |minutes, description: &str| {
+        let copy = |minutes, description: Option<&str>| {
             let mut copy = read.clone();
             // A board's copy has some fields, not the rich text ones.
             (copy.fields, copy.title) = (read.fields[..1].to_vec(), "Renamed".into());
             copy.updated += time::Duration::minutes(minutes);
-            copy.description = RichText::from_markdown(description);
+            copy.description = description.map(RichText::from_markdown);
             copy
         };
         let refreshed = |shown: &Issue, copy: &Issue| {
@@ -560,22 +562,25 @@ mod tests {
             refresh(&mut shown, copy);
             shown
         };
-        let cloud = refreshed(&read, &copy(1, ""));
+        let cloud = refreshed(&read, &copy(1, None));
         assert_eq!((cloud.title.as_str(), &cloud.description), ("Renamed", &read.description));
         let mut fields = cloud.fields.clone();
         fields.sort_by_key(|f| f.id.clone());
         let mut wanted = read.fields.clone();
         wanted.sort_by_key(|f| f.id.clone());
         assert_eq!(fields, wanted, "the copy's fields, and the read's it lacks, once each");
-        let newer = copy(1, "Rewritten");
-        assert_eq!(refreshed(&read, &newer).description, newer.description, "Data Center's");
-        let same = refreshed(&read, &copy(0, "Flattened"));
+        let emptied = Some(RichText::default());
+        assert_eq!(refreshed(&read, &copy(1, Some(""))).description, emptied, "Data Center's");
+        let same = refreshed(&read, &copy(0, Some("Flattened")));
         assert_eq!(same.description, read.description, "the same version: the read's");
+        let none = Issue { description: None, ..read.clone() };
+        let older = copy(-1, Some("Older"));
+        assert_eq!(refreshed(&none, &older).description, older.description, "better than none");
 
         assert_eq!(in_full(&read, None), Some(read.clone()), "off the board");
-        assert_eq!(in_full(&read, Some(&copy(0, ""))), Some(refreshed(&read, &copy(0, ""))));
-        assert_eq!(in_full(&read, Some(&copy(1, ""))), None, "read again first");
-        let older = copy(-1, "");
+        assert_eq!(in_full(&read, Some(&copy(0, None))), Some(refreshed(&read, &copy(0, None))));
+        assert_eq!(in_full(&read, Some(&copy(1, None))), None, "read again first");
+        let older = copy(-1, None);
         assert_eq!(in_full(&read, Some(&older)), Some(read.clone()), "an older copy stays under");
     }
 

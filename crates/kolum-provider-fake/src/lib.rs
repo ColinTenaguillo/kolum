@@ -183,7 +183,7 @@ fn issue(row: &data::Row) -> Issue {
         created,
         updated: created + Duration::hours(3 * i64::from(row.n % 9)),
         due: (row.priority == Priority::Highest).then(|| (created + Duration::days(10)).date()),
-        description: RichText::from_markdown(row.description),
+        description: Some(RichText::from_markdown(row.description)),
         fields: vec![
             CustomField {
                 id: FieldId::new("customfield_10020"),
@@ -351,9 +351,13 @@ fn page<T: Clone>(items: Vec<T>, token: Option<PageToken>) -> Page<T> {
 
 fn text_matches(issue: &Issue, text: &str) -> bool {
     let text = text.to_lowercase();
-    [issue.key.as_str(), &issue.title, &issue.description.plain_text()]
-        .iter()
-        .any(|h| h.to_lowercase().contains(&text))
+    [
+        issue.key.as_str(),
+        &issue.title,
+        &issue.description.as_ref().map(RichText::plain_text).unwrap_or_default(),
+    ]
+    .iter()
+    .any(|h| h.to_lowercase().contains(&text))
 }
 
 #[async_trait]
@@ -628,7 +632,7 @@ impl IssueWriter for FakeProvider {
         issue.key = IssueKey::new(&new.project, "-", n.into());
         issue.title = new.title;
         issue.kind = new.kind;
-        issue.description = new.description;
+        issue.description = Some(new.description);
         issue.status = status("backlog");
         issue.parent = new.parent.map(|k| IssueRef {
             key: k,
@@ -666,7 +670,7 @@ impl IssueWriter for FakeProvider {
             project: data::PROJECT_KEY.into(),
             kind: source.kind,
             title: format!("CLONE - {}", source.title),
-            description: source.description,
+            description: source.description.unwrap_or_default(),
             parent: source.parent.map(|p| p.key),
         };
         self.create(new).await

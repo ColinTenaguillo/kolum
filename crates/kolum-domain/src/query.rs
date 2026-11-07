@@ -121,7 +121,7 @@ pub(crate) mod tests {
             created: time::OffsetDateTime::UNIX_EPOCH,
             updated: time::OffsetDateTime::UNIX_EPOCH,
             due: None,
-            description: RichText::default(),
+            description: Some(RichText::default()),
             fields: vec![],
             url: None,
             attachments: vec![],

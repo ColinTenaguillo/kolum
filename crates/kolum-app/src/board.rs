@@ -209,7 +209,7 @@ mod tests {
                 project: "ACME".into(),
                 kind: template.kind,
                 title: "Brand new".into(),
-                description: template.description,
+                description: template.description.unwrap_or_default(),
                 parent: None,
             })
             .await

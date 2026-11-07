@@ -386,10 +386,12 @@ fn sprint(value: &Value) -> Option<Sprint> {
     all.iter().find(|(_, active)| *active).or(all.last()).map(|(s, _)| s.clone())
 }
 
-fn description(value: Option<&Value>) -> RichText {
+/// Rich text as Jira sends it: wiki markup from Data Center and the Agile
+/// API, ADF from Cloud's own; `null` is none.
+fn description(value: &Value) -> RichText {
     match value {
-        Some(Value::String(text)) => wiki::to_rich_text(text),
-        Some(doc @ Value::Object(_)) => adf::to_rich_text(doc),
+        Value::String(text) => wiki::to_rich_text(text),
+        doc @ Value::Object(_) => adf::to_rich_text(doc),
         _ => RichText::default(),
     }
 }
@@ -483,7 +485,8 @@ pub fn issue(dto: &IssueDto, ctx: &Ctx) -> Result<Issue> {
         due: get::<String>(f, "duedate").and_then(|d| {
             time::Date::parse(&d, time::macros::format_description!("[year]-[month]-[day]")).ok()
         }),
-        description: description(f.get("description")),
+        // Not asked of a Cloud board: not there. Emptied: `null`.
+        description: f.get("description").map(description),
         fields,
         url: Some(format!("{}/browse/{}", ctx.base_url, dto.key)),
         attachments: get::<Vec<AttachmentDto>>(f, "attachment")
@@ -551,7 +554,7 @@ pub fn comment(dto: &CommentDto) -> Option<Comment> {
     Some(Comment {
         id: dto.id.clone(),
         author: dto.author.as_ref().map_or_else(someone, user),
-        body: description(Some(&dto.body)),
+        body: description(&dto.body),
         created: datetime(&dto.created)?,
     })
 }

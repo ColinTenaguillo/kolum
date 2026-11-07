@@ -532,7 +532,7 @@ fn body_sections<'a>(
     names
         .iter()
         .filter_map(|name| match find_field(issue, name) {
-            _ if name == "description" => Some(("Description", &issue.description)),
+            _ if name == "description" => Some(("Description", issue.description_or_empty())),
             Some(CustomField { name, value: FieldValue::RichText(text), .. })
                 if !text.is_empty() =>
             {

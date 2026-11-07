@@ -81,11 +81,11 @@ async fn reads_a_real_board() {
         "detail {}: {} custom fields, description {} blocks",
         issue.key,
         issue.fields.len(),
-        issue.description.blocks.len()
+        issue.description.as_ref().map_or(0, |d| d.blocks.len())
     );
     eprintln!(
         "description: {:?}",
-        issue.description.plain_text().chars().take(200).collect::<String>()
+        issue.description.unwrap_or_default().plain_text().chars().take(200).collect::<String>()
     );
     let comments = p.comments(&first.key).await.unwrap();
     let activity = p.activity(&first.key).await.unwrap();

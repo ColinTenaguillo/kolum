@@ -160,7 +160,9 @@ pub struct Issue {
     #[serde(with = "time::serde::rfc3339")]
     pub updated: OffsetDateTime,
     pub due: Option<time::Date>,
-    pub description: RichText,
+    /// `None` when this copy does not carry it: a Jira Cloud board's does
+    /// not. An empty one is a description emptied.
+    pub description: Option<RichText>,
     pub fields: Vec<CustomField>,
     /// Where the issue lives in the provider's web app.
     pub url: Option<String>,
@@ -183,7 +185,15 @@ impl Attachment {
     }
 }
 
+/// What a copy that carries no description shows: none written.
+static NO_DESCRIPTION: RichText = RichText { blocks: Vec::new(), lossy: false };
+
 impl Issue {
+    /// The description to show or edit: one not carried shows as none.
+    pub fn description_or_empty(&self) -> &RichText {
+        self.description.as_ref().unwrap_or(&NO_DESCRIPTION)
+    }
+
     pub fn is_assigned_to(&self, user: &UserId) -> bool {
         self.assignee.as_ref().is_some_and(|a| &a.id == user)
     }
@@ -264,10 +274,10 @@ const MEMBERS: [Member; 10] = [
     Member {
         id: FieldId::DESCRIPTION,
         label: "Description",
-        read: |i| Some(FieldValue::RichText(i.description.clone())),
+        read: |i| i.description.clone().map(FieldValue::RichText),
         write: |i, v| match v {
-            None => i.description = RichText::default(),
-            Some(FieldValue::RichText(t)) => i.description = t.clone(),
+            None => i.description = Some(RichText::default()),
+            Some(FieldValue::RichText(t)) => i.description = Some(t.clone()),
             Some(_) => {}
         },
         slot: |u, v| match v {
@@ -584,7 +594,7 @@ impl IssueUpdate {
             issue.title = t.clone();
         }
         if let Some(d) = &self.description {
-            issue.description = d.clone();
+            issue.description = Some(d.clone());
         }
         if let Some(l) = &self.labels {
             issue.labels = l.clone();

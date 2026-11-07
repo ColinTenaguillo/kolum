@@ -1580,7 +1580,7 @@ impl App {
     /// their place, theirs then shown below it.
     fn edit_description(&mut self, issue: &kolum_domain::Issue, mine: Option<&str>) {
         let from = titled(issue);
-        let flattened = if issue.description.lossy { LOSSY } else { "" };
+        let flattened = if issue.description_or_empty().lossy { LOSSY } else { "" };
         let key = issue.key.clone();
         let help = format!(
             "{MARKER} {key}: the first `# ` line is the title, the rest the description, in Markdown. {flattened}-->\n"
@@ -1656,7 +1656,7 @@ impl App {
     /// the editing began goes back to the editor, with the text.
     fn save_read(&mut self, key: IssueKey, from: String, text: String) {
         let Some(issue) = self.read.get(&key).map(|d| d.issue.clone()) else { return };
-        if issue.description.to_markdown().trim() != split_title(&from).1 {
+        if issue.description_or_empty().to_markdown().trim() != split_title(&from).1 {
             self.edit_description(&issue, Some(&text));
             let why = format!("{key}: the description changed meanwhile; yours is in the editor");
             return self.say(why, Level::Warn);
@@ -2377,7 +2377,7 @@ fn merge_drafts(kept: &(String, String), later: &(String, String)) -> (String, S
 /// The title and the description as `$EDITOR` has them: `# Title`, then
 /// Markdown.
 fn titled(issue: &kolum_domain::Issue) -> String {
-    format!("# {}\n\n{}", issue.title, issue.description.to_markdown())
+    format!("# {}\n\n{}", issue.title, issue.description_or_empty().to_markdown())
 }
 
 /// `# Title` then Markdown, against the same it was edited from: only what
