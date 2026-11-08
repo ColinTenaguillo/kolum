@@ -43,54 +43,72 @@ fn render_block(block: &Block, theme: &Theme, cols: usize, out: &mut Vec<Line<'s
         Block::Heading { level, content } => {
             out.extend(inline_lines(content, theme, heading_style(*level, theme)))
         }
-        Block::List { ordered, items } => {
-            for (n, item) in items.iter().enumerate() {
-                let bullet = if *ordered { format!("{}. ", n + 1) } else { "• ".to_string() };
-                let pad = " ".repeat(width(&bullet));
-                let mut inner = vec![];
-                for block in item {
-                    render_block(block, theme, cols.saturating_sub(pad.len()), &mut inner);
-                }
-                let bullet = Span::styled(bullet, Style::new().fg(theme.muted));
-                out.extend(indent(inner, bullet, Span::raw(pad)));
-            }
-        }
-        Block::Code { language, text } => {
-            let gutter = Span::styled("│ ", Style::new().fg(theme.border));
-            if let Some(lang) = language {
-                out.push(Line::from(Span::styled(
-                    format!("╭ {lang}"),
-                    Style::new().fg(theme.muted),
-                )));
-            }
-            for line in text.lines() {
-                let code = Span::styled(line.to_string(), Style::new().fg(theme.accent));
-                out.push(Line::from(vec![gutter.clone(), code]));
-            }
-        }
-        Block::Quote(blocks) => {
-            let mut inner = vec![];
-            blocks.iter().for_each(|b| render_block(b, theme, cols.saturating_sub(2), &mut inner));
-            let gutter = Span::styled("│ ", Style::new().fg(theme.muted));
-            let quoted = indent(inner, gutter.clone(), gutter);
-            out.extend(quoted.into_iter().map(|l| l.style(Style::new().fg(theme.muted))));
-        }
-        Block::Panel { kind, blocks } => {
-            let (color, title) = panel(*kind, theme);
-            let gutter = Span::styled("▌ ", Style::new().fg(color));
-            let mut inner = vec![Line::from(Span::styled(
-                title,
-                Style::new().fg(color).add_modifier(Modifier::BOLD),
-            ))];
-            blocks.iter().for_each(|b| render_block(b, theme, cols.saturating_sub(2), &mut inner));
-            out.extend(indent(inner, gutter.clone(), gutter));
-        }
+        Block::List { ordered, items } => list(*ordered, items, theme, cols, out),
+        Block::Code { language, text } => code(language.as_deref(), text, theme, out),
+        Block::Quote(blocks) => quote(blocks, theme, cols, out),
+        Block::Panel { kind, blocks } => callout(*kind, blocks, theme, cols, out),
         Block::Table { header, rows } => out.extend(table(rows, *header, theme, cols)),
         Block::Rule => out.push(Line::from(Span::styled(
             "─".repeat(cols.min(80)),
             Style::new().fg(theme.border),
         ))),
     }
+}
+
+/// Each item's blocks hung under its bullet or number.
+fn list(
+    ordered: bool,
+    items: &[Vec<Block>],
+    theme: &Theme,
+    cols: usize,
+    out: &mut Vec<Line<'static>>,
+) {
+    for (n, item) in items.iter().enumerate() {
+        let bullet = if ordered { format!("{}. ", n + 1) } else { "• ".to_string() };
+        let pad = " ".repeat(width(&bullet));
+        let mut inner = vec![];
+        for block in item {
+            render_block(block, theme, cols.saturating_sub(pad.len()), &mut inner);
+        }
+        let bullet = Span::styled(bullet, Style::new().fg(theme.muted));
+        out.extend(indent(inner, bullet, Span::raw(pad)));
+    }
+}
+
+/// Behind a gutter, under its language when it names one.
+fn code(language: Option<&str>, text: &str, theme: &Theme, out: &mut Vec<Line<'static>>) {
+    let gutter = Span::styled("│ ", Style::new().fg(theme.border));
+    if let Some(lang) = language {
+        out.push(Line::from(Span::styled(format!("╭ {lang}"), Style::new().fg(theme.muted))));
+    }
+    for line in text.lines() {
+        let code = Span::styled(line.to_string(), Style::new().fg(theme.accent));
+        out.push(Line::from(vec![gutter.clone(), code]));
+    }
+}
+
+fn quote(blocks: &[Block], theme: &Theme, cols: usize, out: &mut Vec<Line<'static>>) {
+    let mut inner = vec![];
+    blocks.iter().for_each(|b| render_block(b, theme, cols.saturating_sub(2), &mut inner));
+    let gutter = Span::styled("│ ", Style::new().fg(theme.muted));
+    let quoted = indent(inner, gutter.clone(), gutter);
+    out.extend(quoted.into_iter().map(|l| l.style(Style::new().fg(theme.muted))));
+}
+
+/// A panel, as GitHub draws its alerts: a coloured bar and a title.
+fn callout(
+    kind: PanelKind,
+    blocks: &[Block],
+    theme: &Theme,
+    cols: usize,
+    out: &mut Vec<Line<'static>>,
+) {
+    let (color, title) = panel(kind, theme);
+    let gutter = Span::styled("▌ ", Style::new().fg(color));
+    let mut inner =
+        vec![Line::from(Span::styled(title, Style::new().fg(color).add_modifier(Modifier::BOLD)))];
+    blocks.iter().for_each(|b| render_block(b, theme, cols.saturating_sub(2), &mut inner));
+    out.extend(indent(inner, gutter.clone(), gutter));
 }
 
 fn heading_style(level: u8, theme: &Theme) -> Style {

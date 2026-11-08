@@ -187,7 +187,6 @@ impl Prompt {
 /// What has the focus, topmost first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Focus {
-    Problems,
     Help,
     Picker,
     Prompt,
@@ -471,10 +470,10 @@ impl App {
         self.detail.as_ref().map(|d| &d.issue().key)
     }
 
+    /// The config's problems are not a focus: the first key closes them,
+    /// before any binding.
     fn focus(&self) -> Focus {
-        if !self.problems.is_empty() {
-            Focus::Problems
-        } else if self.prompt.is_some() {
+        if self.prompt.is_some() {
             // Over the help page too: `/` there filters it.
             Focus::Prompt
         } else if self.help.is_some() {
@@ -493,20 +492,28 @@ impl App {
     /// The contexts in force, most specific first, and whether keys type.
     fn contexts(&self) -> (Vec<Context>, bool) {
         match self.focus() {
-            Focus::Problems => (vec![], false),
             Focus::Help => (vec![Context::Help, Context::Global], false),
-            Focus::Picker if self.picker.as_ref().is_some_and(|p| p.is_insert()) => {
-                (vec![Context::PickerInsert, Context::Picker], true)
-            }
-            Focus::Picker => (vec![Context::Picker], false),
+            Focus::Picker => self.picker_contexts(),
             Focus::Prompt => (vec![Context::Command], true),
             Focus::Viewer => (vec![Context::Viewer, Context::Global], false),
             Focus::Detail => (vec![Context::Detail, Context::Global], false),
-            Focus::Board if self.board.visual.is_some() => {
-                (vec![Context::Visual, Context::Board, Context::Global], false)
-            }
-            Focus::Board => (vec![Context::Board, Context::Global], false),
+            Focus::Board => (self.board_contexts(), false),
         }
+    }
+
+    /// Typing in the picker: its typing keys first.
+    fn picker_contexts(&self) -> (Vec<Context>, bool) {
+        if self.picker.as_ref().is_some_and(|p| p.is_insert()) {
+            (vec![Context::PickerInsert, Context::Picker], true)
+        } else {
+            (vec![Context::Picker], false)
+        }
+    }
+
+    /// A visual range: its keys first.
+    fn board_contexts(&self) -> Vec<Context> {
+        let visual = self.board.visual.is_some().then_some(Context::Visual);
+        visual.into_iter().chain([Context::Board, Context::Global]).collect()
     }
 
     pub fn on_key(&mut self, key: Key, now: Instant) {
@@ -809,7 +816,6 @@ impl App {
     fn focused_action(&mut self, action: Action, count: Option<u32>) {
         let n = i64::from(count.unwrap_or(1));
         match self.focus() {
-            Focus::Problems => {}
             Focus::Help => self.help_action(action, n),
             Focus::Picker => self.picker_action(action, n),
             Focus::Prompt => self.prompt_action(action),
@@ -857,21 +863,23 @@ impl App {
     /// Closes what is on top; on the bare board, quits.
     fn close(&mut self) {
         match self.focus() {
-            Focus::Problems => self.problems.clear(),
             Focus::Help => self.help = None,
             Focus::Picker => self.close_picker(),
-            Focus::Prompt => {
-                self.undo_theme_preview();
-                if self.prompt.take().is_some_and(|p| p.kind == PromptKind::Filter) {
-                    self.set_filter(String::new());
-                    if self.help.is_none() {
-                        self.save_filter();
-                    }
-                }
-            }
+            Focus::Prompt => self.close_prompt(),
             Focus::Viewer => self.viewer = None,
             Focus::Detail => self.detail = None,
             Focus::Board => self.quit = true,
+        }
+    }
+
+    /// Closing the `/` line clears its filter.
+    fn close_prompt(&mut self) {
+        self.undo_theme_preview();
+        if self.prompt.take().is_some_and(|p| p.kind == PromptKind::Filter) {
+            self.set_filter(String::new());
+            if self.help.is_none() {
+                self.save_filter();
+            }
         }
     }
 
@@ -919,11 +927,14 @@ impl App {
             Action::MoveCardUp => self.rank_card(-n),
             Action::MoveCardLeft => self.move_card(-n),
             Action::MoveCardRight => self.move_card(n),
-            _ => {
-                let keys = self.board.take_targets();
-                self.issue_action(action, keys);
-            }
+            _ => self.on_targets(action),
         }
+    }
+
+    /// The highlighted card, or the visual range.
+    fn on_targets(&mut self, action: Action) {
+        let keys = self.board.take_targets();
+        self.issue_action(action, keys);
     }
 
     fn open_selected(&mut self) {
@@ -1022,8 +1033,7 @@ impl App {
     /// `yy` in visual mode: every key in the range, space-separated.
     fn copy_range(&mut self) {
         let keys: Vec<String> = self.board.take_targets().iter().map(|k| k.to_string()).collect();
-        self.say(format!("Copied {}", keys.join(" ")), Level::Info);
-        self.effects.push(Effect::Copy(keys.join(" ")));
+        self.copy(keys.join(" "));
     }
 
     fn save_state(&mut self) {
@@ -1042,29 +1052,23 @@ impl App {
     }
 
     fn detail_action(&mut self, action: Action, count: Option<u32>) {
-        let n = i64::from(count.unwrap_or(1));
         let Some(d) = &mut self.detail else { return };
+        if d.motion(action, i64::from(count.unwrap_or(1))) {
+            return;
+        }
         match action {
-            Action::Down => d.scroll_by(n),
-            Action::Up => d.scroll_by(-n),
-            Action::Top => d.scroll = 0,
-            Action::Bottom => d.scroll_by(i64::from(u16::MAX)),
-            Action::HalfPageDown => d.scroll_by(d.half_page() * n),
-            Action::HalfPageUp => d.scroll_by(-d.half_page() * n),
-            Action::NextTab => d.tab = d.tab.step(n),
-            Action::PrevTab => d.tab = d.tab.step(-n),
             Action::CopyKey | Action::CopyUrl | Action::OpenBrowser => {
                 let issue = d.issue().clone();
-                self.issue_effect(action, &issue);
+                self.issue_effect(action, &issue)
             }
             Action::ViewPictures => self.open_viewer(),
             Action::OpenParent => {
                 let issue = d.issue().clone();
-                self.open_parent(&issue);
+                self.open_parent(&issue)
             }
             _ => {
-                let keys = vec![d.issue().key.clone()];
-                self.issue_action(action, keys);
+                let key = d.issue().key.clone();
+                self.issue_action(action, vec![key])
             }
         }
     }
@@ -1089,15 +1093,7 @@ impl App {
             _ => {}
         }
         let half = i64::from(self.help_page.get() / 2).max(1);
-        let delta = match action {
-            Action::Down => n,
-            Action::Up => -n,
-            Action::HalfPageDown => half * n,
-            Action::HalfPageUp => -half * n,
-            Action::Top => i64::from(i16::MIN),
-            Action::Bottom => i64::from(u16::MAX),
-            _ => return,
-        };
+        let Some(delta) = scroll_step(action, n, half) else { return };
         let max = help::lines(&self.keymap, &self.theme, &self.help_filter)
             .len()
             .saturating_sub(self.help_page.get() as usize);
@@ -1107,14 +1103,8 @@ impl App {
 
     fn issue_effect(&mut self, action: Action, issue: &kolum_domain::Issue) {
         match (action, &issue.url) {
-            (Action::CopyKey, _) => {
-                self.effects.push(Effect::Copy(issue.key.to_string()));
-                self.say(format!("Copied {}", issue.key), Level::Info);
-            }
-            (Action::CopyUrl, Some(url)) => {
-                self.effects.push(Effect::Copy(url.clone()));
-                self.say(format!("Copied {url}"), Level::Info);
-            }
+            (Action::CopyKey, _) => self.copy(issue.key.to_string()),
+            (Action::CopyUrl, Some(url)) => self.copy(url.clone()),
             (Action::OpenBrowser, Some(url)) => self.effects.push(Effect::Open(url.clone())),
             _ => self.say(format!("{} has no URL", issue.key), Level::Warn),
         }
@@ -1122,37 +1112,31 @@ impl App {
 
     /// The actions that change issues, wherever they were asked from.
     fn issue_action(&mut self, action: Action, keys: Vec<IssueKey>) {
-        let writes = matches!(
-            action,
-            Action::Transition
-                | Action::Assign
-                | Action::AssignMe
-                | Action::Comment
-                | Action::Edit
-                | Action::EditField
-                | Action::Clone
-        );
-        if keys.is_empty() || (writes && !self.can_write()) {
+        if !self.may_act(action, &keys) {
             return;
         }
         match action {
             Action::Transition => self.ask_transitions(keys, None),
             Action::Assign => self.open_user_picker(keys, None),
-            Action::AssignMe => match self.me.clone() {
-                Some(me) => self.assign(keys, Some(me)),
-                None => self.say("Still finding out who you are", Level::Warn),
-            },
-            Action::Comment => self.edit(EditPurpose::Comment(keys[0].clone())),
-            Action::Edit => self.describe(keys[0].clone()),
-            Action::EditField => {
-                self.effects.push(Effect::Send(Command::EditableFields(keys[0].clone())));
-            }
-            Action::Clone => {
-                self.effects.push(Effect::Send(Command::Clone(keys[0].clone())));
-                self.say(format!("Cloning {}…", keys[0]), Level::Info);
-            }
+            Action::AssignMe => self.assign_me(keys),
+            _ => self.first_issue_action(action, keys[0].clone()),
+        }
+    }
+
+    /// The actions that take one issue: on a range, its first.
+    fn first_issue_action(&mut self, action: Action, key: IssueKey) {
+        match action {
+            Action::Comment => self.edit(EditPurpose::Comment(key)),
+            Action::Edit => self.describe(key),
+            Action::EditField => self.effects.push(Effect::Send(Command::EditableFields(key))),
+            Action::Clone => self.clone_issue(key),
             _ => self.unavailable(action),
         }
+    }
+
+    /// On some issue, and a write only where the provider takes writes.
+    fn may_act(&mut self, action: Action, keys: &[IssueKey]) -> bool {
+        !keys.is_empty() && (!action.writes() || self.can_write())
     }
 
     fn can_write(&mut self) -> bool {
@@ -1160,6 +1144,18 @@ impl App {
             self.say("This provider is read-only in kolum for now", Level::Warn);
         }
         self.writable
+    }
+
+    fn assign_me(&mut self, keys: Vec<IssueKey>) {
+        match self.me.clone() {
+            Some(me) => self.assign(keys, Some(me)),
+            None => self.say("Still finding out who you are", Level::Warn),
+        }
+    }
+
+    fn clone_issue(&mut self, key: IssueKey) {
+        self.effects.push(Effect::Send(Command::Clone(key.clone())));
+        self.say(format!("Cloning {key}…"), Level::Info);
     }
 
     /// The issues of the board on screen; none before it arrives.
@@ -1456,6 +1452,15 @@ impl App {
             FieldEntry::Status => return self.ask_transitions(vec![key], None),
             FieldEntry::Field(field) => field,
         };
+        match field.kind.choices() {
+            Some(options) => self.open_option_picker(key, field, options),
+            None => self.edit_typed_field(key, field),
+        }
+    }
+
+    /// A field not picked among values: in `$EDITOR`, by a person, a
+    /// sprint, or on one line.
+    fn edit_typed_field(&mut self, key: IssueKey, field: kolum_domain::EditableField) {
         match &field.kind {
             kolum_domain::FieldKind::RichText => self.edit(EditPurpose::Field { key, field }),
             kolum_domain::FieldKind::User
@@ -1464,14 +1469,6 @@ impl App {
                 self.open_user_picker(vec![key], None)
             }
             kolum_domain::FieldKind::User => self.open_user_picker(vec![key], Some(field)),
-            kolum_domain::FieldKind::Choice { options, .. } => {
-                let options = options.iter().cloned().map(kolum_domain::FieldValue::Text).collect();
-                self.open_option_picker(key, field, options)
-            }
-            kolum_domain::FieldKind::Priority(all) => {
-                let options = all.iter().cloned().map(kolum_domain::FieldValue::Priority).collect();
-                self.open_option_picker(key, field, options)
-            }
             kolum_domain::FieldKind::Sprint => self.ask_sprints(key, field),
             _ => self.ask_field_line(key, field),
         }
@@ -1763,8 +1760,7 @@ impl App {
             }
             Action::CopyUrl => {
                 let url = v.pictures[v.at].url.clone();
-                self.say(format!("Copied {url}"), Level::Info);
-                return self.effects.push(Effect::Copy(url));
+                return self.copy(url);
             }
             _ => return,
         };
@@ -1917,19 +1913,24 @@ impl App {
             Action::PreviewUp => p.scroll_preview(-5 * n as i32),
             Action::HistoryPrev | Action::HistoryNext => self.recall(action == Action::HistoryPrev),
             Action::ToggleSource => self.toggle_source(),
-            action => {
-                let query = p.query().to_string();
-                match p.act(action) {
-                    Some(pick) => {
-                        if !query.is_empty() && self.history.last() != Some(&query) {
-                            self.history.push(query);
-                        }
-                        self.pick(pick);
-                    }
-                    None if action == Action::Confirm => {}
-                    None => self.unavailable(action),
+            action => self.act_in_picker(action),
+        }
+    }
+
+    /// An action on the picker's choice, or its marks: the query that
+    /// found them goes to the history.
+    fn act_in_picker(&mut self, action: Action) {
+        let Some(p) = &mut self.picker else { return };
+        let query = p.query().to_string();
+        match p.act(action) {
+            Some(pick) => {
+                if !query.is_empty() && self.history.last() != Some(&query) {
+                    self.history.push(query);
                 }
+                self.pick(pick);
             }
+            None if action == Action::Confirm => {}
+            None => self.unavailable(action),
         }
     }
 
@@ -1977,61 +1978,46 @@ impl App {
     }
 
     fn pick(&mut self, pick: Pick) {
-        match pick {
-            Pick::OpenIssue(key) => {
-                self.close_picker();
-                self.board.select(&key);
-                self.open_detail(key);
-            }
-            Pick::Copy(text) => {
-                self.close_picker();
-                self.say(format!("Copied {text}"), Level::Info);
-                self.effects.push(Effect::Copy(text));
-            }
-            Pick::OpenUrl(url) => {
-                self.close_picker();
-                self.effects.push(Effect::Open(url));
-            }
-            Pick::Theme(name) => {
-                self.theme_before_preview = None;
-                self.close_picker();
-                self.set_theme(&name);
-            }
-            Pick::OnIssues(action, keys) => {
-                self.close_picker();
-                self.issue_action(action, keys);
-            }
-            Pick::Transition { keys, transition } => {
-                self.close_picker();
-                self.transition(keys, transition);
-            }
-            Pick::Assign { keys, user } => {
-                self.close_picker();
-                self.assign(keys, user);
-            }
-            Pick::People(tokens) => {
-                self.close_picker();
-                self.show_people(&tokens);
-            }
-            Pick::Board(id) => {
-                self.close_picker();
-                self.detail = None;
-                self.load_board(id);
-            }
-            Pick::EditField { key, entry } => {
-                self.close_picker();
-                self.edit_field(key, entry);
-            }
-            Pick::SetField { key, field, value } => {
-                self.close_picker();
-                self.set_field(key, &field, value);
-            }
-            Pick::Run(action) => {
-                self.close_picker();
-                self.dispatch(action, None);
-            }
-            Pick::Unavailable(action) => self.unavailable(action),
+        // Confirmed: closing the picker keeps the theme it previewed.
+        if let Pick::Theme(_) = pick {
+            self.theme_before_preview = None;
         }
+        self.close_picker();
+        self.picked(pick);
+    }
+
+    /// A flat routing: each choice to the one handler that does it, once
+    /// the picker is closed.
+    fn picked(&mut self, pick: Pick) {
+        match pick {
+            Pick::OpenIssue(key) => self.open_picked(key),
+            Pick::Copy(text) => self.copy(text),
+            Pick::OpenUrl(url) => self.effects.push(Effect::Open(url)),
+            Pick::Theme(name) => self.set_theme(&name),
+            Pick::OnIssues(action, keys) => self.issue_action(action, keys),
+            Pick::Transition { keys, transition } => self.transition(keys, transition),
+            Pick::Assign { keys, user } => self.assign(keys, user),
+            Pick::People(tokens) => self.show_people(&tokens),
+            Pick::Board(id) => self.switch_board(id),
+            Pick::EditField { key, entry } => self.edit_field(key, entry),
+            Pick::SetField { key, field, value } => self.set_field(key, &field, value),
+            Pick::Run(action) => self.dispatch(action, None),
+        }
+    }
+
+    fn open_picked(&mut self, key: IssueKey) {
+        self.board.select(&key);
+        self.open_detail(key);
+    }
+
+    fn copy(&mut self, text: String) {
+        self.say(format!("Copied {text}"), Level::Info);
+        self.effects.push(Effect::Copy(text));
+    }
+
+    fn switch_board(&mut self, id: kolum_domain::BoardId) {
+        self.detail = None;
+        self.load_board(id);
     }
 
     fn load_theme(&self, name: &str) -> Result<Theme, String> {
@@ -2073,56 +2059,76 @@ impl App {
     fn prompt_action(&mut self, action: Action) {
         let Some(prompt) = &mut self.prompt else { return };
         match action {
-            Action::Down | Action::Up => {
-                if let Some(name) = prompt.walk(if action == Action::Down { 1 } else { -1 }) {
-                    self.preview_theme(name);
-                }
-            }
+            Action::Down => self.walk_proposals(1),
+            Action::Up => self.walk_proposals(-1),
             Action::AcceptProposal => prompt.retype(),
             Action::HideProposals => prompt.hidden = true,
-            Action::Confirm => {
-                let Some(prompt) = self.prompt.take() else { return };
-                self.undo_theme_preview();
-                if prompt.kind == PromptKind::Command {
-                    self.run_command(prompt.input.text().trim());
-                }
-                if prompt.kind == PromptKind::Field {
-                    self.confirm_field(prompt.input.text());
-                }
-                if prompt.kind == PromptKind::Filter && self.help.is_none() {
-                    self.save_filter();
-                }
-            }
+            Action::Confirm => self.confirm_prompt(),
             _ => {}
+        }
+    }
+
+    /// A theme proposed for `:theme` shows at once.
+    fn walk_proposals(&mut self, step: isize) {
+        if let Some(name) = self.prompt.as_mut().and_then(|p| p.walk(step)) {
+            self.preview_theme(name);
+        }
+    }
+
+    fn confirm_prompt(&mut self) {
+        let Some(prompt) = self.prompt.take() else { return };
+        self.undo_theme_preview();
+        match prompt.kind {
+            PromptKind::Command => self.run_command(prompt.input.text().trim()),
+            PromptKind::Field => self.confirm_field(prompt.input.text()),
+            PromptKind::Filter if self.help.is_none() => self.save_filter(),
+            PromptKind::Filter => {}
         }
     }
 
     /// The `:` line.
     fn run_command(&mut self, line: &str) {
         let (name, arg) = line.split_once(' ').map_or((line, ""), |(n, a)| (n, a.trim()));
+        let name = ALIASES.iter().find(|(alias, _)| *alias == name).map_or(name, |(_, full)| full);
         match name {
             "" => {}
-            "q" | "q!" | "qa" | "quit" => self.quit = true,
-            "h" | "help" => self.help = Some(0),
-            "e" | "refresh" => self.dispatch(Action::Refresh, None),
-            "theme" if arg.is_empty() => self.open_theme_picker(),
-            "theme" => self.set_theme(arg),
-            "board" if arg.is_empty() => self.dispatch(Action::PickerBoards, None),
-            "board" => {
-                self.load_board(kolum_domain::BoardId::new(arg));
-            }
-            "jql" => {
-                self.dispatch(Action::PickerRemote, None);
-                if let Some(p) = self.picker.as_mut().filter(|_| !arg.is_empty()) {
-                    p.set_query(&format!("!{arg}"));
-                }
-            }
+            "theme" => self.theme_line(arg),
+            "board" => self.board_line(arg),
+            "jql" => self.jql(arg),
             "assign" => self.say(":assign is not available yet", Level::Warn),
-            // Any action, by the name its key binding gives it.
-            _ => match Action::from_name(name) {
-                Some(action) => self.dispatch(action, None),
-                None => self.say(format!("Not a command: {name}"), Level::Error),
-            },
+            _ => self.run_action(name),
+        }
+    }
+
+    /// `:theme name`, or the theme picker.
+    fn theme_line(&mut self, arg: &str) {
+        match arg {
+            "" => self.open_theme_picker(),
+            name => self.set_theme(name),
+        }
+    }
+
+    /// `:board id`, or the board picker.
+    fn board_line(&mut self, arg: &str) {
+        match arg {
+            "" => self.dispatch(Action::PickerBoards, None),
+            id => self.load_board(kolum_domain::BoardId::new(id)),
+        }
+    }
+
+    /// The remote picker, searching `arg` as JQL when there is one.
+    fn jql(&mut self, arg: &str) {
+        self.dispatch(Action::PickerRemote, None);
+        if let Some(p) = self.picker.as_mut().filter(|_| !arg.is_empty()) {
+            p.set_query(&format!("!{arg}"));
+        }
+    }
+
+    /// Any action, by the name its key binding gives it.
+    fn run_action(&mut self, name: &str) {
+        match Action::from_name(name) {
+            Some(action) => self.dispatch(action, None),
+            None => self.say(format!("Not a command: {name}"), Level::Error),
         }
     }
 
@@ -2360,6 +2366,24 @@ impl App {
         let title = format!("{} …", self.resolver.typed());
         frame.render_widget(Paragraph::new(lines).block(popup(&title, theme)), rect);
     }
+}
+
+/// Vim's short names for the commands that are actions.
+const ALIASES: [(&str, &str); 5] =
+    [("q", "quit"), ("q!", "quit"), ("qa", "quit"), ("h", "help"), ("e", "refresh")];
+
+/// How far a scrolling action moves, `n` times, with half a page of
+/// `half` lines; none for any other action.
+fn scroll_step(action: Action, n: i64, half: i64) -> Option<i64> {
+    Some(match action {
+        Action::Down => n,
+        Action::Up => -n,
+        Action::HalfPageDown => half * n,
+        Action::HalfPageUp => -half * n,
+        Action::Top => i64::from(i16::MIN),
+        Action::Bottom => i64::from(u16::MAX),
+        _ => return None,
+    })
 }
 
 /// A rich text field's text, empty when it has none yet.

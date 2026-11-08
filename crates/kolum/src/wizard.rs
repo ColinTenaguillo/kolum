@@ -83,47 +83,51 @@ pub fn questions(input: &mut impl BufRead, out: &mut impl Write) -> std::io::Res
 }
 
 fn jira_questions(input: &mut impl BufRead, out: &mut impl Write) -> std::io::Result<JiraAnswers> {
-    let base_url = ask_until(input, out, "Jira URL, like https://acme.atlassian.net", "", |a| {
-        if a.starts_with("https://") || a.starts_with("http://") {
-            Ok(())
-        } else {
-            Err("a URL, starting with https://")
-        }
-    })?;
+    let base_url = ask_until(input, out, "Jira URL, like https://acme.atlassian.net", "", url)?;
     let base_url = base_url.trim_end_matches('/').to_string();
     let email = if base_url.contains(".atlassian.net") {
-        Some(ask_until(input, out, "Your Atlassian e-mail", "", |a| {
-            if a.contains('@') { Ok(()) } else { Err("an e-mail address") }
-        })?)
+        Some(ask_until(input, out, "Your Atlassian e-mail", "", email)?)
     } else {
         None
     };
     let token = token_question(input, out)?;
-    let board = ask_until(
-        input,
-        out,
-        "Board id, from the board's URL (blank: the first board)",
-        "",
-        |a| {
-            if a.is_empty() || a.parse::<u64>().is_ok() {
-                Ok(())
-            } else {
-                Err("a number, or blank")
-            }
-        },
-    )?;
-    let name = ask_until(input, out, "Profile name", "work", |a| {
-        if a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-            Ok(())
-        } else {
-            Err("letters, digits, - and _")
-        }
-    })?;
+    let question = "Board id, from the board's URL (blank: the first board)";
+    let board = ask_until(input, out, question, "", board_id)?;
+    let name = ask_until(input, out, "Profile name", "work", profile_name)?;
     Ok(JiraAnswers { name, base_url, email, token, board: board.parse().ok() })
+}
+
+fn url(a: &str) -> Result<(), &'static str> {
+    if a.starts_with("https://") || a.starts_with("http://") {
+        Ok(())
+    } else {
+        Err("a URL, starting with https://")
+    }
+}
+
+fn email(a: &str) -> Result<(), &'static str> {
+    if a.contains('@') { Ok(()) } else { Err("an e-mail address") }
+}
+
+fn board_id(a: &str) -> Result<(), &'static str> {
+    if a.is_empty() || a.parse::<u64>().is_ok() { Ok(()) } else { Err("a number, or blank") }
+}
+
+/// A profile names a table in the config and a cache directory.
+fn profile_name(a: &str) -> Result<(), &'static str> {
+    if a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        Ok(())
+    } else {
+        Err("letters, digits, - and _")
+    }
 }
 
 fn not_empty(what: &'static str) -> impl Fn(&str) -> Result<(), &'static str> {
     move |a: &str| if a.is_empty() { Err(what) } else { Ok(()) }
+}
+
+fn one_two_or_three(a: &str) -> Result<(), &'static str> {
+    if matches!(a, "1" | "2" | "3") { Ok(()) } else { Err("1, 2 or 3") }
 }
 
 fn token_question(input: &mut impl BufRead, out: &mut impl Write) -> std::io::Result<Token> {
@@ -135,9 +139,7 @@ fn token_question(input: &mut impl BufRead, out: &mut impl Write) -> std::io::Re
          3) keep it in config.toml, which is then readable by you alone\n"
     )?;
     loop {
-        let how = ask_until(input, out, "Which", "1", |a| {
-            if matches!(a, "1" | "2" | "3") { Ok(()) } else { Err("1, 2 or 3") }
-        })?;
+        let how = ask_until(input, out, "Which", "1", one_two_or_three)?;
         match how.as_str() {
             "1" => {
                 if let Some(cmd) = command_question(input, out)? {
@@ -277,7 +279,9 @@ mod tests {
 
     #[test]
     fn a_data_center_profile_needs_no_email_and_demo_needs_nothing() {
-        let (answer, _) = run("jira\nhttps://jira.corp\n2\n\nperso\n");
+        let (answer, said) = run("jira\nhttps://jira.corp\n2\nfirst\n\nmy profile\nperso\n");
+        assert!(said.contains("a number, or blank"), "{said}");
+        assert!(said.contains("letters, digits, - and _"), "{said}");
         let Answer::Jira(a) = answer else { panic!() };
         assert_eq!(
             (a.email, a.token, a.board, a.name.as_str()),

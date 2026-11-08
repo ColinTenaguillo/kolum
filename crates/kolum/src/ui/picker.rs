@@ -55,8 +55,6 @@ pub enum Pick {
     },
     /// Run an action as if its key were pressed (the command palette).
     Run(Action),
-    /// The action means something here, but not yet.
-    Unavailable(Action),
 }
 
 pub trait PickerSource: 'static {
@@ -220,6 +218,18 @@ impl<S: PickerSource> Picker<S> {
     }
     fn source_label(&self) -> &'static str {
         if self.remote { "remote" } else { "local" }
+    }
+
+    /// The highlighted item's preview, scrolled where it was left.
+    fn draw_preview(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let block = glyph::panel("Preview", false, theme);
+        let inner = block.inner(area);
+        let text = self.current().and_then(|i| self.source.preview(i, theme, inner.width));
+        let preview = Paragraph::new(text.unwrap_or_default())
+            .block(block)
+            .wrap(Wrap { trim: false })
+            .scroll((self.preview_scroll, 0));
+        frame.render_widget(preview, area);
     }
 
     /// What is typed, the cursor in it, and the spinner at the far end.
@@ -386,24 +396,7 @@ impl<S: PickerSource> AnyPicker for Picker<S> {
 
     fn draw(&mut self, frame: &mut Frame, area: Rect, theme: &Theme, layout: PickerLayout) {
         frame.render_widget(Clear, area);
-        // Too narrow for two panes side by side: stack them, or drop the
-        // preview when there is no height for it either.
-        let layout = match layout {
-            PickerLayout::Horizontal if area.width < 80 => PickerLayout::Vertical,
-            PickerLayout::Vertical if area.height < 20 => PickerLayout::NoPreview,
-            l => l,
-        };
-        let (list_area, preview_area) = match layout {
-            PickerLayout::Horizontal => {
-                let [l, r] = Layout::horizontal([Constraint::Percentage(50); 2]).areas(area);
-                (l, Some(r))
-            }
-            PickerLayout::Vertical => {
-                let [t, b] = Layout::vertical([Constraint::Percentage(50); 2]).areas(area);
-                (b, Some(t))
-            }
-            PickerLayout::NoPreview => (area, None),
-        };
+        let (list_area, preview_area) = panes(area, layout);
         let snapshot = self.nucleo.snapshot();
         let counter = format!(" {}/{} ", snapshot.matched_item_count(), snapshot.item_count());
         let mode = if self.insert { "" } else { " NORMAL " };
@@ -427,16 +420,30 @@ impl<S: PickerSource> AnyPicker for Picker<S> {
             .collect();
         let results = Rect { y: inner.y + 2, height: inner.height.saturating_sub(2), ..inner };
         frame.render_widget(Paragraph::new(lines), results);
-
         if let Some(area) = preview_area {
-            let block = glyph::panel("Preview", false, theme);
-            let inner = block.inner(area);
-            let text = self.current().and_then(|i| self.source.preview(i, theme, inner.width));
-            let preview = Paragraph::new(text.unwrap_or_default())
-                .block(block)
-                .wrap(Wrap { trim: false })
-                .scroll((self.preview_scroll, 0));
-            frame.render_widget(preview, area);
+            self.draw_preview(frame, area, theme);
         }
+    }
+}
+
+/// The list's area and the preview's. Too narrow for two panes side by
+/// side: stacked, the preview on top, or no preview when there is no
+/// height for it either.
+fn panes(area: Rect, layout: PickerLayout) -> (Rect, Option<Rect>) {
+    let layout = match layout {
+        PickerLayout::Horizontal if area.width < 80 => PickerLayout::Vertical,
+        PickerLayout::Vertical if area.height < 20 => PickerLayout::NoPreview,
+        l => l,
+    };
+    match layout {
+        PickerLayout::Horizontal => {
+            let [l, r] = Layout::horizontal([Constraint::Percentage(50); 2]).areas(area);
+            (l, Some(r))
+        }
+        PickerLayout::Vertical => {
+            let [t, b] = Layout::vertical([Constraint::Percentage(50); 2]).areas(area);
+            (b, Some(t))
+        }
+        PickerLayout::NoPreview => (area, None),
     }
 }

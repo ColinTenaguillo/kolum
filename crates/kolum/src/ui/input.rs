@@ -33,59 +33,62 @@ impl Input {
     /// True when the text changed.
     pub fn handle(&mut self, key: Key) -> bool {
         let ctrl = key.mods.contains(KeyModifiers::CONTROL);
-        let len = self.text.chars().count();
         match key.code {
-            KeyCode::Char(c) if key.mods.is_empty() => {
-                let at = self.byte(self.cursor);
-                self.text.insert(at, c);
-                self.cursor += 1;
-                true
-            }
+            KeyCode::Char(c) if key.mods.is_empty() => self.insert(c),
             KeyCode::Backspace if self.cursor > 0 => {
                 self.cursor -= 1;
-                let at = self.byte(self.cursor);
-                self.text.remove(at);
-                true
+                self.delete()
             }
-            KeyCode::Delete if self.cursor < len => {
-                let at = self.byte(self.cursor);
-                self.text.remove(at);
-                true
-            }
-            KeyCode::Char('w') if ctrl => {
-                let before: Vec<char> = self.text.chars().take(self.cursor).collect();
-                let trimmed = before.iter().rposition(|c| !c.is_whitespace()).map_or(0, |i| i + 1);
-                let start =
-                    before[..trimmed].iter().rposition(|c| c.is_whitespace()).map_or(0, |i| i + 1);
-                let (a, b) = (self.byte(start), self.byte(self.cursor));
-                self.text.replace_range(a..b, "");
-                self.cursor = start;
-                a != b
-            }
-            KeyCode::Char('u') if ctrl => {
-                let b = self.byte(self.cursor);
-                self.text.replace_range(..b, "");
-                self.cursor = 0;
-                b > 0
-            }
-            KeyCode::Left => {
-                self.cursor = self.cursor.saturating_sub(1);
-                false
-            }
-            KeyCode::Right => {
-                self.cursor = (self.cursor + 1).min(len);
-                false
-            }
-            KeyCode::Home => {
-                self.cursor = 0;
-                false
-            }
-            KeyCode::End => {
-                self.cursor = len;
-                false
-            }
-            _ => false,
+            KeyCode::Delete if self.cursor < self.text.chars().count() => self.delete(),
+            KeyCode::Char('w') if ctrl => self.delete_word(),
+            KeyCode::Char('u') if ctrl => self.delete_to_start(),
+            code => self.move_cursor(code),
         }
+    }
+
+    fn insert(&mut self, c: char) -> bool {
+        let at = self.byte(self.cursor);
+        self.text.insert(at, c);
+        self.cursor += 1;
+        true
+    }
+
+    /// The character under the cursor.
+    fn delete(&mut self) -> bool {
+        let at = self.byte(self.cursor);
+        self.text.remove(at);
+        true
+    }
+
+    /// The word before the cursor, and the spaces after it.
+    fn delete_word(&mut self) -> bool {
+        let before: Vec<char> = self.text.chars().take(self.cursor).collect();
+        let trimmed = before.iter().rposition(|c| !c.is_whitespace()).map_or(0, |i| i + 1);
+        let start = before[..trimmed].iter().rposition(|c| c.is_whitespace()).map_or(0, |i| i + 1);
+        let (a, b) = (self.byte(start), self.byte(self.cursor));
+        self.text.replace_range(a..b, "");
+        self.cursor = start;
+        a != b
+    }
+
+    fn delete_to_start(&mut self) -> bool {
+        let b = self.byte(self.cursor);
+        self.text.replace_range(..b, "");
+        self.cursor = 0;
+        b > 0
+    }
+
+    /// Moves change no text: false, for every key.
+    fn move_cursor(&mut self, code: KeyCode) -> bool {
+        let len = self.text.chars().count();
+        self.cursor = match code {
+            KeyCode::Left => self.cursor.saturating_sub(1),
+            KeyCode::Right => (self.cursor + 1).min(len),
+            KeyCode::Home => 0,
+            KeyCode::End => len,
+            _ => self.cursor,
+        };
+        false
     }
 }
 

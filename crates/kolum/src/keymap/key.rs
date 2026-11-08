@@ -67,6 +67,24 @@ const NAMES: &[(&str, KeyCode)] = &[
 
 /// The inside of `<...>`: modifiers, then a name or a single character.
 fn parse_special(token: &str) -> Option<Key> {
+    let (mods, rest) = modifiers(token)?;
+    let mut chars = rest.chars();
+    let code = match (chars.next(), chars.next()) {
+        (Some(c), None) if mods.contains(KeyModifiers::SHIFT) => {
+            KeyCode::Char(c.to_ascii_uppercase())
+        }
+        // `<C-D>` is `<C-d>`: terminals cannot send a distinct Ctrl-Shift-d.
+        (Some(c), None) if mods.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char(c.to_ascii_lowercase())
+        }
+        (Some(c), None) => KeyCode::Char(c),
+        _ => named(rest)?,
+    };
+    Some(Key::new(code, mods))
+}
+
+/// The `C-`, `A-` (or `M-`) and `S-` in front, and what follows them.
+fn modifiers(token: &str) -> Option<(KeyModifiers, &str)> {
     let mut mods = KeyModifiers::NONE;
     let mut rest = token;
     while let Some((m, tail)) = rest.split_once('-').filter(|(m, t)| m.len() == 1 && !t.is_empty())
@@ -79,25 +97,15 @@ fn parse_special(token: &str) -> Option<Key> {
         };
         rest = tail;
     }
-    let mut chars = rest.chars();
-    let code = match (chars.next(), chars.next()) {
-        (Some(c), None) if mods.contains(KeyModifiers::SHIFT) => {
-            KeyCode::Char(c.to_ascii_uppercase())
-        }
-        // `<C-D>` is `<C-d>`: terminals cannot send a distinct Ctrl-Shift-d.
-        (Some(c), None) if mods.contains(KeyModifiers::CONTROL) => {
-            KeyCode::Char(c.to_ascii_lowercase())
-        }
-        (Some(c), None) => KeyCode::Char(c),
-        _ => {
-            if let Some(n) = rest.strip_prefix(['F', 'f']).and_then(|n| n.parse::<u8>().ok()) {
-                KeyCode::F(n)
-            } else {
-                NAMES.iter().find(|(name, _)| name.eq_ignore_ascii_case(rest))?.1
-            }
-        }
-    };
-    Some(Key::new(code, mods))
+    Some((mods, rest))
+}
+
+/// `F1` to `F12`, or a name like `CR` or `Esc`.
+fn named(name: &str) -> Option<KeyCode> {
+    match name.strip_prefix(['F', 'f']).and_then(|n| n.parse::<u8>().ok()) {
+        Some(n) => Some(KeyCode::F(n)),
+        None => NAMES.iter().find(|(known, _)| known.eq_ignore_ascii_case(name)).map(|(_, k)| *k),
+    }
 }
 
 /// Reads a sequence in vim notation. `<leader>` stands for `leader`.
@@ -140,15 +148,11 @@ impl fmt::Display for Key {
                 .map(|(n, _)| n.to_string())
                 .unwrap_or_else(|| format!("{code:?}")),
         };
-        f.write_str("<")?;
-        for (m, p) in
-            [(KeyModifiers::CONTROL, "C-"), (KeyModifiers::ALT, "A-"), (KeyModifiers::SHIFT, "S-")]
-        {
-            if self.mods.contains(m) {
-                f.write_str(p)?;
-            }
-        }
-        write!(f, "{name}>")
+        let mods =
+            [(KeyModifiers::CONTROL, "C-"), (KeyModifiers::ALT, "A-"), (KeyModifiers::SHIFT, "S-")];
+        let held: String =
+            mods.iter().filter(|(m, _)| self.mods.contains(*m)).map(|(_, p)| *p).collect();
+        write!(f, "<{held}{name}>")
     }
 }
 

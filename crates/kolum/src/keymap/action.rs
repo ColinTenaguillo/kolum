@@ -87,6 +87,20 @@ impl Action {
     pub fn from_name(name: &str) -> Option<Action> {
         Action::ALL.iter().copied().find(|a| a.name() == name)
     }
+
+    /// Whether it changes an issue, which a read-only provider refuses.
+    pub fn writes(self) -> bool {
+        matches!(
+            self,
+            Action::Transition
+                | Action::Assign
+                | Action::AssignMe
+                | Action::Comment
+                | Action::Edit
+                | Action::EditField
+                | Action::Clone
+        )
+    }
 }
 
 #[cfg(test)]

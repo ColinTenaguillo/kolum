@@ -315,22 +315,8 @@ impl BoardView {
             let next = if delta > 0 { to + 1 } else { to.wrapping_sub(1) };
             match column.get(next) {
                 Some(card) if lane_of(card) == lane_of(here) => to = next,
-                Some(_) if to == from => {
-                    return Err(if delta > 0 {
-                        "Already at the bottom of its lane"
-                    } else {
-                        "Already at the top of its lane"
-                    });
-                }
-                Some(_) => break,
-                None if to == from => {
-                    return Err(if delta > 0 {
-                        "Already at the bottom"
-                    } else {
-                        "Already at the top"
-                    });
-                }
-                None => break,
+                beyond if to == from => return Err(at_the_end(delta > 0, beyond.is_some())),
+                _ => break,
             }
         }
         Ok(column[to].key.clone())
@@ -423,30 +409,38 @@ impl BoardView {
     ) {
         let theme = ctx.theme;
         let focused = c == self.column;
-        let count = cards.len();
-        let over = wip.is_some_and(|w| count as u32 > w);
-        let count_text = match wip {
-            Some(w) => format!(" {count}/{w} "),
-            None => format!(" {count} "),
-        };
-        let count_style = Style::new().fg(if over { theme.error } else { theme.muted });
         // gh-dash's table: a header over a rule; no box, a gap between
         // columns.
         let area = Rect { width: area.width.saturating_sub(1), ..area };
-        let head_style = Style::new()
-            .fg(if focused { theme.accent } else { theme.muted })
-            .add_modifier(Modifier::BOLD);
-        let head = Line::from(vec![
-            Span::styled(format!(" {} ", name.to_uppercase()), head_style),
-            Span::styled(count_text, count_style),
-        ]);
-        frame.render_widget(Paragraph::new(head), Rect { height: 1, ..area });
-        let rule = Style::new().fg(if focused { theme.border_focus } else { theme.border });
-        let rule = Span::styled("─".repeat(area.width as usize), rule);
-        frame.render_widget(Paragraph::new(rule), Rect { y: area.y + 1, height: 1, ..area });
+        draw_head(frame, area, name, (cards.len(), wip), focused, theme);
         let inner = Rect { y: area.y + 2, height: area.height.saturating_sub(3), ..area };
         // Counted at the tallest, so a half page never skips past the screen.
         self.page.set((inner.height / CARD_HEIGHT).max(1) as usize);
+        let last_card = self.draw_items(frame, inner, cards, c, ctx);
+        let below = cards.len().saturating_sub(last_card.map_or(0, |r| r + 1));
+        if below > 0 && inner.height > 0 {
+            let more =
+                Line::from(Span::styled(format!(" ↓ {below} more "), Style::new().fg(theme.muted)));
+            let bottom = Rect { y: area.bottom() - 1, height: 1, ..inner };
+            frame.render_widget(Paragraph::new(more).right_aligned(), bottom);
+        }
+        if cards.is_empty() {
+            let empty = Paragraph::new("No cards").style(Style::new().fg(theme.muted)).centered();
+            frame.render_widget(empty, Rect { height: 1, y: inner.y + 1, ..inner });
+        }
+    }
+
+    /// The lanes and cards that fit, from the one that keeps the cursor
+    /// in sight; the row of the last card drawn.
+    fn draw_items(
+        &self,
+        frame: &mut Frame,
+        inner: Rect,
+        cards: Cards,
+        c: usize,
+        ctx: &DrawCtx,
+    ) -> Option<usize> {
+        let focused = c == self.column;
         let cursor = self.cursor.get(c).copied().unwrap_or(0);
         let items = self.items(cards, ctx, (inner.width as usize).saturating_sub(1));
         let start = first_shown(&items, cursor, inner.height);
@@ -460,15 +454,7 @@ impl BoardView {
             }
             let rect = Rect { y, height, ..inner };
             match item {
-                Item::Lane(label) => {
-                    let text = truncate(&format!("── {label} "), inner.width as usize);
-                    let rule = "─".repeat((inner.width as usize).saturating_sub(width(&text)));
-                    let line = Line::from(Span::styled(
-                        format!("{text}{rule}"),
-                        Style::new().fg(theme.muted),
-                    ));
-                    frame.render_widget(Paragraph::new(line), rect);
-                }
+                Item::Lane(label) => lane_rule(frame, rect, label, ctx.theme),
                 &Item::Card(row, _) => {
                     let marked = range.is_some_and(|(a, b)| (a..=b).contains(&row));
                     card(frame, rect, &cards[row], focused && row == cursor, marked, ctx);
@@ -477,17 +463,7 @@ impl BoardView {
             }
             y += height;
         }
-        let below = count.saturating_sub(last_card.map_or(0, |r| r + 1));
-        if below > 0 && inner.height > 0 {
-            let more =
-                Line::from(Span::styled(format!(" ↓ {below} more "), Style::new().fg(theme.muted)));
-            let bottom = Rect { y: area.bottom() - 1, height: 1, ..inner };
-            frame.render_widget(Paragraph::new(more).right_aligned(), bottom);
-        }
-        if count == 0 {
-            let empty = Paragraph::new("No cards").style(Style::new().fg(theme.muted)).centered();
-            frame.render_widget(empty, Rect { height: 1, y: inner.y + 1, ..inner });
-        }
+        last_card
     }
 }
 
@@ -503,6 +479,10 @@ struct Cards<'a> {
 impl<'a> Cards<'a> {
     fn len(self) -> usize {
         self.places.len()
+    }
+
+    fn is_empty(self) -> bool {
+        self.places.is_empty()
     }
 
     fn get(self, row: usize) -> Option<&'a Issue> {
@@ -709,9 +689,65 @@ fn right_aligned(
     Line::from(left)
 }
 
+/// The column's name and its count, over a rule; the count in red past
+/// the column's limit.
+fn draw_head(
+    frame: &mut Frame,
+    area: Rect,
+    name: &str,
+    (count, wip): (usize, Option<u32>),
+    focused: bool,
+    theme: &Theme,
+) {
+    let over = wip.is_some_and(|w| count as u32 > w);
+    let count_text = match wip {
+        Some(w) => format!(" {count}/{w} "),
+        None => format!(" {count} "),
+    };
+    let count_style = Style::new().fg(if over { theme.error } else { theme.muted });
+    let head_style = Style::new()
+        .fg(if focused { theme.accent } else { theme.muted })
+        .add_modifier(Modifier::BOLD);
+    let head = Line::from(vec![
+        Span::styled(format!(" {} ", name.to_uppercase()), head_style),
+        Span::styled(count_text, count_style),
+    ]);
+    frame.render_widget(Paragraph::new(head), Rect { height: 1, ..area });
+    let rule = Style::new().fg(if focused { theme.border_focus } else { theme.border });
+    let rule = Span::styled("─".repeat(area.width as usize), rule);
+    frame.render_widget(Paragraph::new(rule), Rect { y: area.y + 1, height: 1, ..area });
+}
+
+/// A lane's label on a rule across the column.
+fn lane_rule(frame: &mut Frame, rect: Rect, label: &str, theme: &Theme) {
+    let text = truncate(&format!("── {label} "), rect.width as usize);
+    let rule = "─".repeat((rect.width as usize).saturating_sub(width(&text)));
+    let line = Line::from(Span::styled(format!("{text}{rule}"), Style::new().fg(theme.muted)));
+    frame.render_widget(Paragraph::new(line), rect);
+}
+
+/// Why a card moves no further: the end of its column, or of its lane
+/// when another lane follows.
+fn at_the_end(down: bool, lane: bool) -> &'static str {
+    match (down, lane) {
+        (true, true) => "Already at the bottom of its lane",
+        (false, true) => "Already at the top of its lane",
+        (true, false) => "Already at the bottom",
+        (false, false) => "Already at the top",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_card_that_moves_no_further_says_which_end_it_is_at() {
+        assert_eq!(at_the_end(true, true), "Already at the bottom of its lane");
+        assert_eq!(at_the_end(false, true), "Already at the top of its lane");
+        assert_eq!(at_the_end(true, false), "Already at the bottom");
+        assert_eq!(at_the_end(false, false), "Already at the top");
+    }
     use kolum_domain::Priority;
 
     async fn board() -> BoardView {

@@ -539,6 +539,20 @@ pub enum FieldKind {
 }
 
 impl FieldKind {
+    /// The values a field of this kind is picked among; none when it is
+    /// typed instead.
+    pub fn choices(&self) -> Option<Vec<FieldValue>> {
+        match self {
+            FieldKind::Choice { options, .. } => {
+                Some(options.iter().cloned().map(FieldValue::Text).collect())
+            }
+            FieldKind::Priority(all) => {
+                Some(all.iter().cloned().map(FieldValue::Priority).collect())
+            }
+            _ => None,
+        }
+    }
+
     /// What a line typed for a field of this kind sets it to. Empty
     /// empties the field.
     pub fn parse(&self, text: &str) -> std::result::Result<Option<FieldValue>, String> {
@@ -688,6 +702,16 @@ mod tests {
         for (value, line) in others {
             assert_eq!(value.to_input(), line);
         }
+    }
+
+    #[test]
+    fn a_choice_or_a_priority_is_picked_and_the_rest_typed() {
+        let choice = FieldKind::Choice { options: vec!["Mobile".into()], many: false };
+        assert_eq!(choice.choices(), Some(vec![FieldValue::Text("Mobile".into())]));
+        let high = Priority { rank: 1, name: "High".into() };
+        let priority = FieldKind::Priority(vec![high.clone()]);
+        assert_eq!(priority.choices(), Some(vec![FieldValue::Priority(high)]));
+        assert_eq!(FieldKind::Text.choices(), None);
     }
 
     fn id(id: &str) -> FieldId {

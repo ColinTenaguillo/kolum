@@ -159,10 +159,7 @@ fn init_logging(debug: bool) -> Option<PathBuf> {
     let dir = config::cache_dir()?;
     std::fs::create_dir_all(&dir).ok()?;
     let appender = tracing_appender::rolling::never(&dir, "kolum.log");
-    let level = if debug { "debug" } else { "info" };
-    let default = ["kolum", "kolum_app", "kolum_provider_jira", "kolum_provider_github"]
-        .map(|target| format!("{target}={level}"))
-        .join(",");
+    let default = log_filter(debug);
     tracing_subscriber::fmt()
         .with_writer(appender)
         .with_ansi(false)
@@ -172,6 +169,15 @@ fn init_logging(debug: bool) -> Option<PathBuf> {
         )
         .init();
     Some(dir.join("kolum.log"))
+}
+
+/// kolum's own crates at info, or at debug with `--debug`; the libraries
+/// it uses say nothing.
+fn log_filter(debug: bool) -> String {
+    let level = if debug { "debug" } else { "info" };
+    ["kolum", "kolum_app", "kolum_provider_jira", "kolum_provider_github"]
+        .map(|target| format!("{target}={level}"))
+        .join(",")
 }
 
 fn main() {
@@ -185,17 +191,20 @@ fn main() {
 }
 
 fn app() -> anyhow::Result<()> {
-    let args = match parse_args(std::env::args().skip(1)).map_err(anyhow::Error::msg)? {
-        Cli::Run(args) => args,
+    match parse_args(std::env::args().skip(1)).map_err(anyhow::Error::msg)? {
+        Cli::Run(args) => run(args),
         Cli::Help => {
             println!("{USAGE}");
-            return Ok(());
+            Ok(())
         }
         Cli::Version => {
             println!("kolum {}", env!("CARGO_PKG_VERSION"));
-            return Ok(());
+            Ok(())
         }
-    };
+    }
+}
+
+fn run(args: Args) -> anyhow::Result<()> {
     let log = init_logging(args.debug);
     if args.debug {
         let at = log.as_ref().map_or("nowhere".into(), |p| p.display().to_string());
@@ -228,16 +237,29 @@ fn app() -> anyhow::Result<()> {
 /// and someone at the terminal to answer them.
 fn configure(mut args: Args) -> anyhow::Result<(Args, config::Config, Settings)> {
     let (config, settings) = load(&args, config::config_dir());
-    let first = config.profiles.is_empty() && !args.demo && args.profile.is_none();
-    if !first || !std::io::stdin().is_terminal() {
+    if !first_run_due(&config, &args) || !std::io::stdin().is_terminal() {
         return Ok((args, config, settings));
     }
-    if first_run(&args)? == kolum::wizard::Answer::Demo {
+    let path = config_path(&args, config::config_dir())
+        .ok_or_else(|| anyhow::anyhow!("no home directory to keep the config in"))?;
+    if first_run(&path, &mut std::io::stdin().lock(), &mut std::io::stdout())?
+        == kolum::wizard::Answer::Demo
+    {
         args.demo = true;
         return Ok((args, config, settings));
     }
     let (config, settings) = load(&args, config::config_dir());
     Ok((args, config, settings))
+}
+
+/// No profile yet, and none asked for: the first-run questions.
+fn first_run_due(config: &config::Config, args: &Args) -> bool {
+    config.profiles.is_empty() && !args.demo && args.profile.is_none()
+}
+
+/// `--config`, or `config.toml` in the config directory.
+fn config_path(args: &Args, config_dir: Option<PathBuf>) -> Option<PathBuf> {
+    args.config.clone().or_else(|| config_dir.map(|d| d.join("config.toml")))
 }
 
 /// The toggles of the last run win over the config's starting values.
@@ -254,23 +276,22 @@ fn with_state(mut settings: Settings, state_file: Option<&std::path::Path>) -> S
 }
 
 /// Asks the first-run questions and writes the profile they describe.
-fn first_run(args: &Args) -> anyhow::Result<kolum::wizard::Answer> {
-    let path = args
-        .config
-        .clone()
-        .or_else(|| config::config_dir().map(|d| d.join("config.toml")))
-        .ok_or_else(|| anyhow::anyhow!("no home directory to keep the config in"))?;
-    let answer = kolum::wizard::questions(&mut std::io::stdin().lock(), &mut std::io::stdout())?;
+fn first_run(
+    path: &std::path::Path,
+    input: &mut impl std::io::BufRead,
+    out: &mut impl std::io::Write,
+) -> anyhow::Result<kolum::wizard::Answer> {
+    let answer = kolum::wizard::questions(input, out)?;
     if let kolum::wizard::Answer::Jira(jira) = &answer {
-        kolum::wizard::write_profile(&path, jira)?;
-        println!("\nWrote the `{}` profile to {}.", jira.name, path.display());
+        kolum::wizard::write_profile(path, jira)?;
+        writeln!(out, "\nWrote the `{}` profile to {}.", jira.name, path.display())?;
     }
     Ok(answer)
 }
 
 /// The config, and what the app is built from, with every problem found.
 fn load(args: &Args, config_dir: Option<PathBuf>) -> (config::Config, Settings) {
-    let path = args.config.clone().or_else(|| config_dir.as_ref().map(|d| d.join("config.toml")));
+    let path = config_path(args, config_dir.clone());
     let (config, mut problems) = match &path {
         Some(path) => config::load(path),
         None => (config::Config::default(), vec![]),
@@ -496,5 +517,50 @@ mod tests {
             ["unknown setting `ui.thme`", "[keys.board] \"x\": unknown action `nope`"]
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_questions_come_only_when_no_profile_is_there_or_asked_for() {
+        let none = config("");
+        assert!(first_run_due(&none, &Args::default()));
+        assert!(!first_run_due(&none, &Args { demo: true, ..Args::default() }));
+        let named = Args { profile: Some("work".into()), ..Args::default() };
+        assert!(!first_run_due(&none, &named));
+        let one = config("[profiles.work]\nprovider = \"fake\"\n");
+        assert!(!first_run_due(&one, &Args::default()));
+    }
+
+    #[test]
+    fn the_config_is_the_one_given_else_the_one_in_the_config_directory() {
+        let dir = PathBuf::from("/home/me/.config/kolum");
+        assert_eq!(config_path(&Args::default(), Some(dir.clone())), Some(dir.join("config.toml")));
+        let given = Args { config: Some("/tmp/k.toml".into()), ..Args::default() };
+        assert_eq!(config_path(&given, Some(dir)), Some("/tmp/k.toml".into()));
+        assert_eq!(config_path(&Args::default(), None), None, "no home: nowhere");
+    }
+
+    #[test]
+    fn the_first_run_writes_the_profile_it_was_told_and_demo_writes_nothing() {
+        let dir = std::env::temp_dir().join(format!("kolum-first-run-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let mut said = vec![];
+        let demo = first_run(&path, &mut "demo\n".as_bytes(), &mut said).unwrap();
+        assert_eq!(demo, kolum::wizard::Answer::Demo);
+        assert!(!path.exists(), "demo needs no profile");
+        let answers = "jira\nhttps://jira.corp\n2\n\nperso\n";
+        let jira = first_run(&path, &mut answers.as_bytes(), &mut said).unwrap();
+        assert!(matches!(jira, kolum::wizard::Answer::Jira(_)));
+        let (written, problems) = config::load(&path);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(written.profiles.contains_key("perso"));
+        assert!(String::from_utf8(said).unwrap().contains("Wrote the `perso` profile"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_log_says_kolums_own_crates_at_the_level_asked() {
+        assert!(log_filter(false).split(',').all(|t| t.ends_with("=info")));
+        assert!(log_filter(true).contains("kolum_app=debug"));
     }
 }

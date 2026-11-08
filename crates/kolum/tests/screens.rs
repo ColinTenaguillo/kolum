@@ -2935,6 +2935,12 @@ async fn shift_j_and_k_move_a_card_within_its_column() {
     press(&mut app, "ggK");
     assert!(app.take_effects().is_empty());
     assert!(screen(&mut app, 160, 40).contains("Already at the top"));
+
+    let order = column_order(&mut app, 2);
+    let last = K::parse(order.last().unwrap());
+    press(&mut app, "Gk3J");
+    let sent = writes(app.take_effects());
+    assert_eq!(sent[0].2, kolum_app::Write::Rank(Rank::After(last)), "a count stops at the end");
 }
 
 #[tokio::test]
@@ -3089,4 +3095,71 @@ async fn the_detail_names_the_repository_an_issue_is_in() {
     app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail)));
     let shown = screen(&mut app, 150, 40);
     assert!(shown.contains(&format!(" python-language-server · {key}")), "{shown}");
+}
+
+#[tokio::test]
+async fn ctrl_c_quits_from_the_issue_too() {
+    let mut app = loaded().await;
+    press(&mut app, "<CR><C-c>");
+    assert!(app.quit);
+}
+
+#[tokio::test]
+async fn i_in_the_pickers_normal_mode_types_again() {
+    let mut app = loaded().await;
+    press(&mut app, "<Space>fsso<Esc>ix");
+    settle(&mut app);
+    let shown = screen(&mut app, 150, 40);
+    assert!(shown.contains("\u{f002} ssox"), "{shown}");
+    assert!(!shown.contains("NORMAL"));
+}
+
+#[tokio::test]
+async fn an_action_the_picker_cannot_take_says_so_and_enter_on_nothing_does_nothing() {
+    let mut app = loaded().await;
+    press(&mut app, "<Space>t");
+    settle(&mut app);
+    press(&mut app, "<C-t>");
+    assert!(screen(&mut app, 120, 30).contains("`transition` is not available yet"));
+    press(&mut app, "<C-c><Space>fzzzzqqqq");
+    settle(&mut app);
+    app.take_effects();
+    press(&mut app, "<CR>");
+    assert!(app.take_effects().is_empty(), "no match: nothing to open");
+    assert!(screen(&mut app, 120, 30).contains("zzzzqqqq"), "the picker stays");
+}
+
+#[tokio::test]
+async fn assign_me_waits_until_kolum_knows_who_i_am() {
+    let fake = FakeProvider::new();
+    let mut app = App::new(settings(), Arc::new(|| {}));
+    app.on_event(Event::BoardLoaded {
+        snapshot: load_board(&fake, None).await.unwrap(),
+        fresh: true,
+        request: 1,
+    });
+    app.take_effects();
+    press(&mut app, "<Space>A");
+    assert!(app.take_effects().is_empty());
+    assert!(screen(&mut app, 120, 30).contains("Still finding out who you are"));
+}
+
+#[tokio::test]
+async fn an_action_that_means_nothing_on_a_card_says_so() {
+    let mut app = loaded().await;
+    press(&mut app, ":next_tab<CR>");
+    assert!(screen(&mut app, 120, 30).contains("`next_tab` is not available yet"));
+}
+
+#[tokio::test]
+async fn the_assignee_field_assigns_the_issue() {
+    let mut app = loaded().await;
+    press(&mut app, "/ACME-10<CR><CR>");
+    edit_field(&mut app, "assignee").await;
+    app.take_effects();
+    press(&mut app, "ana");
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    let sent = writes(app.take_effects());
+    assert_eq!(sent[0].2, kolum_app::Write::Assign(Some(kolum_domain::UserId::new("u-ana"))));
 }

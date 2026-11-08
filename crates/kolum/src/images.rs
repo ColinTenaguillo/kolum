@@ -11,21 +11,33 @@
 
 use crate::config::ImagesMode;
 use ratatui_image::picker::Picker;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 pub fn probe(mode: ImagesMode) -> Option<Picker> {
+    // An unknown terminal is not asked at all: the child's wait would be a
+    // two-second pause at every start for nothing.
+    let ask = || known_to_answer(|k| std::env::var(k).ok()).then(asked).flatten();
+    picker(mode, ask)
+}
+
+/// What the terminal answered through the child; the log says when it
+/// answered nothing worth asking for.
+fn asked() -> Option<Picker> {
+    let picker = query_through_child();
+    if picker.is_none() {
+        tracing::info!("no image protocol: avatars as half blocks");
+    }
+    picker
+}
+
+/// None, half blocks, or what `ask` found the terminal draws with; half
+/// blocks when it found nothing.
+fn picker(mode: ImagesMode, ask: impl FnOnce() -> Option<Picker>) -> Option<Picker> {
     match mode {
         ImagesMode::Off => None,
         ImagesMode::Halfblocks => Some(Picker::halfblocks()),
-        // An unknown terminal is not asked at all: the child's wait would
-        // be a two-second pause at every start for nothing.
-        ImagesMode::Auto if !known_to_answer(|k| std::env::var(k).ok()) => {
-            Some(Picker::halfblocks())
-        }
-        ImagesMode::Auto => Some(query_through_child().unwrap_or_else(|| {
-            tracing::info!("no image protocol: avatars as half blocks");
-            Picker::halfblocks()
-        })),
+        ImagesMode::Auto => Some(ask().unwrap_or_else(Picker::halfblocks)),
     }
 }
 
@@ -71,17 +83,27 @@ const ANSWERED_WITHIN: Duration = Duration::from_millis(1500);
 const CHILD_DEADLINE: Duration = Duration::from_millis(2500);
 
 fn query_through_child() -> Option<Picker> {
-    use std::process::{Command, Stdio};
-    let exe = std::env::current_exe().ok()?;
     // stdin and stdout stay the terminal's: the query must reach it.
-    let mut child = Command::new(exe).arg(PROBE_FLAG).stderr(Stdio::piped()).spawn().ok()?;
+    let mut probe = Command::new(std::env::current_exe().ok()?);
+    let (said, took) = run_until(probe.arg(PROBE_FLAG), CHILD_DEADLINE)?;
+    worth_querying(&said, took).then(query_here).flatten()
+}
+
+fn query_here() -> Option<Picker> {
+    let picker = Picker::from_query_stdio().ok()?;
+    tracing::info!("terminal image protocol: {:?}", picker.protocol_type());
+    Some(picker)
+}
+
+/// What the command said on stderr, and how long it took; none when it
+/// did not start, or ran past `deadline` and was killed.
+fn run_until(command: &mut Command, deadline: Duration) -> Option<(String, Duration)> {
+    let mut child = command.stderr(Stdio::piped()).spawn().ok()?;
     let start = std::time::Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
-            Ok(None) if start.elapsed() < CHILD_DEADLINE => {
-                std::thread::sleep(Duration::from_millis(20))
-            }
+            Ok(None) if start.elapsed() < deadline => std::thread::sleep(Duration::from_millis(20)),
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -92,12 +114,7 @@ fn query_through_child() -> Option<Picker> {
     }
     let mut said = String::new();
     std::io::Read::read_to_string(&mut child.stderr?, &mut said).ok()?;
-    if !worth_querying(&said, start.elapsed()) {
-        return None;
-    }
-    let picker = Picker::from_query_stdio().ok()?;
-    tracing::info!("terminal image protocol: {:?}", picker.protocol_type());
-    Some(picker)
+    Some((said, start.elapsed()))
 }
 
 /// A protocol better than half blocks, from a terminal that answered
@@ -110,6 +127,7 @@ pub fn worth_querying(said: &str, took: Duration) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui_image::picker::ProtocolType;
 
     fn with(vars: &[(&str, &str)]) -> bool {
         known_to_answer(|k| vars.iter().find(|(name, _)| *name == k).map(|(_, v)| v.to_string()))
@@ -144,5 +162,27 @@ mod tests {
     fn off_and_halfblocks_need_no_query() {
         assert!(probe(ImagesMode::Off).is_none());
         assert!(probe(ImagesMode::Halfblocks).is_some());
+    }
+
+    #[test]
+    fn auto_draws_with_what_the_terminal_answered_else_half_blocks() {
+        let mut kitty = Picker::halfblocks();
+        kitty.set_protocol_type(ProtocolType::Kitty);
+        let answered = picker(ImagesMode::Auto, || Some(kitty)).unwrap();
+        assert_eq!(answered.protocol_type(), ProtocolType::Kitty);
+        let silent = picker(ImagesMode::Auto, || None).unwrap();
+        assert_eq!(silent.protocol_type(), ProtocolType::Halfblocks);
+        assert!(picker(ImagesMode::Off, || unreachable!()).is_none(), "off asks nothing");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_probe_child_is_heard_out_or_killed_at_the_deadline() {
+        let mut says = Command::new("sh");
+        let (said, took) = run_until(says.args(["-c", "echo Kitty >&2"]), CHILD_DEADLINE).unwrap();
+        assert_eq!((said.as_str(), took < CHILD_DEADLINE), ("Kitty\n", true));
+        let mut stuck = Command::new("sleep");
+        assert_eq!(run_until(stuck.arg("5"), Duration::from_millis(100)), None);
+        assert_eq!(run_until(&mut Command::new("/no/such/kolum-probe"), CHILD_DEADLINE), None);
     }
 }

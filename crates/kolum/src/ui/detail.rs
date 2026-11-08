@@ -3,10 +3,11 @@
 //! go under the content.
 
 use super::{glyph, rich};
+use crate::keymap::Action;
 use crate::theme::Theme;
 use kolum_app::IssueDetail;
 use kolum_domain::{
-    CustomField, FieldId, FieldLayout, FieldValue, Issue, IssueRef, RichText, UserId,
+    Attachment, CustomField, FieldId, FieldLayout, FieldValue, Issue, IssueRef, RichText, UserId,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -100,8 +101,33 @@ impl DetailView {
         self.scroll = (self.scroll as i64 + delta).clamp(0, max.max(0)) as u16;
     }
 
+    /// Its sub-tasks, then the issues found by their parent, once each.
+    fn children(&self) -> Vec<&IssueRef> {
+        let found = self.loaded.iter().flat_map(|d| &d.children);
+        let mut children: Vec<&IssueRef> = self.issue.subtasks.iter().collect();
+        for child in found {
+            if !children.iter().any(|c| c.key == child.key) {
+                children.push(child);
+            }
+        }
+        children
+    }
+
     pub fn half_page(&self) -> i64 {
         (self.page.get() / 2).max(1) as i64
+    }
+
+    /// Scrolling and the tabs; false for any other action.
+    pub fn motion(&mut self, action: Action, n: i64) -> bool {
+        match action {
+            Action::NextTab => self.tab = self.tab.step(n),
+            Action::PrevTab => self.tab = self.tab.step(-n),
+            _ => match super::scroll_step(action, n, self.half_page()) {
+                Some(delta) => self.scroll_by(delta),
+                None => return false,
+            },
+        }
+        true
     }
 
     pub fn draw(
@@ -228,23 +254,12 @@ impl DetailView {
         sections: &[(&str, &RichText)],
     ) -> Vec<Line<'static>> {
         let issue = &self.issue;
-        // gh-dash's section titles: an icon, the name bold and underlined,
-        // and a blank line under it.
-        let heading = |icon: &str, t: &str| {
-            vec![
-                Line::from(Span::styled(
-                    format!("{icon} {t}"),
-                    Style::new().fg(theme.fg).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                )),
-                Line::default(),
-            ]
-        };
         let mut lines = vec![];
         for (i, (name, text)) in sections.iter().enumerate() {
             if i > 0 {
                 lines.push(Line::default());
             }
-            lines.extend(heading(glyph::icon::TEXT, name));
+            lines.extend(heading(glyph::icon::TEXT, name, theme));
             if text.is_empty() {
                 lines
                     .push(Line::from(Span::styled("No description", Style::new().fg(theme.muted))));
@@ -252,38 +267,12 @@ impl DetailView {
                 lines.extend(rich::lines(text, theme, cols));
             }
         }
-        // Its sub-tasks, then the issues found by their parent, once each.
-        let found = self.loaded.iter().flat_map(|d| &d.children);
-        let mut children: Vec<&IssueRef> = issue.subtasks.iter().collect();
-        for child in found {
-            if !children.iter().any(|c| c.key == child.key) {
-                children.push(child);
-            }
-        }
-        if !children.is_empty() {
-            lines.push(Line::default());
-            lines.extend(heading(glyph::icon::CHILDREN, "Child issues"));
-            lines.extend(children.into_iter().map(|r| ref_line(r, "", theme)));
-        }
-        if !issue.links.is_empty() {
-            lines.push(Line::default());
-            lines.extend(heading(glyph::icon::LINK, "Linked issues"));
-            lines.extend(issue.links.iter().map(|l| ref_line(&l.issue, &l.relation, theme)));
-        }
-        if !issue.attachments.is_empty() {
-            lines.push(Line::default());
-            lines.extend(heading(glyph::icon::ATTACHMENT, "Attachments"));
-            lines.extend(issue.attachments.iter().map(|a| {
-                Line::from(vec![
-                    Span::styled("▪ ", Style::new().fg(theme.muted)),
-                    Span::raw(a.name.clone()),
-                    Span::styled(
-                        format!("  {}  {}", a.mime, size(a.size)),
-                        Style::new().fg(theme.muted),
-                    ),
-                ])
-            }));
-        }
+        let children = self.children().into_iter().map(|r| ref_line(r, "", theme)).collect();
+        titled(&mut lines, (glyph::icon::CHILDREN, "Child issues"), children, theme);
+        let links = issue.links.iter().map(|l| ref_line(&l.issue, &l.relation, theme)).collect();
+        titled(&mut lines, (glyph::icon::LINK, "Linked issues"), links, theme);
+        let attachments = issue.attachments.iter().map(|a| attachment(a, theme)).collect();
+        titled(&mut lines, (glyph::icon::ATTACHMENT, "Attachments"), attachments, theme);
         lines.push(Line::default());
         let (tabs, lit) = self.tabs(theme);
         lines.push(Line::from(tabs));
@@ -627,6 +616,41 @@ fn field_value(value: &FieldValue) -> String {
         FieldValue::Options(o) => o.join(", "),
         other => other.to_input(),
     }
+}
+
+/// gh-dash's section titles: an icon, the name bold and underlined, and a
+/// blank line under it.
+fn heading(icon: &str, title: &str, theme: &Theme) -> Vec<Line<'static>> {
+    vec![
+        Line::from(Span::styled(
+            format!("{icon} {title}"),
+            Style::new().fg(theme.fg).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )),
+        Line::default(),
+    ]
+}
+
+/// A section under its title, after a blank line; none when it is empty.
+fn titled(
+    lines: &mut Vec<Line<'static>>,
+    (icon, title): (&str, &str),
+    body: Vec<Line<'static>>,
+    theme: &Theme,
+) {
+    if body.is_empty() {
+        return;
+    }
+    lines.push(Line::default());
+    lines.extend(heading(icon, title, theme));
+    lines.extend(body);
+}
+
+fn attachment(a: &Attachment, theme: &Theme) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("▪ ", Style::new().fg(theme.muted)),
+        Span::raw(a.name.clone()),
+        Span::styled(format!("  {}  {}", a.mime, size(a.size)), Style::new().fg(theme.muted)),
+    ])
 }
 
 #[cfg(test)]
