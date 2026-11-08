@@ -150,7 +150,7 @@ impl Prompt {
     fn proposals(&self) -> (usize, Vec<complete::Proposal>) {
         match self.kind {
             PromptKind::Command => complete::proposals(&self.typed, &self.themes),
-            PromptKind::Filter | PromptKind::Field => (0, vec![]),
+            PromptKind::Filter | PromptKind::Field => Default::default(),
         }
     }
 
@@ -171,9 +171,10 @@ impl Prompt {
         }
         let i = match self.chosen {
             Some(i) => (i as isize + step).rem_euclid(n),
-            None if step > 0 => 0,
+            None if step.is_positive() => 0,
             None => n - 1,
         } as usize;
+        // Only `:theme`'s argument is a theme; a command is never read as one.
         let is_theme = start > 0;
         self.input.set(&format!("{}{}", &self.typed[..start], list[i].text));
         self.hidden = false;
@@ -1099,7 +1100,7 @@ impl App {
         let max = help::lines(&self.keymap, &self.theme, &self.help_filter)
             .len()
             .saturating_sub(self.help_page.get() as usize);
-        let at = self.help.unwrap_or(0) as i64 + delta;
+        let at = self.help.unwrap_or_default() as i64 + delta;
         self.help = Some(at.clamp(0, max as i64) as u16);
     }
 
@@ -1178,7 +1179,8 @@ impl App {
             return;
         }
         let visible = self.board.visible();
-        let pos = visible.iter().position(|&c| c == self.board.column).unwrap_or(0) as i64 + delta;
+        let pos =
+            visible.iter().position(|&c| c == self.board.column).unwrap_or_default() as i64 + delta;
         match usize::try_from(pos).ok().and_then(|p| visible.get(p)) {
             Some(&column) if self.can_write() => self.ask_transitions(keys, Some(column)),
             Some(_) => {}
@@ -1198,8 +1200,9 @@ impl App {
         if !self.can_write() {
             return;
         }
-        self.write(vec![kolum_app::rank_write(key.clone(), other, delta > 0)]);
-        let way = if delta > 0 { "down" } else { "up" };
+        let down = delta.is_positive();
+        self.write(vec![kolum_app::rank_write(key.clone(), other, down)]);
+        let way = if down { "down" } else { "up" };
         self.say(format!("{key} moved {way}"), Level::Info);
     }
 
@@ -1417,7 +1420,7 @@ impl App {
             blocks: vec![kolum_domain::rich_text::Block::Paragraph(vec![
                 kolum_domain::rich_text::Inline::text(s),
             ])],
-            lossy: false,
+            ..Default::default()
         };
         let mut rows =
             vec![(FieldEntry::Status, "Status".to_string(), plain(issue.status.name.clone()))];
@@ -2233,12 +2236,13 @@ impl App {
                 Style::new().fg(theme.muted),
             ));
             spans.push(Span::styled("│", Style::new().fg(theme.border)));
-            let lanes =
-                [Swimlanes::None, Swimlanes::Epic, Swimlanes::Assignee, Swimlanes::Priority];
-            let active = lanes.iter().position(|&l| l == self.board.swimlanes()).unwrap_or(0);
+            let labels = Swimlanes::ALL.map(Swimlanes::label);
+            let active = Swimlanes::ALL
+                .iter()
+                .position(|&l| l == self.board.swimlanes())
+                .unwrap_or_default();
             let at = Line::from(spans.clone()).width();
-            let (tabs, tab) =
-                glyph::tabs(&["No lanes", "Epic", "Assignee", "Priority"], active, theme);
+            let (tabs, tab) = glyph::tabs(&labels, active, theme);
             spans.extend(tabs);
             lit = at + tab.start..at + tab.end;
             spans.push(Span::styled("│", Style::new().fg(theme.border)));
@@ -2314,7 +2318,7 @@ impl App {
         if list.is_empty() {
             return;
         }
-        let name_width = list.iter().map(|p| width(p.text.trim_end())).max().unwrap_or(0);
+        let name_width = list.iter().map(|p| width(p.text.trim_end())).max().unwrap_or_default();
         let lines: Vec<Line> = list
             .iter()
             .enumerate()
@@ -2332,7 +2336,8 @@ impl App {
                 }
             })
             .collect();
-        let width = (lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 2).min(area.width);
+        let width =
+            (lines.iter().map(Line::width).max().unwrap_or_default() as u16 + 2).min(area.width);
         let height = (lines.len() as u16 + 2).min(area.height);
         let rows = height.saturating_sub(2) as usize;
         let scroll = prompt.chosen.map_or(0, |i| (i + 1).saturating_sub(rows)) as u16;
@@ -2361,7 +2366,8 @@ impl App {
                 ])
             })
             .collect();
-        let width = (lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 3).min(area.width);
+        let width =
+            (lines.iter().map(Line::width).max().unwrap_or_default() as u16 + 3).min(area.width);
         let height = (lines.len() as u16 + 2).min(area.height);
         let rect = Rect { x: area.right() - width, y: area.bottom() - height, width, height };
         frame.render_widget(Clear, rect);

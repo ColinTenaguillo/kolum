@@ -195,9 +195,9 @@ fn table(
                 .collect()
         })
         .collect();
-    let ncols = cells.iter().map(Vec::len).max().unwrap_or(0);
+    let ncols = cells.iter().map(Vec::len).max().unwrap_or_default();
     let natural: Vec<usize> = (0..ncols)
-        .map(|c| cells.iter().filter_map(|r| r.get(c)).map(|s| width(s)).max().unwrap_or(0))
+        .map(|c| cells.iter().filter_map(|r| r.get(c)).map(|s| width(s)).max().unwrap_or_default())
         .collect();
     let widths = fit_widths(&natural, cols.saturating_sub(3 * ncols.saturating_sub(1)));
     let sep = Style::new().fg(theme.border);
@@ -214,7 +214,8 @@ fn table(
                 wrap(&text, *w, usize::MAX)
             })
             .collect();
-        let height = wrapped.iter().map(Vec::len).max().unwrap_or(0).max(1);
+        // An empty row keeps a line.
+        let height = wrapped.iter().map(Vec::len).max().unwrap_or_default().max(1);
         for n in 0..height {
             let mut spans = vec![];
             for (c, w) in widths.iter().enumerate() {
@@ -294,6 +295,9 @@ mod tests {
         assert_eq!(fit_widths(&[2, 40, 60], 50), [2, 24, 24], "the narrow one keeps its own");
         assert_eq!(fit_widths(&[2, 10, 60], 40), [2, 10, 28], "the rest to the widest");
         assert_eq!(fit_widths(&[30, 30], 4), [2, 2], "never under a little");
+        assert_eq!(fit_widths(&[30, 30], 1), [1, 1], "one cell at least");
+        assert_eq!(fit_widths(&[10, 10], 20), [10, 10], "exactly the room");
+        assert_eq!(fit_widths(&[15, 30], 31), [15, 16], "a share's width keeps its own");
     }
 
     #[test]
@@ -312,6 +316,34 @@ mod tests {
             "  │                  │ differs",
             "a row as tall as its tallest cell"
         );
+    }
+
+    #[test]
+    fn long_words_are_split_at_the_width_and_a_wide_character_is_not_pushed_off() {
+        assert_eq!(split_long_words("abcdef gh", 2), "ab cd ef gh");
+        assert_eq!(split_long_words("abc", 1), "a b c");
+        assert_eq!(split_long_words("漢字", 1), "漢 字", "a character wider than the column");
+    }
+
+    #[test]
+    fn a_level_one_heading_is_underlined_in_the_accent() {
+        let theme = Theme::builtin("dark").unwrap();
+        let lines = lines(&RichText::from_markdown("# One\n\n## Two"), &theme, 40);
+        let style = |text: &str| {
+            let line = lines.iter().find(|l| l.to_string().contains(text)).unwrap();
+            line.spans.iter().find(|s| s.content.contains(text)).unwrap().style
+        };
+        assert_eq!(style("One").fg, Some(theme.accent));
+        assert!(style("One").add_modifier.contains(Modifier::UNDERLINED));
+        assert!(!style("Two").add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn an_empty_table_row_keeps_its_line() {
+        let theme = Theme::builtin("dark").unwrap();
+        let rows = vec![vec![vec![Inline::text("a")]], vec![vec![]], vec![vec![Inline::text("b")]]];
+        let drawn = plain(&table(&rows, false, &theme, 20));
+        assert_eq!(drawn.len(), 3, "{drawn:?}");
     }
 
     #[test]

@@ -87,8 +87,7 @@ fn parse_special(token: &str) -> Option<Key> {
 fn modifiers(token: &str) -> Option<(KeyModifiers, &str)> {
     let mut mods = KeyModifiers::NONE;
     let mut rest = token;
-    while let Some((m, tail)) = rest.split_once('-').filter(|(m, t)| m.len() == 1 && !t.is_empty())
-    {
+    while let Some((m, tail)) = rest.split_once('-').filter(|(m, _)| m.len() == 1) {
         mods |= match m.to_ascii_uppercase().as_str() {
             "C" => KeyModifiers::CONTROL,
             "A" | "M" => KeyModifiers::ALT,

@@ -3220,3 +3220,432 @@ async fn everyone_in_the_people_picker_shows_every_card() {
     press(&mut app, "<CR>");
     assert!(screen(&mut app, 150, 40).contains("Everyone's cards"));
 }
+
+/// The number of the last search the app sent.
+fn last_search(app: &mut App) -> u64 {
+    let ids = app.take_effects().into_iter().filter_map(|e| match e {
+        Effect::Send(Command::Search { id, .. }) => Some(id),
+        _ => None,
+    });
+    ids.max().unwrap()
+}
+
+/// Where `text` starts on a screen drawn `width` by `height`, by cell: a
+/// wide character takes two columns and one cell. The unit tests share
+/// the same scan in `ui::test_support`, which this test crate cannot see.
+fn find_at(app: &mut App, (width, height): (u16, u16), text: &str) -> Option<(u16, u16)> {
+    let buffer = buffer(app, width, height);
+    (0..height).find_map(|y| {
+        let mut cells = vec![];
+        let mut x = 0;
+        while x < width {
+            let symbol = buffer[(x, y)].symbol().to_string();
+            let wide = unicode_width::UnicodeWidthStr::width(symbol.as_str()).max(1) as u16;
+            cells.push((x, symbol));
+            x += wide;
+        }
+        (0..cells.len()).find_map(|i| {
+            let rest: String = cells[i..].iter().map(|(_, s)| s.as_str()).collect();
+            rest.starts_with(text).then_some((cells[i].0, y))
+        })
+    })
+}
+
+fn buffer(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    terminal.backend().buffer().clone()
+}
+
+#[tokio::test]
+async fn shift_tab_on_an_empty_command_line_writes_the_last_proposal() {
+    let mut app = loaded().await;
+    press(&mut app, ":<Tab>");
+    let first = screen(&mut app, 120, 40);
+    press(&mut app, "<Esc>:<S-Tab>");
+    let last = screen(&mut app, 120, 40);
+    assert_ne!(first, last);
+    press(&mut app, "<Tab>");
+    assert_eq!(screen(&mut app, 120, 40), first, "and on round to the first");
+}
+
+#[test]
+fn settings_from_the_config_alone_are_read_only() {
+    let settings = Settings::from_config(&kolum::config::Config::default(), Keymap::defaults());
+    assert!(!settings.writable, "until the provider says it writes");
+}
+
+#[tokio::test]
+async fn a_sync_every_second_is_due_and_none_at_zero() {
+    let mut every = settings();
+    every.ui.sync_secs = 1;
+    assert!(loaded_with(every).await.deadline().is_some());
+    assert!(loaded().await.deadline().is_none());
+}
+
+#[tokio::test]
+async fn a_failed_remote_search_stops_the_spinner() {
+    let mut app = loaded().await;
+    press(&mut app, "<Space>Fsso");
+    app.on_timeout(Instant::now() + std::time::Duration::from_secs(5));
+    let id = last_search(&mut app);
+    let error = kolum_domain::DomainError::Transport("offline".into());
+    app.on_event(Event::SearchResults { id, result: Err(error) });
+    let shown = screen(&mut app, 120, 40);
+    assert!(shown.contains("search failed: transport: offline"), "{shown}");
+    assert_eq!(app.deadline(), None, "nothing turning");
+}
+
+#[tokio::test]
+async fn a_count_before_gg_or_g_goes_to_that_card() {
+    let mut app = loaded().await;
+    press(&mut app, "ll");
+    let order = column_order(&mut app, 2);
+    press(&mut app, "3gg");
+    assert_eq!(selected(&app), order[2]);
+    press(&mut app, "2G");
+    assert_eq!(selected(&app), order[1]);
+}
+
+#[tokio::test]
+async fn the_people_picker_counts_one_card_in_the_singular() {
+    let fake = FakeProvider::new();
+    let mut snapshot = load_board(&fake, None).await.unwrap();
+    let solo = kolum_domain::User {
+        id: kolum_domain::UserId::new("u-solo"),
+        display_name: "Solo Person".into(),
+        avatar_url: None,
+    };
+    snapshot.issues[0].assignee = Some(solo);
+    let mut app = loaded().await;
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true, request: 1 });
+    press(&mut app, "<Space>u");
+    settle(&mut app);
+    let shown = screen(&mut app, 150, 40);
+    assert!(shown.contains("Solo Person  1 card ") && !shown.contains(" 1 cards"), "{shown}");
+}
+
+#[tokio::test]
+async fn filtering_the_help_page_shows_it_from_the_top() {
+    let mut app = loaded().await;
+    press(&mut app, "?G/quit");
+    assert!(screen(&mut app, 120, 40).contains("timeoutlen"), "its first line");
+}
+
+/// The help page after `keys`, once it was drawn: its page is what it
+/// last drew.
+async fn help_after(keys: &str) -> String {
+    let mut app = loaded().await;
+    press(&mut app, "?");
+    screen(&mut app, 120, 20);
+    press(&mut app, keys);
+    screen(&mut app, 120, 20)
+}
+
+#[tokio::test]
+async fn half_a_page_of_help_is_half_its_rows_and_counts() {
+    let mut app = loaded().await;
+    press(&mut app, "?");
+    let buf = buffer(&mut app, 120, 20);
+    let row_of = |corner: &str| {
+        (0..20u16).find(|&y| (0..120u16).any(|x| buf[(x, y)].symbol() == corner)).unwrap()
+    };
+    let page = (row_of("╰") - row_of("╭") - 1) as usize;
+    let half = help_after("<C-d>").await;
+    let mut steps = None;
+    for k in 1..page {
+        if help_after(&"j".repeat(k)).await == half {
+            steps = Some(k);
+            break;
+        }
+    }
+    assert_eq!(steps, Some(page / 2), "a page of {page}");
+    assert_eq!(help_after("2<C-d>").await, help_after("<C-d><C-d>").await);
+}
+
+#[tokio::test]
+async fn after_a_write_the_sync_waits_for_the_providers_automations() {
+    let mut app = loaded().await;
+    press(&mut app, "ll");
+    app.take_effects();
+    press(&mut app, "J");
+    let (op, key, _) = writes(app.take_effects()).remove(0);
+    let saved = Instant::now();
+    app.on_event(Event::Written { op, key: IssueKey::parse(&key), issue: None });
+    let due = app.deadline().unwrap();
+    assert!(due >= saved + std::time::Duration::from_secs(4), "about five seconds on");
+}
+
+/// An issue read back with two pictures: `l` and `h` step through them,
+/// a count too, stopping at either end.
+#[tokio::test]
+async fn the_viewer_steps_through_the_pictures() {
+    use kolum_domain::IssueReader;
+    let mut settings = settings();
+    settings.images = Some(ratatui_image::picker::Picker::halfblocks());
+    let mut app = loaded_with(settings).await;
+    press(&mut app, "ll<CR>");
+    let fake = FakeProvider::new();
+    let mut issue = fake.issue(&IssueKey::parse("ACME-5")).await.unwrap();
+    let mut second = issue.attachments[0].clone();
+    second.name = "second.png".into();
+    second.url = "fake://shot/second".into();
+    issue.attachments.push(second);
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(IssueDetail {
+        issue,
+        comments: vec![],
+        activity: vec![],
+        layout: None,
+        children: vec![],
+    })));
+    press(&mut app, "gi");
+    assert_eq!(
+        find_at(&mut app, (140, 40), "Loading…").map(|(_, y)| y),
+        Some(1 + (40 - 1 - 2) / 2)
+    );
+    press(&mut app, "l");
+    assert!(screen(&mut app, 140, 40).contains("second.png · 47 KB · 2/2"));
+    press(&mut app, "h");
+    assert!(screen(&mut app, 140, 40).contains("· 1/2"));
+    press(&mut app, "5l");
+    assert!(screen(&mut app, 140, 40).contains("· 2/2"), "the last at most");
+}
+
+#[tokio::test]
+async fn the_picker_preview_scrolls_down_and_back_by_counts() {
+    let mut app = loaded().await;
+    press(&mut app, "<Space>flogin");
+    settle(&mut app);
+    press(&mut app, "<Esc>");
+    let top = screen(&mut app, 150, 40);
+    press(&mut app, "<C-d><C-u>");
+    assert_eq!(screen(&mut app, 150, 40), top, "back where it was");
+    press(&mut app, "<C-d><C-d>");
+    let twice = screen(&mut app, 150, 40);
+    assert_ne!(twice, top);
+    press(&mut app, "2<C-u>2<C-d>");
+    assert_eq!(screen(&mut app, 150, 40), twice, "a count scrolls as far as the keys");
+}
+
+#[tokio::test]
+async fn recalling_a_remote_search_searches_it_again() {
+    use kolum_domain::IssueSearch;
+    let mut app = loaded().await;
+    press(&mut app, "<Space>Fsso");
+    app.on_timeout(Instant::now() + std::time::Duration::from_secs(5));
+    let id = last_search(&mut app);
+    let query = kolum_app::parse_query("sso");
+    let hits = FakeProvider::new().search(&query, None).await.unwrap().items;
+    app.on_event(Event::SearchResults { id, result: Ok(hits) });
+    settle(&mut app);
+    press(&mut app, "<CR><Esc><Space>F<Up>");
+    let due = app.deadline().unwrap();
+    assert!(due > Instant::now(), "after the pause for typing, not at once");
+    assert!(screen(&mut app, 150, 40).contains("searching…"), "and it says so");
+    app.on_timeout(Instant::now() + std::time::Duration::from_secs(5));
+    let searched: Vec<String> = app
+        .take_effects()
+        .into_iter()
+        .filter_map(|e| match e {
+            Effect::Send(Command::Search { query, .. }) => Some(format!("{query:?}")),
+            _ => None,
+        })
+        .collect();
+    assert!(searched.last().is_some_and(|q| q.contains("sso")), "{searched:?}");
+}
+
+#[tokio::test]
+async fn a_count_scrolls_the_issue_as_far_as_the_keys() {
+    let mut once = loaded().await;
+    press(&mut once, "ll<CR>");
+    screen(&mut once, 100, 20);
+    let mut twice = loaded().await;
+    press(&mut twice, "ll<CR>");
+    screen(&mut twice, 100, 20);
+    press(&mut once, "2<C-d>");
+    press(&mut twice, "<C-d><C-d>");
+    assert_eq!(screen(&mut once, 100, 20), screen(&mut twice, 100, 20));
+}
+
+/// The swimlanes tab in force is lit, and so is the rule under it alone.
+#[tokio::test]
+async fn the_swimlanes_tab_in_force_is_lit_with_the_rule_under_it() {
+    let mut app = loaded().await;
+    press(&mut app, "s");
+    let accent = app.theme().accent;
+    let (epic, _) = find_at(&mut app, (150, 40), "Epic").unwrap();
+    let (none, _) = find_at(&mut app, (150, 40), "No lanes").unwrap();
+    let buf = buffer(&mut app, 150, 40);
+    assert_eq!((buf[(epic, 0)].fg, buf[(epic, 1)].fg), (accent, accent));
+    assert_ne!(buf[(none, 1)].fg, accent, "the other tabs' rule is not lit");
+}
+
+#[tokio::test]
+async fn the_chosen_proposal_is_highlighted_and_kept_in_sight() {
+    let mut app = loaded().await;
+    press(&mut app, ":<Tab>");
+    let theme = app.theme().clone();
+    let buf = buffer(&mut app, 120, 12);
+    let lit_rows: Vec<u16> =
+        (0..12).filter(|&y| (0..120).any(|x| buf[(x, y)].bg == theme.selection)).collect();
+    assert!(lit_rows.len() >= 2, "the chosen one and the status bar: {lit_rows:?}");
+    let corner = (0..12u16)
+        .find_map(|y| (0..120u16).find(|&x| buf[(x, y)].symbol() == "╭").map(|x| (x, y)))
+        .unwrap();
+    assert_eq!(buf[corner].fg, theme.border, "a list, not a focused view");
+    let proposal_rows = |buf: &ratatui::buffer::Buffer| -> Vec<(u16, String)> {
+        let (x0, _) = corner;
+        (0..11u16)
+            .filter(|&y| buf[(x0 + 1, y)].bg == theme.selection)
+            .map(|y| (y, (x0 + 2..120).map(|x| buf[(x, y)].symbol()).collect::<String>()))
+            .collect()
+    };
+    let lit = proposal_rows(&buf);
+    assert_eq!(lit.len(), 1, "the chosen one alone: {lit:?}");
+    press(&mut app, &"<Tab>".repeat(12));
+    let buf = buffer(&mut app, 120, 12);
+    let typed: String = (0..120).map(|x| buf[(x, 11)].symbol()).collect();
+    let chosen = typed.split(':').nth(1).unwrap().split_whitespace().next().unwrap().to_string();
+    let lit = proposal_rows(&buf);
+    assert_eq!(lit.len(), 1, "{lit:?}");
+    assert!(lit[0].1.trim_start().starts_with(&chosen), "scrolled to {chosen}: {lit:?}");
+}
+
+#[tokio::test]
+async fn the_help_page_is_a_focused_view() {
+    let mut app = loaded().await;
+    press(&mut app, "?");
+    let theme = app.theme().clone();
+    let buf = buffer(&mut app, 120, 40);
+    let corner = (0..40u16)
+        .find_map(|y| (0..120u16).find(|&x| buf[(x, y)].symbol() == "╭").map(|x| (x, y)))
+        .unwrap();
+    assert_eq!(buf[corner].fg, theme.border_focus);
+}
+
+#[tokio::test]
+async fn a_one_row_terminal_keeps_the_status_bar_and_three_rows_the_rule() {
+    let mut app = loaded().await;
+    assert!(screen(&mut app, 80, 1).contains("NORMAL"));
+    assert!(screen(&mut app, 80, 3).lines().nth(1).is_some_and(|l| l.contains("━")));
+}
+
+#[tokio::test]
+async fn half_a_page_of_a_one_row_help_page_is_still_a_row() {
+    let mut app = loaded().await;
+    press(&mut app, "?");
+    let rows_inside = |buf: &ratatui::buffer::Buffer, h: u16| {
+        let row = |c: &str| (0..h).find(|&y| (0..80u16).any(|x| buf[(x, y)].symbol() == c));
+        row("╰").zip(row("╭")).map(|(b, t)| b - t - 1)
+    };
+    let height = (3..12u16).find(|&h| rows_inside(&buffer(&mut app, 80, h), h) == Some(1)).unwrap();
+    let before = screen(&mut app, 80, height);
+    press(&mut app, "<C-d>");
+    assert_ne!(screen(&mut app, 80, height), before, "one row on");
+}
+
+/// An issue opened that is not on the board (an epic, read by `gp`):
+/// its transitions leave out the status it is in, as a card's do.
+#[tokio::test]
+async fn an_issue_off_the_board_is_moved_from_where_it_is() {
+    use kolum_domain::IssueReader;
+    let fake = FakeProvider::new();
+    let parent = fake.issue(&IssueKey::parse("ACME-5")).await.unwrap().parent.unwrap().key;
+    let mut app = loaded().await;
+    press(&mut app, "ll<CR>gp");
+    app.on_event(Event::IssueLoaded(std::sync::Arc::new(IssueDetail {
+        issue: fake.issue(&parent).await.unwrap(),
+        comments: vec![],
+        activity: vec![],
+        layout: None,
+        children: vec![],
+    })));
+    app.take_effects();
+    press(&mut app, "t");
+    let epic = fake.issue(&parent).await.unwrap();
+    let mut event = transitions_event(parent.as_str()).await;
+    if let Event::Transitions { result: Ok(ts), .. } = &mut event {
+        let mut to_itself = ts[0].clone();
+        to_itself.to.id = epic.status.id.clone();
+        to_itself.name = "Stay put".into();
+        ts.push(to_itself);
+    }
+    app.on_event(event);
+    settle(&mut app);
+    let shown = screen(&mut app, 150, 40);
+    assert!(shown.contains(&format!("Move {parent}")), "{shown}");
+    assert!(!shown.contains("Stay put"), "not to where it already is");
+}
+
+#[tokio::test]
+async fn half_a_page_up_counts_too() {
+    let mut once = loaded().await;
+    press(&mut once, "ll<CR>");
+    screen(&mut once, 100, 20);
+    press(&mut once, "G2<C-u>");
+    let mut twice = loaded().await;
+    press(&mut twice, "ll<CR>");
+    screen(&mut twice, 100, 20);
+    press(&mut twice, "G<C-u><C-u>");
+    assert_eq!(screen(&mut once, 100, 20), screen(&mut twice, 100, 20));
+}
+
+#[tokio::test]
+async fn the_picker_preview_starts_at_the_top() {
+    let mut app = loaded().await;
+    press(&mut app, "<Space>flogin");
+    settle(&mut app);
+    assert!(screen(&mut app, 150, 40).contains("After the SSO redirect"));
+}
+
+#[tokio::test]
+async fn the_first_preview_starts_at_its_top() {
+    let mut app = loaded().await;
+    press(&mut app, "<Space>f");
+    settle(&mut app);
+    press(&mut app, "<Esc>");
+    let first = screen(&mut app, 150, 40);
+    press(&mut app, "jk");
+    assert_eq!(screen(&mut app, 150, 40), first, "as after moving back to it");
+}
+
+/// A prefix that changes what is searched (`#bug`) empties the list until
+/// the matcher has the new candidates: no stale match is shown.
+#[tokio::test]
+async fn a_new_scope_shows_no_stale_matches() {
+    let mut app = loaded().await;
+    press(&mut app, "<Space>flogin");
+    settle(&mut app);
+    assert!(screen(&mut app, 150, 40).contains("Login times out"));
+    press(&mut app, "<BS><BS><BS><BS><BS>#story ");
+    let shown = screen(&mut app, 150, 40);
+    assert!(!shown.contains("┃ ACME-5 Login"), "not before it matched: {shown}");
+    settle(&mut app);
+    assert!(screen(&mut app, 150, 40).contains("Story"), "the stories, once matched");
+}
+
+/// A theme file named like a command is never previewed while the
+/// command line steps through commands: only `:theme`'s argument is one.
+#[tokio::test]
+async fn a_command_named_like_a_theme_file_is_not_previewed() {
+    let dir = std::env::temp_dir().join(format!("kolum-themes-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("quit.toml"), "base = \"gruvbox\"\n").unwrap();
+    let mut settings = settings();
+    settings.themes_dir = Some(dir.clone());
+    let mut app = loaded_with(settings).await;
+    let before = app.theme().clone();
+    press(&mut app, ":qu<Tab>");
+    assert_eq!(app.theme(), &before);
+    press(&mut app, "<Esc>:theme qu<Tab>");
+    assert_ne!(app.theme(), &before, "as a theme, it is");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn nothing_is_lit_under_the_header_before_the_board_arrives() {
+    let mut app = App::new(settings(), Arc::new(|| {}));
+    let accent = app.theme().accent;
+    let buf = buffer(&mut app, 80, 10);
+    assert!((0..80).all(|x| buf[(x, 1)].fg != accent), "no tab, no lit rule");
+}

@@ -63,8 +63,9 @@ impl Input {
     /// The word before the cursor, and the spaces after it.
     fn delete_word(&mut self) -> bool {
         let before: Vec<char> = self.text.chars().take(self.cursor).collect();
-        let trimmed = before.iter().rposition(|c| !c.is_whitespace()).map_or(0, |i| i + 1);
-        let start = before[..trimmed].iter().rposition(|c| c.is_whitespace()).map_or(0, |i| i + 1);
+        let last = before.iter().rposition(|c| !c.is_whitespace());
+        let start = last.and_then(|l| before[..l].iter().rposition(|c| c.is_whitespace()));
+        let start = start.map_or(0, |i| i + 1);
         let (a, b) = (self.byte(start), self.byte(self.cursor));
         self.text.replace_range(a..b, "");
         self.cursor = start;
@@ -139,5 +140,7 @@ mod tests {
         let w = typed("login time  <C-w>");
         assert_eq!((w.text(), w.cursor()), ("login ", 6));
         assert_eq!(typed("ab cd<Left><Left><C-u>").text(), "cd");
+        assert_eq!(typed("ab<Left><C-u>x").text(), "xb", "the cursor goes to the start");
+        assert_eq!(typed("a b<C-w>").text(), "a ", "a one-letter word");
     }
 }

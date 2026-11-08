@@ -53,14 +53,24 @@ pub enum Swimlanes {
 }
 
 impl Swimlanes {
-    /// `s` goes round them in this order.
-    pub fn next(self) -> Swimlanes {
+    /// As the board's header lists them, left to right.
+    pub const ALL: [Swimlanes; 4] =
+        [Swimlanes::None, Swimlanes::Epic, Swimlanes::Assignee, Swimlanes::Priority];
+
+    /// Its tab in the board's header.
+    pub fn label(self) -> &'static str {
         match self {
-            Swimlanes::None => Swimlanes::Epic,
-            Swimlanes::Epic => Swimlanes::Assignee,
-            Swimlanes::Assignee => Swimlanes::Priority,
-            Swimlanes::Priority => Swimlanes::None,
+            Swimlanes::None => "No lanes",
+            Swimlanes::Epic => "Epic",
+            Swimlanes::Assignee => "Assignee",
+            Swimlanes::Priority => "Priority",
         }
+    }
+
+    /// `s` goes round them in the order of [`Swimlanes::ALL`].
+    pub fn next(self) -> Swimlanes {
+        let at = Swimlanes::ALL.iter().position(|&l| l == self).unwrap_or_default();
+        Swimlanes::ALL[(at + 1) % Swimlanes::ALL.len()]
     }
 
     pub fn name(self) -> &'static str {

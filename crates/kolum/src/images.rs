@@ -17,7 +17,8 @@ use std::time::Duration;
 pub fn probe(mode: ImagesMode) -> Option<Picker> {
     // An unknown terminal is not asked at all: the child's wait would be a
     // two-second pause at every start for nothing.
-    let ask = || known_to_answer(|k| std::env::var(k).ok()).then(asked).flatten();
+    let env = |k: &str| std::env::var(k).ok();
+    let ask = || known_to_answer(env, tmux_passes_through).then(asked).flatten();
     picker(mode, ask)
 }
 
@@ -43,7 +44,10 @@ fn picker(mode: ImagesMode, ask: impl FnOnce() -> Option<Picker>) -> Option<Pick
 
 /// Terminals that say who they are and draw pictures. An environment can
 /// lie (inherited by a pty that answers nothing), which the child covers.
-pub fn known_to_answer(env: impl Fn(&str) -> Option<String>) -> bool {
+pub fn known_to_answer(
+    env: impl Fn(&str) -> Option<String>,
+    tmux_passes_through: impl Fn() -> bool,
+) -> bool {
     let set = |k: &str| env(k).is_some_and(|v| !v.is_empty());
     if set("TMUX") && !tmux_passes_through() {
         return false;
@@ -130,7 +134,8 @@ mod tests {
     use ratatui_image::picker::ProtocolType;
 
     fn with(vars: &[(&str, &str)]) -> bool {
-        known_to_answer(|k| vars.iter().find(|(name, _)| *name == k).map(|(_, v)| v.to_string()))
+        let env = |k: &str| vars.iter().find(|(name, _)| *name == k).map(|(_, v)| v.to_string());
+        known_to_answer(env, || false)
     }
 
     #[test]
@@ -146,6 +151,10 @@ mod tests {
         assert!(!with(&[("TERM_PROGRAM", "Apple_Terminal")]));
         assert!(!with(&[]));
         assert!(!with(&[("KITTY_WINDOW_ID", "")]), "set but empty is not set");
+        let in_tmux = [("TMUX", "/tmp/tmux-1/default,1,0"), ("KITTY_WINDOW_ID", "1")];
+        let env = |k: &str| in_tmux.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string());
+        assert!(!known_to_answer(env, || false), "tmux that drops the query");
+        assert!(known_to_answer(env, || true), "tmux that passes it through");
     }
 
     #[test]
