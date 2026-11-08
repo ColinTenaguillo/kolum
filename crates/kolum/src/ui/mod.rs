@@ -13,6 +13,8 @@ pub mod input;
 pub mod picker;
 mod rich;
 mod sources;
+#[cfg(test)]
+mod test_support;
 mod text;
 
 use crate::config::{PickerLayout, Swimlanes, UiConfig};

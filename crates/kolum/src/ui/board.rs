@@ -255,11 +255,9 @@ impl BoardView {
     }
 
     pub fn move_card(&mut self, delta: i64) {
-        let len = self.column_cards(self.column).len() as i64;
-        if let Some(cur) = self.cursor.get_mut(self.column)
-            && len > 0
-        {
-            *cur = (*cur as i64 + delta).clamp(0, len - 1) as usize;
+        let last = self.column_cards(self.column).len().saturating_sub(1) as i64;
+        if let Some(cur) = self.cursor.get_mut(self.column) {
+            *cur = (*cur as i64 + delta).clamp(0, last) as usize;
         }
     }
 
@@ -274,7 +272,7 @@ impl BoardView {
     /// The visual range, first and last row, in the current column.
     pub fn range(&self) -> Option<(usize, usize)> {
         let anchor = self.visual?;
-        let cursor = self.cursor.get(self.column).copied().unwrap_or(0);
+        let cursor = self.cursor_row();
         Some((anchor.min(cursor), anchor.max(cursor)))
     }
 
@@ -312,18 +310,21 @@ impl BoardView {
         let lane_of = |i: &Issue| lane(self.swimlanes, i).map(|(key, _)| key);
         let mut to = from;
         for _ in 0..delta.unsigned_abs() {
-            let next = if delta > 0 { to + 1 } else { to.wrapping_sub(1) };
+            let next = if delta.is_positive() { to + 1 } else { to.wrapping_sub(1) };
             match column.get(next) {
                 Some(card) if lane_of(card) == lane_of(here) => to = next,
-                beyond if to == from => return Err(at_the_end(delta > 0, beyond.is_some())),
+                beyond if to == from => {
+                    return Err(at_the_end(delta.is_positive(), beyond.is_some()));
+                }
                 _ => break,
             }
         }
         Ok(column[to].key.clone())
     }
 
+    /// The highlighted row; the top before the board arrives.
     pub fn cursor_row(&self) -> usize {
-        self.cursor.get(self.column).copied().unwrap_or(0)
+        self.cursor.get(self.column).copied().unwrap_or_default()
     }
 
     /// A column's cards as drawn: a heading where a new lane starts.
@@ -359,8 +360,8 @@ impl BoardView {
         if order.is_empty() {
             return;
         }
-        let here = (self.column, self.cursor.get(self.column).copied().unwrap_or(0));
-        let pos = order.iter().position(|&p| p == here).unwrap_or(0) as i64;
+        let here = (self.column, self.cursor_row());
+        let pos = order.iter().position(|&p| p == here).unwrap_or_default() as i64;
         let (c, r) = order[(pos + delta).rem_euclid(order.len() as i64) as usize];
         self.column = c;
         self.cursor[c] = r;
@@ -379,7 +380,7 @@ impl BoardView {
         let visible = self.visible();
         let fit = (area.width / MIN_COLUMN_WIDTH).max(1) as usize;
         let shown = visible.len().min(fit);
-        let pos = visible.iter().position(|&c| c == self.column).unwrap_or(0);
+        let pos = visible.iter().position(|&c| c == self.column).unwrap_or_default();
         // Scroll sideways like a list: only as far as it takes to show the
         // selection, and never past the last column.
         let lowest = (pos + 1).saturating_sub(shown);
@@ -415,7 +416,7 @@ impl BoardView {
         draw_head(frame, area, name, (cards.len(), wip), focused, theme);
         let inner = Rect { y: area.y + 2, height: area.height.saturating_sub(3), ..area };
         // Counted at the tallest, so a half page never skips past the screen.
-        self.page.set((inner.height / CARD_HEIGHT).max(1) as usize);
+        self.page.set((inner.height / CARD_HEIGHT) as usize);
         let last_card = self.draw_items(frame, inner, cards, c, ctx);
         let below = cards.len().saturating_sub(last_card.map_or(0, |r| r + 1));
         if below > 0 && inner.height > 0 {
@@ -441,7 +442,7 @@ impl BoardView {
         ctx: &DrawCtx,
     ) -> Option<usize> {
         let focused = c == self.column;
-        let cursor = self.cursor.get(c).copied().unwrap_or(0);
+        let cursor = self.cursor.get(c).copied().unwrap_or_default();
         let items = self.items(cards, ctx, (inner.width as usize).saturating_sub(1));
         let start = first_shown(&items, cursor, inner.height);
         let range = self.range().filter(|_| focused);
@@ -740,6 +741,7 @@ fn at_the_end(down: bool, lane: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::test_support::{find, render, theme};
 
     #[test]
     fn a_card_that_moves_no_further_says_which_end_it_is_at() {
@@ -812,6 +814,242 @@ mod tests {
         fewer.issues.remove(0);
         view.set_snapshot(fewer);
         assert!(!shown(&view).concat().contains(&first), "snapshot");
+    }
+
+    const ALL_FIELDS: [CardField; 7] = [
+        CardField::Type,
+        CardField::Key,
+        CardField::Priority,
+        CardField::Labels,
+        CardField::Epic,
+        CardField::Estimate,
+        CardField::Assignee,
+    ];
+
+    /// The board drawn on a `width` by `height` screen.
+    fn drawn(view: &BoardView, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        let theme = theme();
+        let ctx = DrawCtx { theme: &theme, fields: &ALL_FIELDS, me: None };
+        render(width, height, |f| view.draw(f, f.area(), &ctx))
+    }
+
+    /// The board with only the issues `keep` keeps.
+    fn only(view: &mut BoardView, keep: impl Fn(&Issue) -> bool) {
+        let mut snapshot = view.snapshot().unwrap().clone();
+        snapshot.issues.retain(|i| keep(i));
+        view.set_snapshot(snapshot);
+    }
+
+    #[tokio::test]
+    async fn the_highlight_and_a_marked_range_have_the_selection_background_and_a_gap_under() {
+        let mut view = board().await;
+        let first = shown(&view)[0][0].clone();
+        let second = shown(&view)[0][1].clone();
+        view.toggle_visual();
+        view.move_card(1);
+        let screen = drawn(&view, 150, 40);
+        let selection = theme().selection;
+        let (x, y) = find(&screen, &first).unwrap();
+        assert_eq!(screen[(x, y)].bg, selection, "marked, not under the cursor");
+        let (x2, y2) = find(&screen, &second).unwrap();
+        assert_eq!(screen[(x2, y2)].bg, selection, "under the cursor");
+        assert_ne!(screen[(x2, y2 + 1)].bg, selection, "the row under a card is a gap");
+        view.visual = None;
+        let screen = drawn(&view, 150, 40);
+        assert_ne!(screen[(x, y)].bg, selection, "out of the range again");
+    }
+
+    #[tokio::test]
+    async fn the_focused_columns_heading_is_in_the_accent() {
+        let mut view = board().await;
+        view.move_column(1);
+        let names: Vec<String> = (view.snapshot().unwrap().board.columns.iter())
+            .map(|c| c.name.to_uppercase())
+            .collect();
+        let screen = drawn(&view, 150, 40);
+        let fg = |name: &str| screen[find(&screen, name).unwrap()].fg;
+        assert_eq!(fg(&names[1]), theme().accent);
+        assert_eq!(fg(&names[0]), theme().muted);
+    }
+
+    /// A count at the limit is fine; past it, red.
+    #[tokio::test]
+    async fn a_column_over_its_limit_shows_its_count_in_red() {
+        let mut view = board().await;
+        let count = shown(&view)[0].len() as u32;
+        let count_fg = |view: &mut BoardView, limit: u32| {
+            let mut snapshot = view.snapshot().unwrap().clone();
+            snapshot.board.columns[0].wip_limit = Some(limit);
+            view.set_snapshot(snapshot);
+            let screen = drawn(view, 150, 40);
+            screen[find(&screen, &format!(" {count}/{limit} ")).unwrap()].fg
+        };
+        assert_eq!(count_fg(&mut view, count), theme().muted);
+        assert_eq!(count_fg(&mut view, count - 1), theme().error);
+    }
+
+    #[tokio::test]
+    async fn what_does_not_fit_is_counted_under_the_column() {
+        let mut view = board().await;
+        let first_two: Vec<String> = shown(&view)[0][..2].to_vec();
+        only(&mut view, |i| first_two.contains(&i.key.to_string()));
+        let screen = drawn(&view, 150, 9);
+        assert!(find(&screen, "↓ 1 more").is_some(), "one card fits, one does not");
+        let screen = drawn(&view, 150, 4);
+        assert!(find(&screen, "↓ 2 more").is_some(), "one row: none fits");
+    }
+
+    #[tokio::test]
+    async fn an_empty_column_says_so_under_its_rule() {
+        let mut view = board().await;
+        only(&mut view, |_| false);
+        let screen = drawn(&view, 150, 40);
+        assert_eq!(find(&screen, "No cards").map(|(_, y)| y), Some(3));
+    }
+
+    #[tokio::test]
+    async fn a_screen_narrower_than_a_column_still_shows_one_and_no_column_draws_nothing() {
+        let view = board().await;
+        let name = view.snapshot().unwrap().board.columns[0].name.to_uppercase();
+        assert!(find(&drawn(&view, 20, 20), &name[..3]).is_some());
+        let mut empty = view.snapshot().unwrap().clone();
+        empty.board.columns.clear();
+        empty.issues.clear();
+        let mut bare = BoardView::default();
+        bare.set_snapshot(empty);
+        drawn(&bare, 80, 20);
+    }
+
+    /// A card's height counts its labels only when they fit beside the
+    /// stripe, as the card draws them: the next card starts right under.
+    #[tokio::test]
+    async fn the_next_card_starts_where_the_last_one_ended() {
+        let mut view = board().await;
+        let keys: Vec<String> = shown(&view)[0][..2].to_vec();
+        let mut snapshot = view.snapshot().unwrap().clone();
+        snapshot.issues.retain(|i| keys.contains(&i.key.to_string()));
+        let width: u16 = 40;
+        // Its badge as wide as the column: one cell too many for a card.
+        let label = "x".repeat(width as usize - 3);
+        for issue in &mut snapshot.issues {
+            issue.labels = if issue.key.as_str() == keys[0] { vec![label.clone()] } else { vec![] };
+        }
+        view.set_snapshot(snapshot);
+        let screen = drawn(&view, width, 30);
+        let (_, top) = find(&screen, &keys[0]).unwrap();
+        let (_, next) = find(&screen, &keys[1]).unwrap();
+        assert_eq!(next - top, CARD_HEIGHT - 1, "no label line, no blank line");
+    }
+
+    #[test]
+    fn the_first_row_drawn_keeps_the_cursors_card_and_as_many_above_as_fit() {
+        let items = [Item::Lane("a".into()), Item::Card(0, 6), Item::Card(1, 6), Item::Card(2, 5)];
+        assert_eq!(first_shown(&items, 2, 11), 2, "two cards fill it exactly");
+        assert_eq!(first_shown(&items, 2, 10), 3, "one short: the cursor's card alone");
+        assert_eq!(first_shown(&items, 0, 40), 0, "all fit: the lane heading too");
+        assert_eq!(first_shown(&items, 9, 40), 0, "no such card");
+    }
+
+    #[tokio::test]
+    async fn labels_that_do_not_fit_are_left_off() {
+        let theme = theme();
+        let ctx = DrawCtx { theme: &theme, fields: &ALL_FIELDS, me: None };
+        let mut issue = board().await.snapshot().unwrap().issues[0].clone();
+        issue.labels = vec!["ab".into(), "cde".into()];
+        let badge = |l: &str| -> usize {
+            glyph::label_badge(l, &theme).iter().map(|s| width(&s.content)).sum()
+        };
+        let (a, b) = (badge("ab"), badge("cde"));
+        let shown = |cols| labels(&issue, &ctx, cols).spans.len() / 4;
+        assert_eq!(shown(a - 1), 0);
+        assert_eq!(shown(a), 1, "exactly its width");
+        assert_eq!(shown(a + b), 1, "a space between them");
+        assert_eq!(shown(a + 1 + b), 2);
+    }
+
+    #[tokio::test]
+    async fn a_filter_that_shortens_a_column_keeps_the_highlight_on_its_last_card() {
+        let mut view = board().await;
+        view.card_at(None);
+        let column = shown(&view)[0].clone();
+        let keep = column[0].clone();
+        view.set_filter(keep.clone());
+        view.clamp();
+        assert_eq!(view.selected().map(|i| i.key.to_string()), Some(keep));
+    }
+
+    #[tokio::test]
+    async fn moving_past_the_last_card_stays_on_it_and_half_a_page_is_one_card_at_least() {
+        let mut view = board().await;
+        assert_eq!(BoardView::default().half_page(), 1, "before any draw");
+        let last = shown(&view)[0].last().unwrap().clone();
+        view.move_card(99);
+        assert_eq!(view.selected().map(|i| i.key.to_string()), Some(last.clone()));
+        view.move_card(1);
+        assert_eq!(view.selected().map(|i| i.key.to_string()), Some(last));
+        drawn(&view, 150, 7);
+        assert_eq!(view.half_page(), 1, "a page of no whole card");
+    }
+
+    #[tokio::test]
+    async fn the_board_knows_its_issues() {
+        let view = board().await;
+        let first = view.snapshot().unwrap().issues[0].key.clone();
+        assert!(view.has(&first));
+        assert!(!view.has(&IssueKey::parse("NOPE-1")));
+    }
+
+    /// A refresh keeps each column's row when its card left; another
+    /// board starts every column at its top.
+    #[tokio::test]
+    async fn a_refresh_keeps_each_columns_row_and_another_board_starts_at_the_top() {
+        let mut view = board().await;
+        view.card_at(Some(1));
+        let gone = shown(&view)[0][1].clone();
+        view.move_column(1);
+        let mut snapshot = view.snapshot().unwrap().clone();
+        snapshot.issues.retain(|i| i.key.as_str() != gone);
+        view.set_snapshot(snapshot.clone());
+        assert_eq!(view.cursor[0], 1, "the same row, on the card that took its place");
+        snapshot.board.id = kolum_domain::BoardId::new("other");
+        view.set_snapshot(snapshot);
+        assert_eq!(view.cursor[0], 0);
+    }
+
+    /// A board with no column shown puts the highlight on the first slot;
+    /// so do `0` and `$` there.
+    #[tokio::test]
+    async fn a_board_with_no_column_holds_the_highlight_at_the_first() {
+        let mut view = board().await;
+        view.move_column(2);
+        let mut bare = view.snapshot().unwrap().clone();
+        bare.board.columns.clear();
+        bare.issues.clear();
+        view.set_snapshot(bare);
+        assert_eq!(view.column, 0);
+        view.column = 3;
+        view.column_edge(true);
+        assert_eq!(view.column, 0);
+    }
+
+    /// A refresh that leaves no card under the highlight keeps a visual
+    /// range as it was: only leaving the column or acting ends it.
+    #[tokio::test]
+    async fn a_refresh_keeps_a_visual_range() {
+        let mut view = board().await;
+        view.toggle_visual();
+        let mut empty = view.snapshot().unwrap().clone();
+        empty.issues.clear();
+        view.set_snapshot(empty);
+        assert_eq!(view.visual, Some(0));
+    }
+
+    #[tokio::test]
+    async fn n_goes_down_the_column_first() {
+        let mut view = board().await;
+        let column = shown(&view)[0].clone();
+        view.step_match(1);
+        assert_eq!(view.selected().map(|i| i.key.to_string()), Some(column[1].clone()));
     }
 
     /// Lanes by priority go by its rank, the most urgent first, whatever
