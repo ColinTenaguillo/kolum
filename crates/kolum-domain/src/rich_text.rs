@@ -164,71 +164,84 @@ mod markdown_out {
     use super::*;
 
     pub fn block(node: &Block, out: &mut String) {
-        let line = |out: &mut String, text: &str| {
-            out.push_str(text);
-            out.push('\n');
-        };
         match node {
-            Block::Paragraph(inlines) => {
-                for (i, l) in inlines_md(inlines).split('\n').enumerate() {
-                    // A hard break: two spaces, then the next line.
-                    if i > 0 {
-                        out.pop();
-                        out.push_str("  \n");
-                    }
-                    line(out, l);
-                }
-            }
-            Block::Heading { level, content } => {
-                line(out, &format!("{} {}", "#".repeat(*level as usize), inlines_md(content)))
-            }
-            // An item's blocks are written flush, then hung under the
-            // bullet; a nested list nests by the same rule.
-            Block::List { ordered, items } => {
-                for (n, item) in items.iter().enumerate() {
-                    let bullet = if *ordered { format!("{}. ", n + 1) } else { "- ".into() };
-                    let pad = " ".repeat(bullet.len());
-                    let mut text = String::new();
-                    item.iter().for_each(|b| block(b, &mut text));
-                    for (i, l) in text.lines().enumerate() {
-                        let lead = if i == 0 { &bullet } else { &pad };
-                        line(out, &if l.is_empty() { String::new() } else { format!("{lead}{l}") });
-                    }
-                }
-            }
-            Block::Code { language, text } => {
-                line(out, &format!("```{}", language.as_deref().unwrap_or("")));
-                text.lines().for_each(|l| line(out, l));
-                line(out, "```");
-            }
-            Block::Quote(blocks) | Block::Panel { blocks, .. } => {
-                let mut inner = String::new();
-                if let Block::Panel { kind, .. } = node {
-                    inner.push_str(&format!("[!{}]\n", alert(*kind)));
-                }
-                for (i, b) in blocks.iter().enumerate() {
-                    if i > 0 {
-                        inner.push('\n');
-                    }
-                    block(b, &mut inner);
-                }
-                for l in inner.lines() {
-                    line(out, &if l.is_empty() { ">".to_string() } else { format!("> {l}") });
-                }
-            }
-            Block::Table { rows, .. } => {
-                for (r, row) in rows.iter().enumerate() {
-                    let cells: Vec<String> = row
-                        .iter()
-                        .map(|c| inlines_md(c).replace('\n', " ").replace('|', "\\|"))
-                        .collect();
-                    line(out, &format!("| {} |", cells.join(" | ")));
-                    if r == 0 {
-                        line(out, &format!("|{}|", vec!["---"; row.len()].join("|")));
-                    }
-                }
-            }
+            Block::Paragraph(inlines) => paragraph(inlines, out),
+            Block::Heading { level, content } => heading(*level, content, out),
+            Block::List { ordered, items } => list(*ordered, items, out),
+            Block::Code { language, text } => code(language.as_deref(), text, out),
+            Block::Quote(blocks) => quote(None, blocks, out),
+            Block::Panel { kind, blocks } => quote(Some(*kind), blocks, out),
+            Block::Table { rows, .. } => table(rows, out),
             Block::Rule => line(out, "---"),
+        }
+    }
+
+    fn line(out: &mut String, text: &str) {
+        out.push_str(text);
+        out.push('\n');
+    }
+
+    fn heading(level: u8, content: &[Inline], out: &mut String) {
+        line(out, &format!("{} {}", "#".repeat(level as usize), inlines_md(content)));
+    }
+
+    fn code(language: Option<&str>, text: &str, out: &mut String) {
+        line(out, &format!("```{}", language.unwrap_or("")));
+        text.lines().for_each(|l| line(out, l));
+        line(out, "```");
+    }
+
+    fn paragraph(inlines: &[Inline], out: &mut String) {
+        for (i, l) in inlines_md(inlines).split('\n').enumerate() {
+            // A hard break: two spaces, then the next line.
+            if i > 0 {
+                out.pop();
+                out.push_str("  \n");
+            }
+            line(out, l);
+        }
+    }
+
+    /// An item's blocks are written flush, then hung under the bullet; a
+    /// nested list nests by the same rule.
+    fn list(ordered: bool, items: &[Vec<Block>], out: &mut String) {
+        for (n, item) in items.iter().enumerate() {
+            let bullet = if ordered { format!("{}. ", n + 1) } else { "- ".into() };
+            let pad = " ".repeat(bullet.len());
+            let mut text = String::new();
+            item.iter().for_each(|b| block(b, &mut text));
+            for (i, l) in text.lines().enumerate() {
+                let lead = if i == 0 { &bullet } else { &pad };
+                line(out, &if l.is_empty() { String::new() } else { format!("{lead}{l}") });
+            }
+        }
+    }
+
+    /// A quote, or a panel as a GitHub alert.
+    fn quote(kind: Option<PanelKind>, blocks: &[Block], out: &mut String) {
+        let mut inner = String::new();
+        if let Some(kind) = kind {
+            inner.push_str(&format!("[!{}]\n", alert(kind)));
+        }
+        for (i, b) in blocks.iter().enumerate() {
+            if i > 0 {
+                inner.push('\n');
+            }
+            block(b, &mut inner);
+        }
+        for l in inner.lines() {
+            line(out, &if l.is_empty() { ">".to_string() } else { format!("> {l}") });
+        }
+    }
+
+    fn table(rows: &[Vec<Vec<Inline>>], out: &mut String) {
+        for (r, row) in rows.iter().enumerate() {
+            let cells: Vec<String> =
+                row.iter().map(|c| inlines_md(c).replace('\n', " ").replace('|', "\\|")).collect();
+            line(out, &format!("| {} |", cells.join(" | ")));
+            if r == 0 {
+                line(out, &format!("|{}|", vec!["---"; row.len()].join("|")));
+            }
         }
     }
 
@@ -254,33 +267,34 @@ mod markdown_out {
         out
     }
 
+    /// A run of text with its marks, the spaces around it kept outside
+    /// them: `** x**` is not bold in Markdown.
+    fn text_md(text: &str, marks: Marks) -> String {
+        let (lead, trail) =
+            (&text[..text.len() - text.trim_start().len()], &text[text.trim_end().len()..]);
+        let core = escape(text.trim());
+        if core.is_empty() {
+            return text.to_string();
+        }
+        let mut wrapped = core;
+        if marks.italic {
+            wrapped = format!("*{wrapped}*");
+        }
+        if marks.bold {
+            wrapped = format!("**{wrapped}**");
+        }
+        if marks.strike {
+            wrapped = format!("~~{wrapped}~~");
+        }
+        format!("{lead}{wrapped}{trail}")
+    }
+
     fn inlines_md(inlines: &[Inline]) -> String {
         let mut out = String::new();
         for inline in inlines {
             match inline {
                 Inline::Text { text, marks } if marks.code => out.push_str(&format!("`{text}`")),
-                Inline::Text { text, marks } => {
-                    let (lead, trail) = (
-                        &text[..text.len() - text.trim_start().len()],
-                        &text[text.trim_end().len()..],
-                    );
-                    let core = escape(text.trim());
-                    if core.is_empty() {
-                        out.push_str(text);
-                        continue;
-                    }
-                    let mut wrapped = core;
-                    if marks.italic {
-                        wrapped = format!("*{wrapped}*");
-                    }
-                    if marks.bold {
-                        wrapped = format!("**{wrapped}**");
-                    }
-                    if marks.strike {
-                        wrapped = format!("~~{wrapped}~~");
-                    }
-                    out.push_str(&format!("{lead}{wrapped}{trail}"));
-                }
+                Inline::Text { text, marks } => out.push_str(&text_md(text, *marks)),
                 Inline::Link { text, url } => out.push_str(&format!("[{}]({url})", escape(text))),
                 Inline::Mention { id, name } => out.push_str(&format!(
                     "[@{}](mention:{})",
@@ -369,6 +383,7 @@ mod markdown {
             }
         }
 
+        /// Raw HTML, footnotes and math have no place in the tree: dropped.
         fn event(&mut self, event: Event) {
             match event {
                 Event::Start(tag) => self.start(tag),
@@ -377,12 +392,14 @@ mod markdown {
                 Event::Code(t) => self.text(&t, true),
                 Event::SoftBreak => self.text(" ", false),
                 Event::HardBreak => self.push_inline(Inline::Break),
-                Event::Rule => {
-                    self.flush();
-                    self.push_block(Block::Rule);
-                }
+                Event::Rule => self.rule(),
                 _ => {}
             }
+        }
+
+        fn rule(&mut self) {
+            self.flush();
+            self.push_block(Block::Rule);
         }
 
         fn start(&mut self, tag: Tag) {
@@ -404,16 +421,19 @@ mod markdown {
                 Tag::Item => self.open(Frame::Item),
                 Tag::CodeBlock(kind) => {
                     self.flush();
-                    let lang = match kind {
-                        CodeBlockKind::Fenced(l) if !l.is_empty() => Some(l.to_string()),
-                        _ => None,
-                    };
-                    self.code = Some((lang, String::new()));
+                    self.code = Some((language(kind), String::new()));
                 }
                 Tag::Table(_) => {
                     self.flush();
                     self.frames.push(Frame::Table { rows: Vec::new(), row: Vec::new() });
                 }
+                tag => self.start_inline(tag),
+            }
+        }
+
+        /// A table cell's run of inlines, or a mark or a link inside one.
+        fn start_inline(&mut self, tag: Tag) {
+            match tag {
                 Tag::TableCell => self.inlines = Some(Vec::new()),
                 Tag::Emphasis => self.italic += 1,
                 Tag::Strong => self.bold += 1,
@@ -434,26 +454,39 @@ mod markdown {
         fn end(&mut self, tag: TagEnd) {
             match tag {
                 TagEnd::Paragraph => self.flush(),
-                TagEnd::Heading(_) => {
-                    let content = self.inlines.take().unwrap_or_default();
-                    if let Some(level) = self.heading.take() {
-                        self.push_block(Block::Heading { level, content });
-                    }
-                }
+                TagEnd::Heading(_) => self.end_heading(),
                 TagEnd::BlockQuote(_) | TagEnd::Item => self.close(),
-                TagEnd::List(_) => {
-                    if let Some(Frame::List { ordered, items }) = self.frames.pop() {
-                        self.push_block(Block::List { ordered, items });
-                    }
+                TagEnd::List(_) => self.end_list(),
+                TagEnd::CodeBlock => self.end_code(),
+                tag => self.end_table_or_mark(tag),
+            }
+        }
+
+        fn end_heading(&mut self) {
+            let content = self.inlines.take().unwrap_or_default();
+            if let Some(level) = self.heading.take() {
+                self.push_block(Block::Heading { level, content });
+            }
+        }
+
+        fn end_list(&mut self) {
+            if let Some(Frame::List { ordered, items }) = self.frames.pop() {
+                self.push_block(Block::List { ordered, items });
+            }
+        }
+
+        /// The text without the newline that ends its last line.
+        fn end_code(&mut self) {
+            if let Some((language, mut text)) = self.code.take() {
+                if text.ends_with('\n') {
+                    text.pop();
                 }
-                TagEnd::CodeBlock => {
-                    if let Some((language, mut text)) = self.code.take() {
-                        if text.ends_with('\n') {
-                            text.pop();
-                        }
-                        self.push_block(Block::Code { language, text });
-                    }
-                }
+                self.push_block(Block::Code { language, text });
+            }
+        }
+
+        fn end_table_or_mark(&mut self, tag: TagEnd) {
+            match tag {
                 TagEnd::TableCell => {
                     let cell = self.inlines.take().unwrap_or_default();
                     if let Some(Frame::Table { row, .. }) = self.frames.last_mut() {
@@ -470,6 +503,12 @@ mod markdown {
                         self.push_block(Block::Table { header: true, rows });
                     }
                 }
+                tag => self.end_mark(tag),
+            }
+        }
+
+        fn end_mark(&mut self, tag: TagEnd) {
+            match tag {
                 TagEnd::Emphasis => self.italic = self.italic.saturating_sub(1),
                 TagEnd::Strong => self.bold = self.bold.saturating_sub(1),
                 TagEnd::Strikethrough => self.strike = self.strike.saturating_sub(1),
@@ -498,6 +537,13 @@ mod markdown {
                 }),
                 _ => {}
             }
+        }
+    }
+
+    fn language(kind: CodeBlockKind) -> Option<String> {
+        match kind {
+            CodeBlockKind::Fenced(l) if !l.is_empty() => Some(l.to_string()),
+            _ => None,
         }
     }
 
@@ -619,6 +665,24 @@ mod tests {
             ])
         );
         assert_eq!(rt.blocks[4], Block::Rule);
+    }
+
+    #[test]
+    fn raw_html_is_dropped_and_the_text_inside_it_kept() {
+        let rt = RichText::from_markdown("a <b>bold</b>");
+        assert_eq!(rt.blocks, [Block::Paragraph(vec![Inline::text("a "), Inline::text("bold")])]);
+    }
+
+    #[test]
+    fn an_empty_or_unfenced_code_block_has_no_language_and_keeps_its_text() {
+        let rt = RichText::from_markdown("```\n```\n\n    indented\n");
+        assert_eq!(
+            rt.blocks,
+            [
+                Block::Code { language: None, text: String::new() },
+                Block::Code { language: None, text: "indented".into() },
+            ]
+        );
     }
 
     /// Text runs side by side merge in a round trip ("a" "b" is "ab"),

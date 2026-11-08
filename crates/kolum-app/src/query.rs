@@ -25,25 +25,12 @@ pub fn parse_query(input: &str) -> Query {
 /// False when the word is not a prefix, or a prefix with nothing after it:
 /// a lone `#` while typing is text until it says what it filters.
 fn apply_prefix(filter: &mut Filter, word: &str) -> bool {
-    let (prefix, value) = match word.split_at_checked(1) {
-        Some((p @ ("@" | "#"), v)) => (p, v),
-        _ => match word.split_once(':') {
-            Some((p @ ("s" | "l" | "e" | "sp"), v)) => (p, v),
-            _ => return false,
-        },
-    };
-    if value.is_empty() {
+    let Some((prefix, value)) = split_prefix(word) else {
         return false;
-    }
+    };
     let value = value.to_string();
     match prefix {
-        "@" if matches!(value.to_lowercase().as_str(), "me" | "moi") => {
-            filter.assignees.push(UserSel::Me)
-        }
-        "@" if matches!(value.to_lowercase().as_str(), "none" | "nobody" | "unassigned") => {
-            filter.assignees.push(UserSel::Nobody)
-        }
-        "@" => filter.assignees.push(UserSel::Named(value)),
+        "@" => filter.assignees.push(user_sel(value)),
         "#" => filter.types.push(value),
         "s" => filter.statuses.push(value),
         "l" => filter.labels.push(value),
@@ -51,6 +38,23 @@ fn apply_prefix(filter: &mut Filter, word: &str) -> bool {
         _ => filter.sprint = Some(value),
     }
     true
+}
+
+/// The prefix and what follows it, when the word has both.
+fn split_prefix(word: &str) -> Option<(&str, &str)> {
+    let (prefix, value) = match word.split_at_checked(1) {
+        Some((p @ ("@" | "#"), v)) => (p, v),
+        _ => word.split_once(':').filter(|(p, _)| matches!(*p, "s" | "l" | "e" | "sp"))?,
+    };
+    (!value.is_empty()).then_some((prefix, value))
+}
+
+fn user_sel(name: String) -> UserSel {
+    match name.to_lowercase().as_str() {
+        "me" | "moi" => UserSel::Me,
+        "none" | "nobody" | "unassigned" => UserSel::Nobody,
+        _ => UserSel::Named(name),
+    }
 }
 
 #[cfg(test)]

@@ -46,26 +46,35 @@ fn any_or_empty(values: &[String], pred: impl Fn(&str) -> bool) -> bool {
     values.is_empty() || values.iter().any(|v| pred(v))
 }
 
+/// The epic by its key, or by a word of its title.
+fn in_epic(issue: &Issue, epic: &str) -> bool {
+    issue
+        .parent
+        .as_ref()
+        .is_some_and(|p| p.key.as_str().eq_ignore_ascii_case(epic) || contains(&p.title, epic))
+}
+
+impl UserSel {
+    fn matches(&self, issue: &Issue, me: &UserId) -> bool {
+        match (self, &issue.assignee) {
+            (UserSel::Me, _) => issue.is_assigned_to(me),
+            (UserSel::Nobody, a) => a.is_none(),
+            (UserSel::Named(n), Some(a)) => {
+                contains(&a.display_name, n) || contains(&a.display_name.replace(' ', ""), n)
+            }
+            (UserSel::Named(_), None) => false,
+        }
+    }
+}
+
 impl Filter {
     /// Whether the issue meets every constraint except `text`. Free text is
     /// left out because locally it is matched fuzzily and ranked, which is
     /// not a yes or no.
     pub fn matches_fields(&self, issue: &Issue, me: &UserId) -> bool {
-        let assignee = self.assignees.is_empty()
-            || self.assignees.iter().any(|sel| match (sel, &issue.assignee) {
-                (UserSel::Me, _) => issue.is_assigned_to(me),
-                (UserSel::Nobody, a) => a.is_none(),
-                (UserSel::Named(n), Some(a)) => {
-                    contains(&a.display_name, n) || contains(&a.display_name.replace(' ', ""), n)
-                }
-                (UserSel::Named(_), None) => false,
-            });
-        let epic = self.epic.as_ref().is_none_or(|e| {
-            issue
-                .parent
-                .as_ref()
-                .is_some_and(|p| p.key.as_str().eq_ignore_ascii_case(e) || contains(&p.title, e))
-        });
+        let assignee =
+            self.assignees.is_empty() || self.assignees.iter().any(|sel| sel.matches(issue, me));
+        let epic = self.epic.as_ref().is_none_or(|e| in_epic(issue, e));
         let sprint = self
             .sprint
             .as_ref()

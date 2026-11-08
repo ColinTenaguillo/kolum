@@ -679,6 +679,7 @@ mod tests {
         }
         assert_eq!(FieldValue::Number(5.0).to_input(), "5");
         let others = [
+            (FieldValue::Text("as typed".into()), "as typed"),
             (FieldValue::User(user("Ana Silva")), "Ana Silva"),
             (FieldValue::RichText(RichText::from_markdown("**a** b")), "a b"),
             (sprint("15"), "Sprint 15"),

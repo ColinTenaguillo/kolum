@@ -195,3 +195,49 @@ pub trait Provider: BoardSource + IssueReader + IssueSearch + IssueWriter + User
     fn name(&self) -> &str;
     fn capabilities(&self) -> Capabilities;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::future::Future;
+    use std::pin::pin;
+    use std::task::{Context, Poll, Waker};
+
+    /// Two pages of one issue each.
+    struct TwoPages;
+
+    #[async_trait]
+    impl BoardSource for TwoPages {
+        async fn boards(&self) -> Result<Vec<BoardSummary>> {
+            unreachable!()
+        }
+        async fn board(&self, _: &BoardId) -> Result<Board> {
+            unreachable!()
+        }
+        async fn board_issues(
+            &self,
+            _: &BoardId,
+            _: Option<OffsetDateTime>,
+            page: Option<PageToken>,
+        ) -> Result<Page<Issue>> {
+            let mut issue = crate::query::tests::issue();
+            issue.key = IssueKey::parse(if page.is_none() { "PROJ-1" } else { "PROJ-2" });
+            let next = page.is_none().then(|| PageToken("2".into()));
+            Ok(Page { items: vec![issue], next })
+        }
+    }
+
+    /// Nothing here waits on I/O, so one poll finishes it.
+    fn now<T>(future: impl Future<Output = T>) -> T {
+        match pin!(future).poll(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(value) => value,
+            Poll::Pending => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn the_board_keys_are_every_page_of_issues_in_order() {
+        let keys = now(TwoPages.board_keys(&BoardId::new("1"))).unwrap();
+        assert_eq!(keys, [IssueKey::parse("PROJ-1"), IssueKey::parse("PROJ-2")]);
+    }
+}
