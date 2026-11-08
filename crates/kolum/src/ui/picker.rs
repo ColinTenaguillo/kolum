@@ -324,11 +324,9 @@ impl<S: PickerSource> AnyPicker for Picker<S> {
     }
 
     fn move_by(&mut self, delta: i64) {
-        let count = i64::from(self.nucleo.snapshot().matched_item_count());
-        if count > 0 {
-            self.selected = (i64::from(self.selected) + delta).clamp(0, count - 1) as u32;
-            self.preview_scroll = 0;
-        }
+        let last = self.nucleo.snapshot().matched_item_count().saturating_sub(1);
+        self.selected = (i64::from(self.selected) + delta).clamp(0, i64::from(last)) as u32;
+        self.preview_scroll = 0;
     }
 
     fn move_to(&mut self, index: Option<u32>) {
@@ -454,6 +452,112 @@ fn panes(area: Rect, layout: PickerLayout) -> (Rect, Option<Rect>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::test_support::{row, theme};
+    use std::sync::Arc;
+
+    fn themes(n: usize) -> Picker<super::super::sources::ThemeSource> {
+        let names = (0..n).map(|i| format!("theme{i:02}")).collect();
+        let source = super::super::sources::ThemeSource { names };
+        let mut picker = Picker::new(source, Arc::new(|| {}));
+        while picker.nucleo.snapshot().matched_item_count() as usize != n {
+            picker.tick();
+        }
+        picker
+    }
+
+    fn drawn(
+        picker: &mut impl AnyPicker,
+        width: u16,
+        height: u16,
+        layout: PickerLayout,
+    ) -> (ratatui::buffer::Buffer, (u16, u16)) {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| picker.draw(f, f.area(), &theme(), layout)).unwrap();
+        let cursor = terminal.get_cursor_position().unwrap();
+        (terminal.backend().buffer().clone(), (cursor.x, cursor.y))
+    }
+
+    #[test]
+    fn the_list_is_focused_and_the_highlight_runs_to_the_end_of_its_row() {
+        let mut picker = themes(3);
+        let (screen, _) = drawn(&mut picker, 100, 10, PickerLayout::Horizontal);
+        assert_eq!(screen[(0, 0)].fg, theme().border_focus, "the list");
+        assert_eq!(screen[(50, 0)].fg, theme().border, "the preview beside it");
+        assert_eq!(screen[(48, 3)].bg, theme().selection, "the highlighted row, to its end");
+        assert_ne!(screen[(48, 4)].bg, theme().selection);
+    }
+
+    /// Each row is exactly as wide as the list, the highlight to its end
+    /// and no further.
+    #[test]
+    fn a_row_fills_the_list_exactly() {
+        let mut picker = themes(3);
+        for cols in [10, 40] {
+            assert_eq!(picker.row(0, &theme(), cols).width(), cols);
+        }
+    }
+
+    #[test]
+    fn the_last_item_stays_in_sight_and_moving_past_it_stays_on_it() {
+        let mut picker = themes(30);
+        picker.move_to(None);
+        let (screen, _) = drawn(&mut picker, 40, 6, PickerLayout::NoPreview);
+        assert!((0..6).any(|y| row(&screen, y).contains("theme29")), "scrolled to it");
+        picker.move_by(1);
+        assert_eq!(picker.current().map(String::as_str), Some("theme29"));
+        picker.move_to(Some(99));
+        assert_eq!(picker.current().map(String::as_str), Some("theme29"));
+    }
+
+    #[test]
+    fn narrowing_keeps_the_highlight_on_a_match() {
+        let mut picker = themes(30);
+        picker.move_to(None);
+        picker.set_query("theme05");
+        while picker.nucleo.snapshot().matched_item_count() != 1 {
+            picker.tick();
+        }
+        picker.tick();
+        assert_eq!(picker.current().map(String::as_str), Some("theme05"));
+    }
+
+    /// Moved down while the matcher still had the last query's matches:
+    /// once it narrows, the highlight is on the last match.
+    #[test]
+    fn matches_that_narrow_after_a_move_keep_the_highlight_on_one() {
+        let mut picker = themes(30);
+        picker.set_query("theme2");
+        picker.move_to(None);
+        while picker.nucleo.tick(10).running {}
+        picker.tick();
+        let count = picker.nucleo.snapshot().matched_item_count();
+        assert!(count < 30, "narrowed to {count}");
+        assert!(picker.current().is_some(), "on the last match");
+    }
+
+    #[test]
+    fn a_move_shows_the_next_preview_from_its_top() {
+        let mut picker = themes(3);
+        picker.scroll_preview(5);
+        picker.move_by(1);
+        assert_eq!(picker.preview_scroll, 0);
+        picker.scroll_preview(5);
+        picker.move_to(Some(0));
+        assert_eq!(picker.preview_scroll, 0);
+    }
+
+    #[test]
+    fn the_cursor_follows_what_is_typed_and_a_one_row_list_still_has_its_line() {
+        let mut picker = themes(3);
+        picker.set_query("the");
+        let (screen, cursor) = drawn(&mut picker, 40, 3, PickerLayout::NoPreview);
+        assert!(row(&screen, 1).contains("the"), "the line, on the one row inside");
+        assert_eq!(cursor, (1 + 2 + 3, 1));
+        picker.set_query(&"x".repeat(60));
+        let (_, cursor) = drawn(&mut picker, 40, 3, PickerLayout::NoPreview);
+        assert_eq!(cursor, (38, 1), "at the end of the line at most");
+    }
 
     /// Two panes side by side from 80 columns, stacked from 20 rows, else
     /// the list alone.

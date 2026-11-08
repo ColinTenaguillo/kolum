@@ -50,11 +50,17 @@ pub enum Tab {
 }
 
 impl Tab {
+    /// Left to right, as they show; `<Tab>` goes round them in this order.
     const ORDER: [Tab; 3] = [Tab::Comments, Tab::History, Tab::All];
 
+    /// Its place in [`Tab::ORDER`].
+    fn index(self) -> usize {
+        Tab::ORDER.iter().position(|&t| t == self).unwrap_or_default()
+    }
+
     pub fn step(self, delta: i64) -> Tab {
-        let i = Tab::ORDER.iter().position(|&t| t == self).unwrap_or(0) as i64;
-        Tab::ORDER[(i + delta).rem_euclid(3) as usize]
+        let at = (self.index() as i64 + delta).rem_euclid(Tab::ORDER.len() as i64);
+        Tab::ORDER[at as usize]
     }
 }
 
@@ -83,7 +89,7 @@ impl DetailView {
             tab: Tab::Comments,
             scroll: 0,
             page: Cell::new(10),
-            length: Cell::new(0),
+            length: Cell::default(),
         }
     }
 
@@ -98,7 +104,7 @@ impl DetailView {
 
     pub fn scroll_by(&mut self, delta: i64) {
         let max = self.length.get().saturating_sub(self.page.get()) as i64;
-        self.scroll = (self.scroll as i64 + delta).clamp(0, max.max(0)) as u16;
+        self.scroll = (self.scroll as i64 + delta).clamp(0, max) as u16;
     }
 
     /// Its sub-tasks, then the issues found by their parent, once each.
@@ -166,12 +172,11 @@ impl DetailView {
             content.extend(field_lines);
         }
         let paragraph = Paragraph::new(content).wrap(Wrap { trim: false });
-        self.page.set(left.height);
-        self.length.set(paragraph.line_count(left.width.saturating_sub(1)) as u16);
-        frame.render_widget(
-            paragraph.scroll((self.scroll, 0)),
-            Rect { width: left.width.saturating_sub(1), ..left },
-        );
+        // A column of gap before the fields.
+        let text = Rect { width: left.width.saturating_sub(1), ..left };
+        self.page.set(text.height);
+        self.length.set(paragraph.line_count(text.width) as u16);
+        frame.render_widget(paragraph.scroll((self.scroll, 0)), text);
     }
 
     /// The assignee's picture and name above the fields, when there is a
@@ -291,8 +296,7 @@ impl DetailView {
             "History".into(),
             "All".into(),
         ];
-        let active = Tab::ORDER.iter().position(|&t| t == self.tab).unwrap_or(0);
-        glyph::tabs(&names, active, theme)
+        glyph::tabs(&names, self.tab.index(), theme)
     }
 }
 
@@ -656,12 +660,208 @@ fn attachment(a: &Attachment, theme: &Theme) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::test_support::{find, render, theme};
 
     #[test]
     fn sizes_read_like_a_file_browser() {
         assert_eq!(size(512), "512 B");
         assert_eq!(size(48213), "47 KB");
         assert_eq!(size(1_900_000), "1.8 MB");
+        assert_eq!([size(1023), size(1024)], ["1023 B", "1 KB"]);
+        assert_eq!([size(1024 * 1024 - 1), size(1024 * 1024)], ["1023 KB", "1.0 MB"]);
+    }
+
+    async fn acme(key: &str) -> Issue {
+        use kolum_domain::IssueReader;
+        let key = kolum_domain::IssueKey::parse(key);
+        kolum_provider_fake::FakeProvider::new().issue(&key).await.unwrap()
+    }
+
+    fn picture() -> Picture {
+        let picker = ratatui_image::picker::Picker::halfblocks();
+        let red = image::RgbImage::from_pixel(16, 16, image::Rgb([255, 0, 0]));
+        picker.new_resize_protocol(image::DynamicImage::ImageRgb8(red))
+    }
+
+    /// The detail drawn on a `width` by `height` screen, with the
+    /// pictures given.
+    fn drawn(
+        view: &DetailView,
+        (width, height): (u16, u16),
+        avatar: Option<&mut Picture>,
+        shot: Option<&mut Picture>,
+    ) -> ratatui::buffer::Buffer {
+        let shown = Shown { fields: None, sections: None, layout: None };
+        let pictures = Pictures { avatar, shot };
+        render(width, height, |f| view.draw(f, f.area(), &theme(), shown, None, pictures))
+    }
+
+    #[tokio::test]
+    async fn the_fields_go_beside_the_text_from_a_hundred_columns() {
+        let view = DetailView::new(acme("ACME-10").await);
+        let (x, _) = find(&drawn(&view, (100, 40), None, None), "Status").unwrap();
+        assert!(x >= 60, "beside, at {x}");
+        let (x, _) = find(&drawn(&view, (99, 60), None, None), "Status").unwrap();
+        assert!(x < 10, "under, at {x}");
+    }
+
+    #[tokio::test]
+    async fn a_screen_as_tall_as_the_header_shows_nothing_under_it() {
+        let view = DetailView::new(acme("ACME-10").await);
+        let screen = drawn(&view, (60, 7), None, None);
+        let last: String = (0..60).map(|x| screen[(x, 6)].symbol()).collect();
+        assert_eq!(last.trim(), "", "the header's own blank row");
+    }
+
+    /// The text keeps a blank column before the fields' border.
+    #[tokio::test]
+    async fn a_gap_column_separates_the_text_from_the_fields() {
+        let mut issue = acme("ACME-10").await;
+        issue.description = Some(RichText::from_markdown(&"x".repeat(300)));
+        let view = DetailView::new(issue);
+        let screen = drawn(&view, (100, 40), None, None);
+        let (_, y) = find(&screen, "xxxxxxxxxx").unwrap();
+        let border = (0..100).find(|&x| screen[(x, y)].symbol() == "│").unwrap();
+        assert_eq!(screen[(border - 1, y)].symbol(), " ");
+    }
+
+    #[tokio::test]
+    async fn half_a_page_is_half_the_text_area_and_one_line_at_least() {
+        let view = DetailView::new(acme("ACME-10").await);
+        drawn(&view, (100, 47), None, None);
+        assert_eq!(view.half_page(), 20, "40 rows under the header");
+        drawn(&view, (100, 8), None, None);
+        assert_eq!(view.half_page(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_text_starts_with_its_first_heading_and_the_tab_counts_no_comment_yet() {
+        let view = DetailView::new(acme("ACME-10").await);
+        let empty = RichText::default();
+        let lines = view.content(&theme(), 80, &[("Description", &empty), ("Notes", &empty)]);
+        assert!(lines[0].to_string().contains("Description"), "{:?}", lines[0]);
+        let notes = lines.iter().position(|l| l.to_string().contains("Notes")).unwrap();
+        assert_eq!(lines[notes - 1].to_string(), "", "a blank line between sections");
+        let (tabs, _) = view.tabs(&theme());
+        let tabs: String = tabs.iter().map(|s| s.content.to_string()).collect();
+        assert!(tabs.contains("Comments (0)"), "{tabs}");
+        let mut view = view;
+        view.tab = view.tab.step(1);
+        assert_eq!(view.tab, Tab::History);
+        let (spans, lit) = view.tabs(&theme());
+        let text: String = spans.iter().map(|s| s.content.to_string()).collect();
+        let lit: String = text.chars().skip(lit.start).take(lit.len()).collect();
+        assert!(lit.contains("History"), "the tab shown is the one lit: {lit:?}");
+        assert_eq!(view.tab.step(-2), Tab::All, "round the other way");
+    }
+
+    #[tokio::test]
+    async fn the_assignees_picture_heads_the_fields_with_the_name_beside_it() {
+        let issue = acme("ACME-10").await;
+        let who = issue.assignee.clone().unwrap().display_name;
+        let view = DetailView::new(issue);
+        let mut avatar = picture();
+        let screen = drawn(&view, (100, 40), Some(&mut avatar), None);
+        let (x, y) = find(&screen, "Assignee").unwrap();
+        let (nx, ny) = find(&screen, &who).unwrap();
+        // The column starts at 65 of 100; the picture is 8 wide, 2 in.
+        assert_eq!((x, y, nx, ny), (65 + 2 + 8 + 2, 7 + 1, 65 + 12, 7 + 2));
+        let (_, status) = find(&screen, "Status").unwrap();
+        assert_eq!(status, 7 + 5, "the fields under the picture and a blank row");
+    }
+
+    #[tokio::test]
+    async fn no_room_no_picture() {
+        let view = DetailView::new(acme("ACME-10").await);
+        let mut avatar = picture();
+        // The right-hand column: 35 of 100, under the 7 header rows.
+        let screen = drawn(&view, (100, 7 + 7), Some(&mut avatar), None);
+        assert_eq!(find(&screen, "Assignee").map(|(x, _)| x < 70), Some(true), "the field");
+        let screen = drawn(&view, (100, 7 + 8), Some(&mut avatar), None);
+        assert_eq!(find(&screen, "Assignee").map(|(x, _)| x), Some(77), "the picture");
+        let area = Rect { x: 0, y: 0, width: 19, height: 20 };
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(19, 20)).unwrap();
+        let mut long = view.issue.clone();
+        long.assignee.as_mut().unwrap().display_name = "Maximilian Bartholomew".into();
+        let view = DetailView::new(long);
+        terminal
+            .draw(|f| assert_eq!(view.draw_avatar(f, area, &theme(), Some(&mut avatar)), area))
+            .unwrap();
+        let area = Rect { width: 20, ..area };
+        terminal
+            .draw(|f| assert_ne!(view.draw_avatar(f, area, &theme(), Some(&mut avatar)), area))
+            .unwrap();
+        let mut wide = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 20)).unwrap();
+        wide.draw(|f| {
+            view.draw_avatar(f, area, &theme(), Some(&mut avatar));
+        })
+        .unwrap();
+        let screen = wide.backend().buffer().clone();
+        assert!(
+            (0..20).all(|y| (20..40).all(|x| screen[(x, y)].symbol() == " ")),
+            "a long name stops at the column"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_image_attachment_shows_at_the_foot_of_the_fields() {
+        let mut issue = acme("ACME-10").await;
+        issue.attachments = vec![kolum_domain::Attachment {
+            name: "shot.png".into(),
+            url: "u".into(),
+            mime: "image/png".into(),
+            size: 1,
+        }];
+        let view = DetailView::new(issue);
+        let mut shot = picture();
+        let area = Rect { x: 0, y: 0, width: 30, height: SHOT_ROWS + 8 };
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, SHOT_ROWS + 8)).unwrap();
+        terminal
+            .draw(|f| {
+                let rest = view.draw_shot(f, area, &theme(), Some(&mut shot));
+                assert_eq!(rest.height, 7, "what is left above its title");
+            })
+            .unwrap();
+        let screen = terminal.backend().buffer().clone();
+        assert_eq!(find(&screen, "shot.png"), Some((2, 7)));
+        assert_eq!(screen[(1, 8)], ratatui::buffer::Cell::default(), "the picture starts two in");
+        assert_ne!(screen[(2, 8)], ratatui::buffer::Cell::default());
+        let short = Rect { height: SHOT_ROWS + 7, ..area };
+        terminal
+            .draw(|f| assert_eq!(view.draw_shot(f, short, &theme(), Some(&mut shot)), short))
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_fields_list_the_custom_ones_that_hold_text_and_status_is_always_there() {
+        let mut issue = acme("ACME-10").await;
+        issue.fields = vec![
+            CustomField {
+                id: FieldId::new("c1"),
+                name: "Team".into(),
+                value: FieldValue::Text("Mobile".into()),
+            },
+            CustomField {
+                id: FieldId::new("c2"),
+                name: "Notes".into(),
+                value: FieldValue::RichText(RichText::from_markdown("n")),
+            },
+            CustomField {
+                id: FieldId::new("c3"),
+                name: "Empty".into(),
+                value: FieldValue::Text(String::new()),
+            },
+        ];
+        let names: Vec<String> =
+            field_names(&issue, None, None).into_iter().map(|(n, _)| n).collect();
+        assert!(names.contains(&"c1".to_string()));
+        assert!(
+            !names.contains(&"c2".to_string()) && !names.contains(&"c3".to_string()),
+            "{names:?}"
+        );
+        assert!(["status", "created", "updated"].iter().all(|f| filled(&issue, f)));
     }
     use kolum_domain::{RichText, User};
 
