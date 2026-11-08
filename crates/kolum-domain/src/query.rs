@@ -176,6 +176,14 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_name_never_matches_an_issue_nobody_has() {
+        let mut unassigned = issue();
+        unassigned.assignee = None;
+        let ana = Filter { assignees: vec![UserSel::Named("ana".into())], ..Default::default() };
+        assert!(!ana.matches_fields(&unassigned, &UserId::new("ana")));
+    }
+
+    #[test]
     fn values_of_one_field_are_alternatives_and_fields_combine() {
         assert!(matches(Filter {
             types: vec!["story".into(), "bug".into()],

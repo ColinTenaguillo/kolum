@@ -115,6 +115,25 @@ mod tests {
         assert_eq!(typed("<BS><Del>x").text(), "x");
     }
 
+    /// `handle` says whether the text changed, which decides whether the
+    /// proposals are worked out again.
+    #[test]
+    fn an_edit_says_whether_it_changed_the_text() {
+        let key = |s: &str| parse_keys(s, Key::char(' ')).unwrap()[0];
+        let mut input = typed("a");
+        assert!(input.handle(key("<BS>")), "the one character goes");
+        assert_eq!(input.text(), "");
+        assert!(!input.handle(key("<BS>")), "nothing before the cursor");
+        assert!(!input.handle(key("<C-w>")) && !input.handle(key("<C-u>")), "nothing to delete");
+        let mut input = typed("ab<Left>");
+        assert!(input.handle(key("<Del>")));
+        assert!(!input.handle(key("<Left>")), "a move changes no text");
+        assert!(!input.handle(key("<End>")));
+        assert!(input.handle(key("<C-u>")) && input.text().is_empty());
+        let mut input = typed("ab");
+        assert!(input.handle(key("<C-w>")) && input.text().is_empty(), "a one-word line");
+    }
+
     #[test]
     fn ctrl_w_deletes_a_word_and_ctrl_u_the_line_before_the_cursor() {
         let w = typed("login time  <C-w>");

@@ -432,6 +432,9 @@ impl<S: PickerSource> AnyPicker for Picker<S> {
 fn panes(area: Rect, layout: PickerLayout) -> (Rect, Option<Rect>) {
     let layout = match layout {
         PickerLayout::Horizontal if area.width < 80 => PickerLayout::Vertical,
+        l => l,
+    };
+    let layout = match layout {
         PickerLayout::Vertical if area.height < 20 => PickerLayout::NoPreview,
         l => l,
     };
@@ -445,5 +448,24 @@ fn panes(area: Rect, layout: PickerLayout) -> (Rect, Option<Rect>) {
             (b, Some(t))
         }
         PickerLayout::NoPreview => (area, None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two panes side by side from 80 columns, stacked from 20 rows, else
+    /// the list alone.
+    #[test]
+    fn the_preview_goes_where_there_is_room_for_it() {
+        let area = |width, height| Rect { x: 0, y: 0, width, height };
+        let preview = |w, h, layout| panes(area(w, h), layout).1.map(|p| (p.x, p.y) != (0, 0));
+        assert_eq!(preview(80, 30, PickerLayout::Horizontal), Some(true), "on the right");
+        assert_eq!(preview(79, 30, PickerLayout::Horizontal), Some(false), "on top");
+        assert_eq!(preview(79, 20, PickerLayout::Horizontal), Some(false));
+        assert_eq!(preview(79, 19, PickerLayout::Horizontal), None);
+        assert_eq!(preview(120, 19, PickerLayout::Vertical), None);
+        assert_eq!(preview(120, 40, PickerLayout::NoPreview), None);
     }
 }

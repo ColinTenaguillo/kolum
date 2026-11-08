@@ -630,17 +630,23 @@ async fn fake_jira_with(fail_once: Option<&'static str>, broken: Option<&'static
                     && !std::mem::replace(&mut *failed.lock().unwrap(), true);
                 let refused = target.contains("bulkfetch") && body.contains("\"BROKEN-");
                 let (status, extra, body) = match route(&method, &target) {
-                    _ if refused => ("500 Internal Server Error", "", String::new()),
+                    _ if refused => ("500 Internal Server Error", String::new(), String::new()),
                     _ if broken.is_some_and(|p| target.starts_with(p)) => {
-                        ("500 Internal Server Error", "", String::new())
+                        ("500 Internal Server Error", String::new(), String::new())
                     }
                     _ if first_hit => {
-                        ("429 Too Many Requests", "Retry-After: 0\r\n", String::new())
+                        ("429 Too Many Requests", "Retry-After: 0\r\n".into(), String::new())
                     }
-                    Some((status, body)) => (status, "", body.to_string()),
-                    None => {
-                        ("404 Not Found", "", r#"{"errorMessages":["No such thing"]}"#.to_string())
+                    _ if target.starts_with("/limited/") => {
+                        let secs = &target["/limited/".len()..];
+                        ("429 Too Many Requests", format!("Retry-After: {secs}\r\n"), String::new())
                     }
+                    Some((status, body)) => (status, String::new(), body.to_string()),
+                    None => (
+                        "404 Not Found",
+                        String::new(),
+                        r#"{"errorMessages":["No such thing"]}"#.to_string(),
+                    ),
                 };
                 let response = format!(
                     "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n{extra}\r\n{body}",
@@ -1232,4 +1238,56 @@ fn a_207_with_a_refused_issue_is_a_failure() {
     let fine = json!({"entries": [{"issueId": 10005, "issueKey": "ACME-5", "status": 200}]});
     assert_eq!(rank_errors(&fine), None);
     assert_eq!(rank_errors(&serde_json::Value::Null), None, "a 204");
+    let moved = json!({"entries": [{"issueKey": "ACME-5", "status": 300, "errors": ["Moved"]}]});
+    assert_eq!(rank_errors(&moved), Some("Moved".into()), "anything but a 2xx is refused");
+}
+
+/// A rate limit is waited out twice when Jira says how long, then given up;
+/// a wait past half a minute is not waited at all.
+#[tokio::test]
+async fn a_rate_limit_is_retried_twice_and_a_long_one_not_at_all() {
+    let jira = fake_jira(None).await;
+    let client = Client::new(&jira.url, "Basic dGVzdA==");
+    let hits =
+        |path: &str| jira.seen.lock().unwrap().iter().filter(|r| r.starts_with(path)).count();
+    let limited = client.get::<serde_json::Value>("/limited/0", &[]).await;
+    assert!(matches!(limited, Err(DomainError::RateLimited { .. })), "{limited:?}");
+    assert_eq!(hits("/limited/0"), 3, "the first try and two more");
+    let long = client.get::<serde_json::Value>("/limited/31", &[]).await;
+    assert!(matches!(long, Err(DomainError::RateLimited { .. })));
+    assert_eq!(hits("/limited/31"), 1);
+}
+
+#[test]
+fn a_page_with_no_issues_is_the_last() {
+    let empty = OffsetPage { start_at: 0, total: 5, issues: vec![] };
+    assert_eq!(offset_page(&empty), None, "nothing came: no next page");
+}
+
+#[test]
+fn the_estimate_is_a_custom_number_field_by_its_name() {
+    let field = |id: &str, name: &str, custom: bool, kind: &str| FieldDto {
+        id: id.into(),
+        name: name.into(),
+        custom,
+        schema: Some(FieldSchemaDto { kind: kind.into(), items: None, custom: None }),
+    };
+    let estimate = |f: FieldDto| map::detect_fields(&[f], &map::FieldIds::default()).estimate;
+    let points = field("customfield_1", "Story Points", true, "number");
+    assert_eq!(estimate(points).as_deref(), Some("customfield_1"));
+    assert_eq!(estimate(field("customfield_2", "Story Points", true, "string")), None, "text");
+    assert_eq!(estimate(field("points", "Story Points", false, "number")), None, "not custom");
+    assert_eq!(estimate(field("customfield_3", "Points", true, "number")), None, "another name");
+}
+
+/// Jira keeps the pinned fields as a JSON list in a string.
+#[test]
+fn pinned_fields_read_from_their_list() {
+    let mut response: serde_json::Value =
+        serde_json::from_str(fixture!("field_layout.json")).unwrap();
+    response["data"]["jira"]["userPreferences"]["issueViewPinnedFields"] =
+        "[\"labels\",  \"duedate\"]".into();
+    let layout = map::field_layout(&response, &ctx().fields).unwrap();
+    let side: Vec<&str> = layout.side.iter().take(2).map(|f| f.id.as_str()).collect();
+    assert_eq!(side, ["labels", "due"]);
 }

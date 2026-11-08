@@ -667,6 +667,15 @@ mod tests {
         assert_eq!(rt.blocks[4], Block::Rule);
     }
 
+    /// The text `$EDITOR` opens: blocks a blank line apart, lists numbered
+    /// from one, a quote's paragraphs a bare `>` apart.
+    #[test]
+    fn markdown_is_written_the_way_a_person_would() {
+        let rt = RichText::from_markdown("a\n\n1. one\n2. two\n\n> b\n>\n> c");
+        assert!(!rt.lossy, "Markdown loses nothing");
+        assert_eq!(rt.to_markdown(), "a\n\n1. one\n2. two\n\n> b\n>\n> c\n");
+    }
+
     #[test]
     fn raw_html_is_dropped_and_the_text_inside_it_kept() {
         let rt = RichText::from_markdown("a <b>bold</b>");

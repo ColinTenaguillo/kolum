@@ -139,6 +139,7 @@ mod tests {
         assert!(with(&[("TERM", "xterm-ghostty")]));
         assert!(with(&[("TERM_PROGRAM", "iTerm.app")]));
         assert!(with(&[("TERM", "foot")]));
+        assert!(with(&[("GHOSTTY_RESOURCES_DIR", "/usr/share/ghostty")]));
         // Alacritty keeps TERM as xterm's; a build with sixel says so when asked.
         assert!(with(&[("TERM", "xterm-256color"), ("ALACRITTY_WINDOW_ID", "94371842")]));
         assert!(!with(&[("TERM", "xterm-256color")]), "unknown: half blocks, no query");
@@ -156,6 +157,7 @@ mod tests {
         assert!(!worth_querying("Iterm2", slow), "after the timeout: a guess from the environment");
         assert!(!worth_querying("Halfblocks", quick), "nothing better to ask for");
         assert!(!worth_querying("none", quick));
+        assert!(!worth_querying("Kitty", ANSWERED_WITHIN), "at the limit is too late");
     }
 
     #[test]

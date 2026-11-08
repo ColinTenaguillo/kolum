@@ -66,7 +66,7 @@ fn block(node: &Value) -> Vec<Block> {
     let one = match kind(node) {
         "paragraph" => Block::Paragraph(inlines(children(node))),
         "heading" => Block::Heading {
-            level: attr(node, "level").and_then(Value::as_u64).unwrap_or(1).clamp(1, 6) as u8,
+            level: attr(node, "level").and_then(Value::as_u64).map_or(1, |l| l.clamp(1, 6)) as u8,
             content: inlines(children(node)),
         },
         "bulletList" | "orderedList" => Block::List {
@@ -391,6 +391,80 @@ mod tests {
         for doc in flattened {
             assert!(to_rich_text(&doc).lossy, "{doc}");
         }
+    }
+
+    #[test]
+    fn a_heading_level_is_one_to_six() {
+        let level = |attrs: Value| {
+            let doc = json!({"type": "doc", "content": [{"type": "heading", "attrs": attrs}]});
+            match &to_rich_text(&doc).blocks[0] {
+                Block::Heading { level, .. } => *level,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(
+            [level(json!({})), level(json!({"level": 0})), level(json!({"level": 9}))],
+            [1, 1, 6]
+        );
+    }
+
+    /// What has no counterpart keeps its words, in the marks that say what
+    /// it was.
+    #[test]
+    fn flattened_nodes_keep_their_words_in_marks() {
+        let bold = Marks { bold: true, ..Marks::default() };
+        let italic = Marks { italic: true, ..Marks::default() };
+        let run = |text: &str, marks| Inline::Text { text: text.into(), marks };
+        let para =
+            |text: &str| json!({"type": "paragraph", "content": [{"type": "text", "text": text}]});
+        let doc = json!({"type": "doc", "content": [
+            {"type": "taskList", "content": [{"type": "taskItem", "attrs": {"state": "DONE"}, "content": [{"type": "text", "text": "done"}]}]},
+            {"type": "expand", "attrs": {"title": "More"}, "content": [para("inside")]},
+            {"type": "mediaSingle"},
+            {"type": "paragraph", "content": [{"type": "status", "attrs": {"text": "done"}}]},
+            {"type": "table", "content": [{"type": "tableRow", "content": [
+                {"type": "tableCell", "content": [para("a"), para("b")]}
+            ]}]}
+        ]});
+        assert_eq!(
+            to_rich_text(&doc).blocks,
+            [
+                Block::List {
+                    ordered: false,
+                    items: vec![vec![Block::Paragraph(vec![
+                        Inline::text("☑ "),
+                        Inline::text("done")
+                    ])]]
+                },
+                Block::Quote(vec![
+                    Block::Paragraph(vec![run("More", bold)]),
+                    Block::Paragraph(vec![Inline::text("inside")]),
+                ]),
+                Block::Paragraph(vec![run("[attachment]", italic)]),
+                Block::Paragraph(vec![run("[DONE]", bold)]),
+                Block::Table {
+                    header: false,
+                    rows: vec![vec![vec![Inline::text("a"), Inline::Break, Inline::text("b")]]]
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn only_a_tables_first_row_is_its_header_and_a_break_splits_a_cell() {
+        let cell = |t: &str| vec![Inline::text(t)];
+        let rows =
+            vec![vec![cell("h")], vec![vec![Inline::text("a"), Inline::Break, Inline::text("b")]]];
+        let doc = from_rich_text(&RichText {
+            blocks: vec![Block::Table { header: true, rows }],
+            lossy: false,
+        });
+        let table = &doc["content"][0]["content"];
+        assert_eq!(table[0]["content"][0]["type"], "tableHeader");
+        assert_eq!(table[1]["content"][0]["type"], "tableCell");
+        let paragraphs = &table[1]["content"][0]["content"];
+        assert_eq!(paragraphs.as_array().map(Vec::len), Some(2), "{paragraphs}");
+        assert_eq!(paragraphs[1]["content"][0]["text"], "b");
     }
 
     #[test]

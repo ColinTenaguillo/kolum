@@ -3163,3 +3163,60 @@ async fn the_assignee_field_assigns_the_issue() {
     let sent = writes(app.take_effects());
     assert_eq!(sent[0].2, kolum_app::Write::Assign(Some(kolum_domain::UserId::new("u-ana"))));
 }
+
+/// The issue the picker opens after some moves: `j`, `k`, counts and `gg`
+/// land where the same moves one by one would.
+async fn opened_after(moves: &str) -> Option<String> {
+    let mut app = loaded().await;
+    press(&mut app, "<Space>f");
+    settle(&mut app);
+    press(&mut app, &format!("<Esc>{moves}<CR>"));
+    app.open_issue().map(|k| k.to_string())
+}
+
+#[tokio::test]
+async fn picker_moves_count_and_come_back() {
+    let second = opened_after("j").await;
+    assert_ne!(second, opened_after("").await);
+    assert_eq!(opened_after("jjk").await, second, "k goes back up");
+    assert_eq!(opened_after("2j").await, opened_after("jj").await, "a count");
+    assert_eq!(opened_after("Ggg").await, opened_after("").await, "gg is the first");
+}
+
+#[tokio::test]
+async fn up_in_the_picker_recalls_the_last_search_and_none_before_any() {
+    let mut app = loaded().await;
+    press(&mut app, "<Space>f<Up>");
+    settle(&mut app);
+    assert!(screen(&mut app, 150, 40).contains("\u{f002}  "), "no search yet: nothing recalled");
+    press(&mut app, "<C-c><Space>fsso");
+    settle(&mut app);
+    press(&mut app, "<CR><Esc><Space>f");
+    settle(&mut app);
+    press(&mut app, "<CR><Esc><Space>f<Up>");
+    settle(&mut app);
+    let shown = screen(&mut app, 150, 40);
+    assert!(shown.contains("\u{f002} sso"), "the last search, not the empty one: {shown}");
+}
+
+#[tokio::test]
+async fn half_a_page_counts_like_any_move() {
+    let mut app = loaded().await;
+    press(&mut app, "ll2<C-d>");
+    let twice = selected(&app).to_string();
+    let mut again = loaded().await;
+    press(&mut again, "ll<C-d><C-d>");
+    assert_eq!(twice, selected(&again));
+    press(&mut app, "2<C-u>");
+    press(&mut again, "<C-u><C-u>");
+    assert_eq!(selected(&app), selected(&again));
+}
+
+#[tokio::test]
+async fn everyone_in_the_people_picker_shows_every_card() {
+    let mut app = loaded().await;
+    press(&mut app, "<Space>u");
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    assert!(screen(&mut app, 150, 40).contains("Everyone's cards"));
+}

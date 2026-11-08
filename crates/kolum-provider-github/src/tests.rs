@@ -337,6 +337,18 @@ fn graphql_errors_are_typed_by_their_type() {
 }
 
 #[test]
+fn a_partial_answer_with_data_is_the_data() {
+    let partial = br#"{"data":{"user":{"id":"U"}},"errors":[{"type":"NOT_FOUND","message":"m"}]}"#;
+    assert_eq!(graphql_result(200, partial), Ok(json!({"user": {"id": "U"}})));
+}
+
+#[test]
+fn a_drafts_key_is_the_end_of_its_id() {
+    assert_eq!(draft_key("PVTI_aaa111ccc333").as_str(), "draft-ccc333");
+    assert_eq!(draft_key("abc").as_str(), "draft-abc", "a short id whole");
+}
+
+#[test]
 fn moving_before_an_item_the_order_does_not_hold_is_not_found() {
     let order = ["a".to_string(), "b".to_string()];
     assert_eq!(item_before(&order, "b", "x"), Ok(Some("a".into())));
@@ -391,7 +403,9 @@ async fn search_runs_inside_the_project_and_keeps_what_the_board_knows() {
         text: Some("picker".into()),
         ..Default::default()
     });
-    let hits = p.search(&mine, None).await.unwrap().items;
+    let page = p.search(&mine, None).await.unwrap();
+    assert_eq!(page.next, None, "the last page, though it names its end");
+    let hits = page.items;
     assert_eq!(hits[0].status.name, "In Progress", "on the board: the board's status");
     assert_eq!(
         (hits[1].key.as_str(), hits[1].status.name.as_str()),

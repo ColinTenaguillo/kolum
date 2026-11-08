@@ -270,9 +270,13 @@ mod tests {
         assert_eq!(a.token, Token::InFile("ATATT3xFfGF0secret".into()));
         assert!(said.contains("not a program"), "{said}");
         assert!(!said.contains("ATATT"), "the token is never written back");
-        for (cmd, ok) in
-            [("/bin/sh -c x", true), ("~/no/such/kolum-cmd", false), ("ATATT/x+y=", false)]
-        {
+        assert!(profile_name("my-work_2").is_ok() && profile_name("my work").is_err());
+        for (cmd, ok) in [
+            ("/bin/sh -c x", true),
+            ("~/no/such/kolum-cmd", false),
+            ("ATATT/x+y=", false),
+            ("", false),
+        ] {
             assert_eq!(is_program(cmd), ok, "{cmd}");
         }
     }

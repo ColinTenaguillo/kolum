@@ -816,6 +816,31 @@ mod tests {
     }
 
     #[test]
+    fn an_edit_to_one_custom_field_leaves_the_others_as_they_were() {
+        let mut issue = crate::query::tests::issue();
+        edit(&mut issue, "customfield_1", Some(FieldValue::Number(1.0)));
+        edit(&mut issue, "customfield_2", Some(FieldValue::Number(2.0)));
+        edit(&mut issue, "customfield_2", Some(FieldValue::Number(3.0)));
+        assert_eq!(issue.value(&id("customfield_1")), Some(FieldValue::Number(1.0)));
+        assert_eq!(issue.value(&id("customfield_2")), Some(FieldValue::Number(3.0)));
+        edit(&mut issue, "customfield_1", None);
+        assert_eq!(issue.value(&id("customfield_2")), Some(FieldValue::Number(3.0)));
+    }
+
+    #[test]
+    fn only_a_raster_image_is_shown_as_a_picture() {
+        let file = |mime: &str| Attachment {
+            name: "a".into(),
+            url: "u".into(),
+            mime: mime.into(),
+            size: 1,
+        };
+        assert!(file("image/png").is_image());
+        assert!(!file("image/svg+xml").is_image(), "a vector image is not decoded");
+        assert!(!file("application/pdf").is_image());
+    }
+
+    #[test]
     fn a_custom_field_an_edit_fills_first_goes_by_the_name_the_provider_gives() {
         let mut issue = crate::query::tests::issue();
         edit(&mut issue, "customfield_1", Some(FieldValue::Number(2.0)));

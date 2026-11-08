@@ -236,6 +236,13 @@ mod tests {
     }
 
     #[test]
+    fn a_provider_supports_what_it_says_it_does() {
+        let caps = Capabilities::new([Capability::Write]);
+        assert!(caps.supports(Capability::Write));
+        assert!(!caps.supports(Capability::Sprints));
+    }
+
+    #[test]
     fn the_board_keys_are_every_page_of_issues_in_order() {
         let keys = now(TwoPages.board_keys(&BoardId::new("1"))).unwrap();
         assert_eq!(keys, [IssueKey::parse("PROJ-1"), IssueKey::parse("PROJ-2")]);
