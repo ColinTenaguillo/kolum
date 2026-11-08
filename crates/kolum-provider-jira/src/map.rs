@@ -66,7 +66,8 @@ pub fn detect_fields(fields: &[FieldDto], forced: &FieldIds) -> FieldIds {
 
 /// How Jira takes `value` in a field of this schema: an option as
 /// `{"value"}`, a version or a priority as `{"name"}`, a user by
-/// `user_key`, rich text as `rich` writes it. `None` empties the field.
+/// `user_key`, rich text as `rich` writes it, a count of points or a
+/// sprint by its number. `None` empties the field.
 pub fn field_json(
     schema: &FieldSchemaDto,
     value: Option<&FieldValue>,
@@ -76,16 +77,11 @@ pub fn field_json(
     let Some(value) = value else { return empty(schema) };
     match value {
         FieldValue::Text(t) => one(&schema.kind, t),
-        FieldValue::Options(all) => {
-            let item = schema.items.as_deref().unwrap_or("string");
-            Value::Array(all.iter().map(|v| one(item, v)).collect())
-        }
-        // A count of points: whole numbers stay whole.
+        FieldValue::Options(all) => many(schema.items.as_deref().unwrap_or("string"), all),
         FieldValue::Number(n) => whole(*n),
         FieldValue::Date(d) => json!(d.to_string()),
         FieldValue::User(u) => json!({ user_key: u.id.as_str() }),
         FieldValue::RichText(t) => rich(t),
-        // A sprint by its number.
         FieldValue::Sprint(s) => s.id.parse().map_or_else(|_| json!(s.id), whole),
         FieldValue::Issue(i) => one(&schema.kind, i.key.as_str()),
         FieldValue::Priority(p) => one("priority", &p.name),
@@ -96,6 +92,10 @@ pub fn field_json(
 fn empty(schema: &FieldSchemaDto) -> Value {
     let sprint = schema.custom.as_deref().is_some_and(|c| c.ends_with(":gh-sprint"));
     if schema.kind == "array" && !sprint { json!([]) } else { Value::Null }
+}
+
+fn many(item: &str, all: &[String]) -> Value {
+    Value::Array(all.iter().map(|v| one(item, v)).collect())
 }
 
 /// One value of a field of this kind, by what Jira names it by.
@@ -231,29 +231,57 @@ fn edit_kind(id: &str, f: &EditMetaFieldDto, order: &[Priority]) -> Option<Field
         return None;
     }
     let schema = f.schema.as_ref()?;
-    let custom = schema.custom.as_deref().unwrap_or("");
-    let options: Vec<String> = f
-        .allowed_values
-        .iter()
-        .filter_map(|v| v.value.clone().or_else(|| v.name.clone()))
-        .collect();
-    Some(match (schema.kind.as_str(), schema.items.as_deref()) {
-        _ if custom.ends_with(":textarea") || matches!(id, "description" | "environment") => {
-            FieldKind::RichText
-        }
-        _ if custom.ends_with(":gh-sprint") => FieldKind::Sprint,
-        _ if custom.ends_with(":gh-epic-link") => FieldKind::Issue,
+    let items = schema.items.as_deref();
+    custom_kind(id, schema.custom.as_deref().unwrap_or(""))
+        .or_else(|| plain_kind(&schema.kind, items))
+        .or_else(|| choice_kind(&schema.kind, items, f, order))
+}
+
+/// What a field's custom type says it holds, whatever its schema.
+fn custom_kind(id: &str, custom: &str) -> Option<FieldKind> {
+    if custom.ends_with(":textarea") || matches!(id, "description" | "environment") {
+        Some(FieldKind::RichText)
+    } else if custom.ends_with(":gh-sprint") {
+        Some(FieldKind::Sprint)
+    } else if custom.ends_with(":gh-epic-link") {
+        Some(FieldKind::Issue)
+    } else {
+        None
+    }
+}
+
+/// A field typed freely.
+fn plain_kind(kind: &str, items: Option<&str>) -> Option<FieldKind> {
+    Some(match (kind, items) {
         ("issuelink", _) => FieldKind::Issue,
-        ("priority", _) if !options.is_empty() => FieldKind::Priority(allowed_priorities(f, order)),
         ("string", _) => FieldKind::Text,
         ("number", _) => FieldKind::Number,
         ("date", _) => FieldKind::Date,
         ("user", _) => FieldKind::User,
         ("array", Some("string")) => FieldKind::Words,
-        ("option" | "version" | "component", _) if !options.is_empty() => {
-            FieldKind::Choice { options, many: false }
-        }
-        ("array", Some("option" | "version" | "component")) if !options.is_empty() => {
+        _ => return None,
+    })
+}
+
+/// A field picked among the values Jira allows, when it lists some.
+fn choice_kind(
+    kind: &str,
+    items: Option<&str>,
+    f: &EditMetaFieldDto,
+    order: &[Priority],
+) -> Option<FieldKind> {
+    let options: Vec<String> = f
+        .allowed_values
+        .iter()
+        .filter_map(|v| v.value.clone().or_else(|| v.name.clone()))
+        .collect();
+    if options.is_empty() {
+        return None;
+    }
+    Some(match (kind, items) {
+        ("priority", _) => FieldKind::Priority(allowed_priorities(f, order)),
+        ("option" | "version" | "component", _) => FieldKind::Choice { options, many: false },
+        ("array", Some("option" | "version" | "component")) => {
             FieldKind::Choice { options, many: true }
         }
         _ => return None,

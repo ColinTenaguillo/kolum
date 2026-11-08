@@ -98,14 +98,18 @@ async fn fake_github(status: u16, body: Option<&'static str>) -> FakeGithub {
     FakeGithub { url, seen }
 }
 
-fn provider(gh: &FakeGithub) -> GithubProvider {
-    GithubProvider::new(GithubSettings {
+fn settings(gh: &FakeGithub) -> GithubSettings {
+    GithubSettings {
         api_url: gh.url.clone(),
         owner: "ColinTenaguillo".into(),
         number: 12,
         token: "gho_test".into(),
         status_field: "Status".into(),
-    })
+    }
+}
+
+fn provider(gh: &FakeGithub) -> GithubProvider {
+    GithubProvider::new(settings(gh))
 }
 
 async fn loaded(gh: &FakeGithub) -> (GithubProvider, Vec<Issue>) {
@@ -245,6 +249,8 @@ async fn writes_are_the_mutations_github_expects() {
     )
     .await
     .unwrap();
+    let pr = IssueUpdate { title: Some("Faster".into()), ..Default::default() };
+    p.update(&IssueKey::parse("kolum#43"), pr).await.unwrap();
     let refused = p.update(&key, IssueUpdate { labels: Some(vec![]), ..Default::default() }).await;
     assert_eq!(refused, Err(DomainError::Unsupported(Capability::CustomFields)));
     let id = FieldId::new("Notes");
@@ -276,6 +282,65 @@ async fn writes_are_the_mutations_github_expects() {
     assert!(mutations[4]["query"].as_str().unwrap().contains("updateIssue"));
     assert_eq!(vars(4), json!({ "id": "I_42", "title": "Faster picker", "body": null }));
     assert!(mutations[5]["query"].as_str().unwrap().contains("updateProjectV2DraftIssue"));
+    assert!(mutations[6]["query"].as_str().unwrap().contains("updatePullRequest"));
+}
+
+#[tokio::test]
+async fn a_search_hit_off_the_board_cannot_be_moved_or_ranked() {
+    let gh = fake_github(200, None).await;
+    let (p, _) = loaded(&gh).await;
+    p.search(&Query::Filter(Filter::default()), None).await.unwrap();
+    let (off, on) = (IssueKey::parse("kolum#50"), IssueKey::parse("kolum#42"));
+    let not_in_project = Err(DomainError::NotFound("kolum#50 is not in the project".into()));
+    assert_eq!(p.transition(&off, &TransitionId::new("o_done")).await, not_in_project);
+    assert_eq!(p.rank(&off, &Rank::After(on.clone())).await, not_in_project);
+    assert_eq!(p.rank(&on, &Rank::Before(off)).await, not_in_project);
+}
+
+/// An issue kolum does not know is refused before GitHub is asked, so a
+/// network failure cannot hide why.
+#[tokio::test]
+async fn an_unknown_issue_takes_no_transition_even_when_github_is_down() {
+    let down = fake_github(502, Some("<html>")).await;
+    let (p, key) = (provider(&down), IssueKey::parse("kolum#42"));
+    let moved = p.transition(&key, &TransitionId::new("o_done")).await;
+    assert!(matches!(moved, Err(DomainError::NotFound(_))), "{moved:?}");
+    assert!(down.seen.lock().unwrap().is_empty(), "no request");
+}
+
+#[tokio::test]
+async fn a_project_without_the_status_field_takes_no_transition() {
+    let gh = fake_github(200, None).await;
+    let p = GithubProvider::new(GithubSettings { status_field: "Stage".into(), ..settings(&gh) });
+    let board = p.boards().await.unwrap().remove(0).id;
+    p.board_issues(&board, None, None).await.unwrap();
+    assert_eq!(
+        p.transition(&IssueKey::parse("kolum#42"), &TransitionId::new("o_done")).await,
+        Err(DomainError::NotFound("a `Stage` field".into()))
+    );
+}
+
+#[test]
+fn graphql_errors_are_typed_by_their_type() {
+    let error = |kind: &str| {
+        let body = format!(r#"{{"errors":[{{"type":"{kind}","message":"m"}}]}}"#);
+        graphql_result(200, body.as_bytes())
+    };
+    assert_eq!(error("NOT_FOUND"), Err(DomainError::NotFound("m".into())));
+    assert_eq!(error("FORBIDDEN"), Err(DomainError::Unauthorized("m".into())));
+    assert_eq!(error("RATE_LIMITED"), Err(DomainError::RateLimited { retry_after_secs: None }));
+    assert_eq!(error("SOMETHING"), Err(DomainError::Transport("m".into())));
+    let bare = graphql_result(200, br#"{"errors":[{}]}"#);
+    assert_eq!(bare, Err(DomainError::Transport("GraphQL error".into())));
+    let forbidden = graphql_result(403, br#"{"message":"Resource not accessible"}"#);
+    assert_eq!(forbidden, Err(DomainError::Transport("HTTP 403: Resource not accessible".into())));
+}
+
+#[test]
+fn moving_before_an_item_the_order_does_not_hold_is_not_found() {
+    let order = ["a".to_string(), "b".to_string()];
+    assert_eq!(item_before(&order, "b", "x"), Ok(Some("a".into())));
+    assert_eq!(item_before(&order, "c", "x"), Err(DomainError::NotFound("c".into())));
 }
 
 #[tokio::test]

@@ -510,18 +510,8 @@ impl IssueSearch for JiraProvider {
 
 impl JiraProvider {
     async fn search_jql(&self, query: &Query, token: Option<PageToken>) -> Result<Page<Issue>> {
-        let jql = match query {
-            Query::Native(jql) => jql.clone(),
-            Query::Filter(filter) => {
-                let ids = self.assignee_ids(query).await?;
-                // Only names, and none of them anyone: nothing can match.
-                let only_names = !filter.assignees.is_empty()
-                    && filter.assignees.iter().all(|s| matches!(s, UserSel::Named(_)));
-                if only_names && ids.is_empty() {
-                    return Ok(Page { items: vec![], next: None });
-                }
-                jql::filter(filter, &ids)
-            }
+        let Some(jql) = self.jql(query).await? else {
+            return Ok(Page { items: vec![], next: None });
         };
         let mut params = vec![
             ("jql", jql),
@@ -530,9 +520,7 @@ impl JiraProvider {
         ];
         match self.settings.flavor {
             JiraFlavor::Cloud => {
-                if let Some(t) = token {
-                    params.push(("nextPageToken", t.0));
-                }
+                params.extend(token.map(|t| ("nextPageToken", t.0)));
                 let page: TokenPage =
                     self.client.get(&format!("{}/search/jql", self.api()), &params).await?;
                 Ok(Page {
@@ -547,6 +535,19 @@ impl JiraProvider {
                 Ok(Page { next: offset_page(&page), items: self.issues(&page.issues).await? })
             }
         }
+    }
+
+    /// The query in JQL; none when it names only people who are nobody,
+    /// so nothing can match.
+    async fn jql(&self, query: &Query) -> Result<Option<String>> {
+        let filter = match query {
+            Query::Native(jql) => return Ok(Some(jql.clone())),
+            Query::Filter(filter) => filter,
+        };
+        let ids = self.assignee_ids(query).await?;
+        let only_names = !filter.assignees.is_empty()
+            && filter.assignees.iter().all(|s| matches!(s, UserSel::Named(_)));
+        Ok((!only_names || !ids.is_empty()).then(|| jql::filter(filter, &ids)))
     }
 }
 

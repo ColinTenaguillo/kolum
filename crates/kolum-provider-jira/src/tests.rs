@@ -71,6 +71,11 @@ fn a_value_is_written_in_the_shape_its_field_takes() {
             json!({"accountId": "557058:ana"}),
         ),
         (schema("number", None, None), Some(FieldValue::Number(3.5)), json!(3.5)),
+        (
+            schema("priority", None, None),
+            Some(FieldValue::Priority(Priority { rank: 1, name: "High".into() })),
+            json!({"name": "High"}),
+        ),
         (schema("date", None, None), Some(FieldValue::Date(date)), json!("2026-11-30")),
         (
             schema("string", None, None),
@@ -530,8 +535,9 @@ fn route(method: &str, target: &str) -> Option<(&'static str, &'static str)> {
     Some((
         "200 OK",
         match path {
-            "/rest/api/3/field" => fixture!("fields.json"),
-            "/rest/api/3/priority" => fixture!("priorities.json"),
+            "/rest/api/3/field" | "/rest/api/2/field" => fixture!("fields.json"),
+            "/rest/api/3/priority" | "/rest/api/2/priority" => fixture!("priorities.json"),
+            "/rest/api/2/search" => r#"{"startAt":0,"maxResults":50,"total":0,"issues":[]}"#,
             "/_edge/tenant_info" => r#"{"cloudId": "cloud-1"}"#,
             "/rest/agile/1.0/board" => fixture!("boards.json"),
             // Board 7: the same, on a Jira whose private API does not answer.
@@ -560,6 +566,7 @@ fn route(method: &str, target: &str) -> Option<(&'static str, &'static str)> {
             }
             "/rest/api/3/search/jql" => fixture!("search_jql.json"),
             "/rest/api/3/myself" => fixture!("myself.json"),
+            "/rest/api/3/user/search" if target.contains("query=nobody") => "[]",
             "/rest/api/3/user/search" => fixture!("user_search.json"),
             _ => return None,
         },
@@ -646,14 +653,18 @@ async fn fake_jira_with(fail_once: Option<&'static str>, broken: Option<&'static
     FakeJira { url, seen }
 }
 
-fn provider(jira: &FakeJira) -> JiraProvider {
-    JiraProvider::new(JiraSettings {
+fn settings(jira: &FakeJira) -> JiraSettings {
+    JiraSettings {
         base_url: jira.url.clone(),
         flavor: JiraFlavor::Cloud,
         auth: "Basic dGVzdA==".into(),
         board: Some(42),
         fields: map::FieldIds::default(),
-    })
+    }
+}
+
+fn provider(jira: &FakeJira) -> JiraProvider {
+    JiraProvider::new(settings(jira))
 }
 
 /// The priorities in E's picker come in editmeta's own order, each ranked
@@ -983,6 +994,31 @@ async fn search_translates_the_query_and_resolves_names() {
         searches[1].contains("jql=project+%3D+ACME")
             && searches[1].contains("nextPageToken=CAEaAggD")
     );
+}
+
+/// Only names, none of them anyone: nothing can match, and Jira is not
+/// asked.
+#[tokio::test]
+async fn a_search_for_people_who_are_nobody_finds_nothing() {
+    let jira = fake_jira(None).await;
+    let p = provider(&jira);
+    let nobody = Filter { assignees: vec![UserSel::Named("nobody".into())], ..Filter::default() };
+    let page = p.search(&Query::Filter(nobody), None).await.unwrap();
+    assert_eq!(page, Page { items: vec![], next: None });
+    let seen = jira.seen.lock().unwrap();
+    assert!(!seen.iter().any(|r| r.starts_with("/rest/api/3/search")), "{seen:?}");
+}
+
+/// Data Center pages a search by offset, on its own API.
+#[tokio::test]
+async fn a_data_center_search_pages_by_offset() {
+    let jira = fake_jira(None).await;
+    let p = JiraProvider::new(JiraSettings { flavor: JiraFlavor::DataCenter, ..settings(&jira) });
+    let page = p.search(&Query::Native("project = ACME".into()), None).await.unwrap();
+    assert_eq!(page, Page { items: vec![], next: None });
+    let seen = jira.seen.lock().unwrap();
+    let search = seen.iter().find(|r| r.starts_with("/rest/api/2/search")).unwrap();
+    assert!(search.contains("startAt=0") && search.contains("jql=project+%3D+ACME"), "{search}");
 }
 
 /// `text ~` never matches a key: the issue is looked up by its key and

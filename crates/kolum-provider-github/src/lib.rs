@@ -60,29 +60,36 @@ fn transport(e: impl std::fmt::Display) -> DomainError {
 /// (one of `user` and `organization` not found) still has its data.
 fn graphql_result(status: u16, body: &[u8]) -> Result<Value> {
     let parsed: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
-    let message = || parsed["message"].as_str().unwrap_or("").to_string();
-    match status {
-        401 => return Err(DomainError::Unauthorized(message())),
-        403 if message().to_lowercase().contains("rate limit") => {
-            return Err(DomainError::RateLimited { retry_after_secs: None });
-        }
-        200..=299 => {}
-        _ => return Err(DomainError::Transport(format!("HTTP {status}: {}", message()))),
+    if let Some(error) = http_error(status, parsed["message"].as_str().unwrap_or("")) {
+        return Err(error);
     }
-    let errors = parsed["errors"].as_array().cloned().unwrap_or_default();
     let data = parsed["data"].clone();
     let has_data = data.as_object().is_some_and(|d| d.values().any(|v| !v.is_null()));
-    match errors.first() {
-        Some(e) if !has_data => {
-            let text = e["message"].as_str().unwrap_or("GraphQL error").to_string();
-            Err(match e["type"].as_str() {
-                Some("NOT_FOUND") => DomainError::NotFound(text),
-                Some("FORBIDDEN") | Some("INSUFFICIENT_SCOPES") => DomainError::Unauthorized(text),
-                Some("RATE_LIMITED") => DomainError::RateLimited { retry_after_secs: None },
-                _ => DomainError::Transport(text),
-            })
-        }
+    match parsed["errors"].get(0) {
+        Some(e) if !has_data => Err(graphql_error(e)),
         _ => Ok(data),
+    }
+}
+
+fn http_error(status: u16, message: &str) -> Option<DomainError> {
+    match status {
+        200..=299 => None,
+        401 => Some(DomainError::Unauthorized(message.to_string())),
+        403 if message.to_lowercase().contains("rate limit") => {
+            Some(DomainError::RateLimited { retry_after_secs: None })
+        }
+        _ => Some(DomainError::Transport(format!("HTTP {status}: {message}"))),
+    }
+}
+
+/// The first of GraphQL's `errors`, by its type.
+fn graphql_error(e: &Value) -> DomainError {
+    let text = e["message"].as_str().unwrap_or("GraphQL error").to_string();
+    match e["type"].as_str() {
+        Some("NOT_FOUND") => DomainError::NotFound(text),
+        Some("FORBIDDEN") | Some("INSUFFICIENT_SCOPES") => DomainError::Unauthorized(text),
+        Some("RATE_LIMITED") => DomainError::RateLimited { retry_after_secs: None },
+        _ => DomainError::Transport(text),
     }
 }
 
@@ -411,6 +418,13 @@ impl GithubProvider {
             DomainError::NotFound(format!("{key} is not on the board or in a search"))
         })
     }
+
+    /// Its project item: a search hit off the board has none.
+    fn item(&self, key: &IssueKey) -> Result<String> {
+        self.known(key)?
+            .item
+            .ok_or_else(|| DomainError::NotFound(format!("{key} is not in the project")))
+    }
 }
 
 #[async_trait]
@@ -530,19 +544,32 @@ fn comment(c: &Value) -> Option<Comment> {
     })
 }
 
-/// The neutral query in GitHub's search syntax, inside the project.
-pub fn search_query(query: &Query, owner: &str, number: u64) -> String {
-    let filter = match query {
-        Query::Native(q) => return q.clone(),
-        Query::Filter(f) => f,
-    };
-    let quote = |v: &str| {
-        if v.contains(' ') { format!("\"{}\"", v.replace('"', "")) } else { v.to_string() }
-    };
-    let mut parts = vec![format!("project:{owner}/{number}")];
-    parts.extend(filter.text.clone());
-    let who: Vec<String> = filter
-        .assignees
+/// The mutation that edits the title and body of this kind of content.
+fn update_mutation(kind: &str) -> &'static str {
+    match kind {
+        "PullRequest" => queries::UPDATE_PULL,
+        "DraftIssue" => queries::UPDATE_DRAFT,
+        _ => queries::UPDATE_ISSUE,
+    }
+}
+
+/// The item a move puts `item` after to land before `other`: the one before
+/// `other` in the project's order, skipping `item` itself; none puts it first.
+fn item_before(order: &[String], other: &str, item: &str) -> Result<Option<String>> {
+    let at = order
+        .iter()
+        .position(|i| i == other)
+        .ok_or_else(|| DomainError::NotFound(other.to_string()))?;
+    Ok(order[..at].iter().rev().find(|i| *i != item).cloned())
+}
+
+fn quote(v: &str) -> String {
+    if v.contains(' ') { format!("\"{}\"", v.replace('"', "")) } else { v.to_string() }
+}
+
+/// Alternatives: GitHub's issue search takes OR and parentheses.
+fn assignees_term(assignees: &[UserSel]) -> Option<String> {
+    let who: Vec<String> = assignees
         .iter()
         .map(|sel| match sel {
             UserSel::Me => "assignee:@me".to_string(),
@@ -551,17 +578,32 @@ pub fn search_query(query: &Query, owner: &str, number: u64) -> String {
         })
         .collect();
     match who.len() {
-        0 => {}
-        1 => parts.extend(who),
-        // Alternatives: GitHub's issue search takes OR and parentheses.
-        _ => parts.push(format!("({})", who.join(" OR "))),
+        0 => None,
+        1 => who.into_iter().next(),
+        _ => Some(format!("({})", who.join(" OR "))),
     }
-    parts.extend(filter.labels.iter().map(|l| format!("label:{}", quote(l))));
-    parts.extend(filter.types.iter().map(|t| match t.to_lowercase().as_str() {
+}
+
+/// A pull request or an issue by its kind; any other type is a label.
+fn type_term(kind: &str) -> String {
+    match kind.to_lowercase().as_str() {
         "pr" | "pull" | "pullrequest" => "is:pr".to_string(),
         "issue" => "is:issue".to_string(),
         other => format!("label:{}", quote(other)),
-    }));
+    }
+}
+
+/// The neutral query in GitHub's search syntax, inside the project.
+pub fn search_query(query: &Query, owner: &str, number: u64) -> String {
+    let filter = match query {
+        Query::Native(q) => return q.clone(),
+        Query::Filter(f) => f,
+    };
+    let mut parts = vec![format!("project:{owner}/{number}")];
+    parts.extend(filter.text.clone());
+    parts.extend(assignees_term(&filter.assignees));
+    parts.extend(filter.labels.iter().map(|l| format!("label:{}", quote(l))));
+    parts.extend(filter.types.iter().map(|t| type_term(t)));
     if filter.statuses.iter().any(|s| category(s) == StatusCategory::Done) {
         parts.push("is:closed".into());
     }
@@ -609,11 +651,9 @@ impl IssueWriter for GithubProvider {
     }
 
     async fn transition(&self, key: &IssueKey, transition: &TransitionId) -> Result<()> {
-        let known = self.known(key)?;
+        // Off the board says so before any request: nothing to ask GitHub.
+        let item = self.item(key)?;
         let p = self.project().await?;
-        let item = known
-            .item
-            .ok_or_else(|| DomainError::NotFound(format!("{key} is not in the project")))?;
         let field = p.status_field.clone().ok_or_else(|| {
             DomainError::NotFound(format!("a `{}` field", self.settings.status_field))
         })?;
@@ -667,11 +707,7 @@ impl IssueWriter for GithubProvider {
             return Ok(());
         }
         let known = self.known(key)?;
-        let mutation = match known.kind.as_str() {
-            "PullRequest" => queries::UPDATE_PULL,
-            "DraftIssue" => queries::UPDATE_DRAFT,
-            _ => queries::UPDATE_ISSUE,
-        };
+        let mutation = update_mutation(&known.kind);
         let vars = json!({ "id": known.content, "title": update.title, "body": update.description.map(|d| d.to_markdown()) });
         self.graphql(mutation, vars).await.map(drop)
     }
@@ -694,26 +730,14 @@ impl IssueWriter for GithubProvider {
 
     async fn rank(&self, key: &IssueKey, rank: &Rank) -> Result<()> {
         let p = self.project().await?;
-        let item = self
-            .known(key)?
-            .item
-            .ok_or_else(|| DomainError::NotFound(format!("{key} is not in the project")))?;
+        let item = self.item(key)?;
         let (Rank::Before(other) | Rank::After(other)) = rank;
-        let other = self
-            .known(other)?
-            .item
-            .ok_or_else(|| DomainError::NotFound(format!("{other} is not in the project")))?;
+        let other = self.item(other)?;
         let after = match rank {
             Rank::After(_) => Some(other),
             Rank::Before(_) => {
                 let order = self.order.lock().unwrap_or_else(|e| e.into_inner());
-                let at = order
-                    .iter()
-                    .position(|i| *i == other)
-                    .ok_or_else(|| DomainError::NotFound(other.clone()))?;
-                // The one before it, skipping the item being moved; none
-                // puts it first.
-                order[..at].iter().rev().find(|i| **i != item).cloned()
+                item_before(&order, &other, &item)?
             }
         };
         let vars = json!({ "project": p.id, "item": item, "after": after });

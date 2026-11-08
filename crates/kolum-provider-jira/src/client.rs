@@ -83,46 +83,58 @@ impl Client {
     ) -> Result<Value> {
         let mut attempt = 0;
         loop {
-            let permit =
-                self.limit.acquire().await.map_err(|e| DomainError::Transport(e.to_string()))?;
-            let mut request = self
-                .http
-                .request(method.clone(), format!("{}{path}", self.base))
-                .header(AUTHORIZATION, &self.auth)
-                .header(ACCEPT, "application/json")
-                .query(query);
-            if let Some(body) = body {
-                request = request.json(body);
-            }
-            let response =
-                request.send().await.map_err(|e| DomainError::Transport(format!("{path}: {e}")))?;
-            let status = response.status().as_u16();
-            let retry =
-                response.headers().get(RETRY_AFTER).and_then(|v| v.to_str().ok()?.parse().ok());
-            let bytes = response
-                .bytes()
-                .await
-                .map_err(|e| DomainError::Transport(format!("{path}: {e}")))?;
-            drop(permit);
-            if (200..300).contains(&status) {
-                if bytes.is_empty() {
-                    return Ok(Value::Null);
-                }
-                return serde_json::from_slice(&bytes)
-                    .map_err(|e| DomainError::Transport(format!("{path}: {e}")));
-            }
-            match status_error(status, &String::from_utf8_lossy(&bytes), retry) {
-                DomainError::RateLimited { retry_after_secs: Some(secs) }
+            match self.once(&method, path, query, body).await {
+                Err(DomainError::RateLimited { retry_after_secs: Some(secs) })
                     if attempt < RETRIES && secs <= MAX_WAIT_SECS =>
                 {
                     tracing::info!("{path}: rate limited, retrying in {secs}s");
                     tokio::time::sleep(Duration::from_secs(secs)).await;
                     attempt += 1;
                 }
-                error => return Err(error),
+                answer => return answer,
             }
         }
     }
+
+    /// One try, under the limit on requests in flight.
+    async fn once(
+        &self,
+        method: &Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<&Value>,
+    ) -> Result<Value> {
+        let permit =
+            self.limit.acquire().await.map_err(|e| DomainError::Transport(e.to_string()))?;
+        let mut request = self
+            .http
+            .request(method.clone(), format!("{}{path}", self.base))
+            .header(AUTHORIZATION, &self.auth)
+            .header(ACCEPT, "application/json")
+            .query(query);
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let response =
+            request.send().await.map_err(|e| DomainError::Transport(format!("{path}: {e}")))?;
+        let status = response.status().as_u16();
+        let retry = response.headers().get(RETRY_AFTER).and_then(|v| v.to_str().ok()?.parse().ok());
+        let bytes =
+            response.bytes().await.map_err(|e| DomainError::Transport(format!("{path}: {e}")))?;
+        drop(permit);
+        if !(200..300).contains(&status) {
+            return Err(status_error(status, &String::from_utf8_lossy(&bytes), retry));
+        }
+        json_body(path, &bytes)
+    }
+}
+
+/// A success's body as JSON, or `Null` when it has none.
+fn json_body(path: &str, bytes: &[u8]) -> Result<Value> {
+    if bytes.is_empty() {
+        return Ok(Value::Null);
+    }
+    serde_json::from_slice(bytes).map_err(|e| DomainError::Transport(format!("{path}: {e}")))
 }
 
 /// Whether `url` is on the site at `base`: same scheme, host and port. A

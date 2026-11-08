@@ -73,20 +73,34 @@ fn block(node: &Value) -> Vec<Block> {
             ordered: kind(node) == "orderedList",
             items: children(node).iter().map(|item| blocks(children(item))).collect(),
         },
-        "taskList" | "decisionList" => {
-            Block::List { ordered: false, items: children(node).iter().map(task).collect() }
-        }
         "codeBlock" => Block::Code {
             language: attr_str(node, "language").filter(|l| !l.is_empty()).map(String::from),
             text: plain(children(node)),
         },
-        "blockquote" => Block::Quote(blocks(children(node))),
-        "panel" => Block::Panel {
-            kind: panel_kind(attr_str(node, "panelType")),
-            blocks: blocks(children(node)),
-        },
+        "blockquote" | "panel" => quote(node),
         "rule" => Block::Rule,
         "table" => table(node),
+        _ => return flattened(node),
+    };
+    vec![one]
+}
+
+/// A quote, or a panel by its type.
+fn quote(node: &Value) -> Block {
+    let blocks = blocks(children(node));
+    match kind(node) {
+        "panel" => Block::Panel { kind: panel_kind(attr_str(node, "panelType")), blocks },
+        _ => Block::Quote(blocks),
+    }
+}
+
+/// A node RichText has no counterpart for, as the nearest thing that keeps
+/// its words; an unknown one keeps its children.
+fn flattened(node: &Value) -> Vec<Block> {
+    let one = match kind(node) {
+        "taskList" | "decisionList" => {
+            Block::List { ordered: false, items: children(node).iter().map(task).collect() }
+        }
         "expand" | "nestedExpand" => {
             let title = attr_str(node, "title").unwrap_or("Details").to_string();
             let bold = Marks { bold: true, ..Marks::default() };
@@ -155,9 +169,11 @@ fn inlines(nodes: &[Value]) -> Vec<Inline> {
 }
 
 fn inline(node: &Value) -> Vec<Inline> {
-    let text = || node.get("text").and_then(Value::as_str).unwrap_or("").to_string();
     let one = match kind(node) {
-        "text" => return vec![marked(text(), node.get("marks"))],
+        "text" => {
+            let text = node.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+            marked(text, node.get("marks"))
+        }
         "hardBreak" => Inline::Break,
         "mention" => Inline::Mention {
             id: attr_str(node, "id").map(UserId::new),
@@ -166,6 +182,15 @@ fn inline(node: &Value) -> Vec<Inline> {
         "emoji" => Inline::Emoji(
             attr_str(node, "text").or(attr_str(node, "shortName")).unwrap_or("").into(),
         ),
+        _ => return flattened_inline(node),
+    };
+    vec![one]
+}
+
+/// An inline node RichText has no counterpart for, as text or a link; an
+/// unknown one keeps its children.
+fn flattened_inline(node: &Value) -> Vec<Inline> {
+    let one = match kind(node) {
         "inlineCard" => match attr_str(node, "url") {
             Some(url) => Inline::Link { text: url.into(), url: url.into() },
             None => return vec![],
@@ -186,17 +211,24 @@ fn marked(text: String, marks: Option<&Value>) -> Inline {
     let mut href = None;
     for mark in marks.and_then(Value::as_array).into_iter().flatten() {
         match kind(mark) {
-            "strong" => out.bold = true,
-            "em" => out.italic = true,
-            "code" => out.code = true,
-            "strike" => out.strike = true,
             "link" => href = attr_str(mark, "href").map(String::from),
-            _ => {}
+            other => set_mark(&mut out, other),
         }
     }
     match href {
         Some(url) => Inline::Link { text, url },
         None => Inline::Text { text, marks: out },
+    }
+}
+
+/// A formatting mark; any other (a colour) is dropped.
+fn set_mark(marks: &mut Marks, kind: &str) {
+    match kind {
+        "strong" => marks.bold = true,
+        "em" => marks.italic = true,
+        "code" => marks.code = true,
+        "strike" => marks.strike = true,
+        _ => {}
     }
 }
 
@@ -225,48 +257,53 @@ fn node(kind: &str, content: Vec<Value>) -> Value {
 fn block_out(block: &Block) -> Value {
     match block {
         Block::Paragraph(inlines) => node("paragraph", inlines_out(inlines)),
-        Block::Heading { level, content } => {
-            json!({ "type": "heading", "attrs": { "level": level }, "content": inlines_out(content) })
-        }
-        Block::List { ordered, items } => node(
-            if *ordered { "orderedList" } else { "bulletList" },
-            items
-                .iter()
-                .map(|item| node("listItem", item.iter().map(block_out).collect()))
-                .collect(),
-        ),
-        Block::Code { language, text } => {
-            let content = if text.is_empty() {
-                vec![]
-            } else {
-                vec![json!({ "type": "text", "text": text })]
-            };
-            json!({ "type": "codeBlock", "attrs": { "language": language }, "content": content })
-        }
+        Block::Heading { level, content } => heading_out(*level, content),
+        Block::List { ordered, items } => list_out(*ordered, items),
+        Block::Code { language, text } => code_out(language.as_deref(), text),
         Block::Quote(blocks) => node("blockquote", blocks.iter().map(block_out).collect()),
-        Block::Panel { kind, blocks } => {
-            let name = match kind {
-                PanelKind::Info => "info",
-                PanelKind::Note => "note",
-                PanelKind::Success => "success",
-                PanelKind::Warning => "warning",
-                PanelKind::Error => "error",
-            };
-            json!({ "type": "panel", "attrs": { "panelType": name }, "content": blocks.iter().map(block_out).collect::<Vec<_>>() })
-        }
-        Block::Table { header, rows } => node(
-            "table",
-            rows.iter()
-                .enumerate()
-                .map(|(r, row)| {
-                    let cell = if *header && r == 0 { "tableHeader" } else { "tableCell" };
-                    let cells = row.iter().map(|c| node(cell, cell_paragraphs(c))).collect();
-                    node("tableRow", cells)
-                })
-                .collect(),
-        ),
+        Block::Panel { kind, blocks } => panel_out(*kind, blocks),
+        Block::Table { header, rows } => table_out(*header, rows),
         Block::Rule => json!({ "type": "rule" }),
     }
+}
+
+fn list_out(ordered: bool, items: &[Vec<Block>]) -> Value {
+    let items = items.iter().map(|item| node("listItem", item.iter().map(block_out).collect()));
+    node(if ordered { "orderedList" } else { "bulletList" }, items.collect())
+}
+
+fn heading_out(level: u8, content: &[Inline]) -> Value {
+    json!({ "type": "heading", "attrs": { "level": level }, "content": inlines_out(content) })
+}
+
+fn panel_out(kind: PanelKind, blocks: &[Block]) -> Value {
+    let content: Vec<Value> = blocks.iter().map(block_out).collect();
+    json!({ "type": "panel", "attrs": { "panelType": panel_name(kind) }, "content": content })
+}
+
+/// ADF refuses an empty text node: an empty block has no content.
+fn code_out(language: Option<&str>, text: &str) -> Value {
+    let content =
+        if text.is_empty() { vec![] } else { vec![json!({ "type": "text", "text": text })] };
+    json!({ "type": "codeBlock", "attrs": { "language": language }, "content": content })
+}
+
+fn panel_name(kind: PanelKind) -> &'static str {
+    match kind {
+        PanelKind::Info => "info",
+        PanelKind::Note => "note",
+        PanelKind::Success => "success",
+        PanelKind::Warning => "warning",
+        PanelKind::Error => "error",
+    }
+}
+
+fn table_out(header: bool, rows: &[Vec<Vec<Inline>>]) -> Value {
+    let rows = rows.iter().enumerate().map(|(r, row)| {
+        let cell = if header && r == 0 { "tableHeader" } else { "tableCell" };
+        node("tableRow", row.iter().map(|c| node(cell, cell_paragraphs(c))).collect())
+    });
+    node("table", rows.collect())
 }
 
 /// A cell's line breaks were paragraphs in ADF; they are again.
@@ -275,36 +312,39 @@ fn cell_paragraphs(inlines: &[Inline]) -> Vec<Value> {
 }
 
 fn inlines_out(inlines: &[Inline]) -> Vec<Value> {
-    inlines
-        .iter()
-        .filter_map(|inline| {
-            Some(match inline {
-                // ADF refuses an empty text node.
-                Inline::Text { text, .. } | Inline::Link { text, .. } if text.is_empty() => return None,
-                Inline::Text { text, marks } => {
-                    let mut out = vec![];
-                    for (on, kind) in [(marks.bold, "strong"), (marks.italic, "em"), (marks.code, "code"), (marks.strike, "strike")] {
-                        if on {
-                            out.push(json!({ "type": kind }));
-                        }
-                    }
-                    if out.is_empty() {
-                        json!({ "type": "text", "text": text })
-                    } else {
-                        json!({ "type": "text", "text": text, "marks": out })
-                    }
-                }
-                Inline::Link { text, url } => {
-                    json!({ "type": "text", "text": text, "marks": [{ "type": "link", "attrs": { "href": url } }] })
-                }
-                Inline::Mention { id, name } => {
-                    json!({ "type": "mention", "attrs": { "id": id.as_ref().map(|i| i.as_str()), "text": format!("@{name}") } })
-                }
-                Inline::Emoji(e) => json!({ "type": "emoji", "attrs": { "shortName": e, "text": e } }),
-                Inline::Break => json!({ "type": "hardBreak" }),
-            })
-        })
-        .collect()
+    inlines.iter().filter_map(inline_out).collect()
+}
+
+fn inline_out(inline: &Inline) -> Option<Value> {
+    Some(match inline {
+        // ADF refuses an empty text node.
+        Inline::Text { text, .. } | Inline::Link { text, .. } if text.is_empty() => return None,
+        Inline::Text { text, marks } => text_out(text, marks),
+        Inline::Link { text, url } => {
+            json!({ "type": "text", "text": text, "marks": [{ "type": "link", "attrs": { "href": url } }] })
+        }
+        Inline::Mention { id, name } => {
+            json!({ "type": "mention", "attrs": { "id": id.as_ref().map(|i| i.as_str()), "text": format!("@{name}") } })
+        }
+        Inline::Emoji(e) => json!({ "type": "emoji", "attrs": { "shortName": e, "text": e } }),
+        Inline::Break => json!({ "type": "hardBreak" }),
+    })
+}
+
+fn text_out(text: &str, marks: &Marks) -> Value {
+    let flags = [
+        (marks.bold, "strong"),
+        (marks.italic, "em"),
+        (marks.code, "code"),
+        (marks.strike, "strike"),
+    ];
+    let out: Vec<Value> =
+        flags.iter().filter(|(on, _)| *on).map(|(_, kind)| json!({ "type": kind })).collect();
+    if out.is_empty() {
+        json!({ "type": "text", "text": text })
+    } else {
+        json!({ "type": "text", "text": text, "marks": out })
+    }
 }
 
 #[cfg(test)]
@@ -351,6 +391,19 @@ mod tests {
         for doc in flattened {
             assert!(to_rich_text(&doc).lossy, "{doc}");
         }
+    }
+
+    #[test]
+    fn a_card_is_a_link_to_its_url_and_a_card_without_one_is_dropped() {
+        let url = "https://x.y/1";
+        let link = Inline::Link { text: url.into(), url: url.into() };
+        let doc = |content: Value| json!({"type": "doc", "content": content});
+        let block = json!([{"type": "blockCard", "attrs": {"url": url}}, {"type": "embedCard"}]);
+        assert_eq!(to_rich_text(&doc(block)).blocks, [Block::Paragraph(vec![link.clone()])]);
+        let inline = json!([{"type": "paragraph", "content": [
+            {"type": "inlineCard", "attrs": {"url": url}}, {"type": "inlineCard"}
+        ]}]);
+        assert_eq!(to_rich_text(&doc(inline)).blocks, [Block::Paragraph(vec![link])]);
     }
 
     #[test]

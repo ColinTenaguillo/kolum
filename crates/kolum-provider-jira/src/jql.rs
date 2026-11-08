@@ -30,41 +30,42 @@ fn any_of(field: &str, values: &[String]) -> Option<String> {
 /// `assignees` are the ids every `@name` resolved to; `@me` and `@none`
 /// need none.
 pub fn filter(f: &Filter, assignees: &[String]) -> String {
-    use kolum_domain::UserSel;
     let mut clauses: Vec<String> = vec![];
-    if let Some(text) = &f.text {
-        clauses.push(format!("text ~ {}", quote(text)));
-    }
-    // One clause for every way of naming the assignee, ORed: they are
-    // alternatives, like the values of any field.
+    clauses.extend(f.text.as_ref().map(|text| format!("text ~ {}", quote(text))));
+    clauses.extend(assignee(&f.assignees, assignees));
+    clauses.extend(any_of("status", &f.statuses));
+    clauses.extend(any_of("issuetype", &f.types));
+    clauses.extend(any_of("labels", &f.labels));
+    clauses.extend(f.epic.as_ref().map(|epic| format!("parent = {}", quote(epic))));
+    clauses.extend(f.sprint.as_ref().map(|sprint| format!("sprint = {}", sprint_value(sprint))));
+    with_order(clauses.join(" AND "))
+}
+
+/// One clause for every way of naming the assignee, ORed: they are
+/// alternatives, like the values of any field.
+fn assignee(sels: &[kolum_domain::UserSel], ids: &[String]) -> Option<String> {
+    use kolum_domain::UserSel;
     let mut who: Vec<String> = vec![];
-    for sel in &f.assignees {
+    for sel in sels {
         match sel {
             UserSel::Me => who.push("assignee = currentUser()".into()),
             UserSel::Nobody => who.push("assignee is EMPTY".into()),
             UserSel::Named(_) => {}
         }
     }
-    if f.assignees.iter().any(|s| matches!(s, UserSel::Named(_))) {
-        who.extend(any_of("assignee", assignees));
+    if sels.iter().any(|s| matches!(s, UserSel::Named(_))) {
+        who.extend(any_of("assignee", ids));
     }
     match who.len() {
-        0 => {}
-        1 => clauses.push(who.remove(0)),
-        _ => clauses.push(format!("({})", who.join(" OR "))),
+        0 => None,
+        1 => who.pop(),
+        _ => Some(format!("({})", who.join(" OR "))),
     }
-    clauses.extend(any_of("status", &f.statuses));
-    clauses.extend(any_of("issuetype", &f.types));
-    clauses.extend(any_of("labels", &f.labels));
-    if let Some(epic) = &f.epic {
-        clauses.push(format!("parent = {}", quote(epic)));
-    }
-    if let Some(sprint) = &f.sprint {
-        // A number is a sprint id; anything else its name.
-        let value = if sprint.parse::<u64>().is_ok() { sprint.clone() } else { quote(sprint) };
-        clauses.push(format!("sprint = {value}"));
-    }
-    with_order(clauses.join(" AND "))
+}
+
+/// A number is a sprint id; anything else its name.
+fn sprint_value(sprint: &str) -> String {
+    if sprint.parse::<u64>().is_ok() { sprint.to_string() } else { quote(sprint) }
 }
 
 pub fn with_order(jql: String) -> String {
