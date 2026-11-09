@@ -23,7 +23,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
-base64 = "0.22"
+base64 = "0.23"
 # Needed for EventStream, which ratatui's crossterm re-export does not
 # expose. MUST track ratatui's crossterm version, or KeyEvent becomes two
 # distinct types.
