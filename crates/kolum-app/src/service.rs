@@ -519,7 +519,7 @@ mod tests {
         let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), None);
         assert_eq!(service.provider_name(), "fake");
         let Some(Event::Me(me)) = events.within().await else { panic!("expected Me first") };
-        assert_eq!(me.display_name, "Colin Tenaguillo");
+        assert_eq!(me.display_name, "Camille Thibault");
 
         service.send(Command::LoadBoard(None, 7));
         let Some(Event::BoardLoaded { snapshot, fresh: true, request: 7 }) =

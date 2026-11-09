@@ -401,13 +401,13 @@ mod tests {
 
     #[test]
     fn headings_and_paragraphs_keep_their_line_breaks() {
-        let rt = to_rich_text("h3. Context\nIC-1 added {{a_b}} to it.\nSecond line\n\nNext");
+        let rt = to_rich_text("h3. Context\nPROJ-1 added {{a_b}} to it.\nSecond line\n\nNext");
         assert_eq!(
             rt.blocks,
             [
                 Block::Heading { level: 3, content: vec![text("Context")] },
                 Block::Paragraph(vec![
-                    text("IC-1 added "),
+                    text("PROJ-1 added "),
                     code("a_b"),
                     text(" to it."),
                     Inline::Break,
@@ -579,12 +579,12 @@ mod tests {
     #[test]
     fn what_follows_a_closing_macro_on_its_line_is_kept() {
         let rt =
-            to_rich_text("{quote}Be careful{quote} see IC-1\n{code}\nx = 1{code} then restart");
+            to_rich_text("{quote}Be careful{quote} see PROJ-1\n{code}\nx = 1{code} then restart");
         assert_eq!(
             rt.blocks,
             [
                 Block::Quote(vec![para("Be careful")]),
-                para("see IC-1"),
+                para("see PROJ-1"),
                 Block::Code { language: None, text: "x = 1".into() },
                 para("then restart"),
             ]

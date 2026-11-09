@@ -85,13 +85,13 @@ fn a_value_is_written_in_the_shape_its_field_takes() {
         (schema("string", None, None), Some(FieldValue::Text("x".into())), json!("x")),
         (
             schema("issuelink", None, None),
-            Some(FieldValue::Text("IC-1".into())),
-            json!({"key": "IC-1"}),
+            Some(FieldValue::Text("PROJ-1".into())),
+            json!({"key": "PROJ-1"}),
         ),
         (
             schema("any", None, Some("com.pyxis.greenhopper.jira:gh-epic-link")),
-            Some(FieldValue::Text("IC-1".into())),
-            json!("IC-1"),
+            Some(FieldValue::Text("PROJ-1".into())),
+            json!("PROJ-1"),
         ),
         (
             schema("array", Some("json"), Some("com.pyxis.greenhopper.jira:gh-sprint")),

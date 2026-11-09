@@ -680,7 +680,7 @@ mod tests {
         assert_eq!(FieldKind::Date.parse("2026-11-30"), Ok(Some(FieldValue::Date(date))));
         assert_eq!(FieldKind::Date.parse("soon"), Err("a date reads YYYY-MM-DD".into()));
         assert_eq!(FieldKind::Words.parse("api  ui"), Ok(Some(words(&["api", "ui"]))));
-        assert_eq!(FieldKind::Issue.parse("ic-12"), Ok(Some(FieldValue::Text("IC-12".into()))));
+        assert_eq!(FieldKind::Issue.parse("proj-12"), Ok(Some(FieldValue::Text("PROJ-12".into()))));
         assert_eq!(FieldKind::Text.parse(" a b "), Ok(Some(FieldValue::Text("a b".into()))));
         assert_eq!(FieldKind::Text.parse("  "), Ok(None), "empty empties the field");
         for value in [FieldValue::Number(5.0), FieldValue::Date(date), words(&["api", "ui"])] {

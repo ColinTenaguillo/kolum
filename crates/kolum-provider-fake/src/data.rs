@@ -26,7 +26,7 @@ pub const PROJECT_NAME: &str = "Acme Web";
 
 /// (id, display name). The first is the signed-in user.
 pub const USERS: &[(&str, &str)] = &[
-    ("u-colin", "Colin Tenaguillo"),
+    ("u-camille", "Camille Thibault"),
     ("u-ana", "Ana Silva"),
     ("u-bruno", "Bruno Costa"),
     ("u-chloe", "Chloé Martin"),

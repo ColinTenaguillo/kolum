@@ -55,7 +55,7 @@ async fn search_filters_by_fields_and_text_and_refuses_native_queries() {
     let mine = Query::Filter(Filter { assignees: vec![UserSel::Me], ..Default::default() });
     let hits = p.search(&mine, None).await.unwrap().items;
     assert!(!hits.is_empty());
-    assert!(hits.iter().all(|i| i.assignee.as_ref().unwrap().display_name == "Colin Tenaguillo"));
+    assert!(hits.iter().all(|i| i.assignee.as_ref().unwrap().display_name == "Camille Thibault"));
 
     let text = Query::Filter(Filter { text: Some("sso redirect".into()), ..Default::default() });
     let hits = p.search(&text, None).await.unwrap().items;
@@ -145,7 +145,7 @@ async fn comments_come_after_their_issue() {
 #[tokio::test]
 async fn the_signed_in_user_and_user_search() {
     let p = FakeProvider::new();
-    assert_eq!(p.me().await.unwrap().display_name, "Colin Tenaguillo");
+    assert_eq!(p.me().await.unwrap().display_name, "Camille Thibault");
     let found = p.find_users("SIL").await.unwrap();
     assert_eq!(found.iter().map(|u| u.display_name.as_str()).collect::<Vec<_>>(), ["Ana Silva"]);
     assert!(p.capabilities().supports(Capability::Write));
@@ -228,10 +228,10 @@ async fn the_demo_data_follows_its_rules() {
     };
     let backlog = activity("ACME-9").await;
     assert_eq!(backlog.len(), 1, "still in the backlog: created, never moved");
-    assert_eq!(backlog[0].author.display_name, "Colin Tenaguillo", "by its reporter");
+    assert_eq!(backlog[0].author.display_name, "Camille Thibault", "by its reporter");
     let moved = activity("ACME-5").await;
     assert_eq!(moved.len(), 2);
-    assert_eq!(moved[1].author.display_name, "Colin Tenaguillo", "moved by its assignee");
+    assert_eq!(moved[1].author.display_name, "Camille Thibault", "moved by its assignee");
     assert_eq!(activity("ACME-26").await[0].author.display_name, "Emma Johansson");
 
     // `since` includes an issue updated at exactly that moment.

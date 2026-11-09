@@ -3,7 +3,7 @@
 use kolum_domain::{Filter, IssueKey};
 use time::OffsetDateTime;
 
-/// `ic-12983` read as the key `IC-12983`: typed text, trimmed and in
+/// `proj-12983` read as the key `PROJ-12983`: typed text, trimmed and in
 /// capitals, when it reads as a Jira key (not GitHub's `repo#12`).
 pub fn issue_key(text: &str) -> Option<IssueKey> {
     let key = IssueKey::parse(text.trim().to_uppercase());
@@ -136,10 +136,12 @@ mod tests {
 
     #[test]
     fn an_issue_key_is_told_from_text() {
-        assert_eq!(issue_key(" ic-12983 "), Some(IssueKey::parse("IC-12983")));
+        assert_eq!(issue_key(" proj-12983 "), Some(IssueKey::parse("PROJ-12983")));
         assert_eq!(issue_key("MY_P2-7"), Some(IssueKey::parse("MY_P2-7")));
         assert_eq!(issue_key("my_p2-7").unwrap().project(), Some("MY_P2"));
-        for text in ["login", "IC-", "-12", "2FA-1", "IC-12a", "IC-1 timeout", "IC-1-2", "web#12"] {
+        for text in
+            ["login", "PROJ-", "-12", "2FA-1", "PROJ-12a", "PROJ-1 timeout", "PROJ-1-2", "web#12"]
+        {
             assert_eq!(issue_key(text), None, "{text}");
         }
     }

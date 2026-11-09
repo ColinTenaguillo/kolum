@@ -1664,7 +1664,7 @@ async fn a_read_slower_than_the_write_does_not_undo_it_on_the_open_issue() {
         children: vec![],
     };
     app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail)));
-    assert!(detail_value(&mut app, "Assignee").contains("Colin Tenaguillo"));
+    assert!(detail_value(&mut app, "Assignee").contains("Camille Thibault"));
 }
 
 /// An epic, in progress but not a card: what the provider reads back
@@ -1701,7 +1701,7 @@ async fn writes_reach_the_provider_with_no_board() {
     app.take_effects();
 
     press(&mut app, "<Space>A");
-    let me = kolum_app::Write::Assign(Some(kolum_domain::UserId::new("u-colin")));
+    let me = kolum_app::Write::Assign(Some(kolum_domain::UserId::new("u-camille")));
     assert_eq!(writes(app.take_effects()).pop().map(|w| w.2), Some(me));
     press(&mut app, "t");
     app.on_event(transitions_event("ACME-9").await);
@@ -1819,7 +1819,7 @@ async fn assigning_from_the_picker_and_to_myself() {
     press(&mut app, "<Space>a");
     settle(&mut app);
     let shown = screen(&mut app, 150, 40);
-    let me = shown.find("Colin Tenaguillo (CT)").unwrap();
+    let me = shown.find("Camille Thibault (CT)").unwrap();
     assert!(me < shown.find("Ana Silva (AS)").unwrap(), "me first");
     assert!(shown.contains("Unassigned"));
     press(&mut app, "ana");
@@ -1829,8 +1829,8 @@ async fn assigning_from_the_picker_and_to_myself() {
     assert_eq!(sent[0].2, kolum_app::Write::Assign(Some(kolum_domain::UserId::new("u-ana"))));
     press(&mut app, "<Space>A");
     let sent = writes(app.take_effects());
-    assert_eq!(sent[0].2, kolum_app::Write::Assign(Some(kolum_domain::UserId::new("u-colin"))));
-    assert!(screen(&mut app, 150, 40).contains("Assigned to Colin Tenaguillo"));
+    assert_eq!(sent[0].2, kolum_app::Write::Assign(Some(kolum_domain::UserId::new("u-camille"))));
+    assert!(screen(&mut app, 150, 40).contains("Assigned to Camille Thibault"));
 }
 
 #[tokio::test]
@@ -2514,7 +2514,7 @@ async fn swimlanes_group_each_column_and_navigation_follows_them() {
     );
 
     press(&mut app, "s");
-    assert!(screen(&mut app, 150, 60).contains("── Colin Tenaguillo"));
+    assert!(screen(&mut app, 150, 60).contains("── Camille Thibault"));
     press(&mut app, "s");
     assert!(screen(&mut app, 150, 60).contains("── Highest"));
     press(&mut app, "s");
@@ -2548,7 +2548,7 @@ async fn the_detail_shows_the_assignees_avatar() {
     app.on_event(Event::Image { url: url.clone(), result: bytes });
     let after = screen(&mut app, 140, 40);
     assert_ne!(before, after, "the picture is drawn");
-    assert!(after.contains("Colin Tenaguillo"));
+    assert!(after.contains("Camille Thibault"));
 
     app.on_event(Event::Image { url, result: Ok(b"not an image".to_vec()) });
     screen(&mut app, 140, 40); // a broken picture is no picture, not a crash
@@ -2757,12 +2757,12 @@ async fn the_board_filter_takes_the_pickers_prefixes() {
     press(&mut app, "/@me<CR>");
     assert_eq!(
         cards_shown(&mut app),
-        keys_where(&assigned_to("Colin Tenaguillo")),
+        keys_where(&assigned_to("Camille Thibault")),
         "only my cards"
     );
     assert!(
         selected(&app).is_empty()
-            || keys_where(&assigned_to("Colin Tenaguillo")).contains(&selected(&app).to_string())
+            || keys_where(&assigned_to("Camille Thibault")).contains(&selected(&app).to_string())
     );
 
     press(&mut app, "/<C-u>@ana<CR>");
@@ -2773,7 +2773,7 @@ async fn the_board_filter_takes_the_pickers_prefixes() {
     );
 
     press(&mut app, "/<C-u>@me #bug<CR>");
-    let my_bugs = keys_where(&|i| assigned_to("Colin Tenaguillo")(i) && i.kind.name == "Bug");
+    let my_bugs = keys_where(&|i| assigned_to("Camille Thibault")(i) && i.kind.name == "Bug");
     assert_eq!(cards_shown(&mut app), my_bugs, "prefixes combine");
     assert!(!my_bugs.is_empty());
 
@@ -2809,19 +2809,19 @@ async fn space_u_picks_one_or_several_people_to_show() {
     settle(&mut app);
     let menu = screen(&mut app, 150, 50);
     let at = |s: &str| menu.find(s).unwrap_or_else(|| panic!("{s} missing from {menu}"));
-    assert!(at("Everyone") < at("Colin Tenaguillo (me)"), "everyone, then me first");
-    assert!(at("Colin Tenaguillo (me)") < at("Ana Silva"), "then the others by name");
+    assert!(at("Everyone") < at("Camille Thibault (me)"), "everyone, then me first");
+    assert!(at("Camille Thibault (me)") < at("Ana Silva"), "then the others by name");
     assert!(menu.contains("Unassigned"));
     assert!(menu.contains("6 cards"), "with how many each has: {menu}");
 
     press(&mut app, "ana");
     settle(&mut app);
-    press(&mut app, "<Tab><C-w>colin");
+    press(&mut app, "<Tab><C-w>camille");
     settle(&mut app);
     press(&mut app, "<Tab><CR>");
     let header = screen(&mut app, 150, 50).lines().next().unwrap_or("").to_string();
     assert!(header.contains("/@AnaSilva @me") || header.contains("/@me @AnaSilva"), "{header}");
-    assert_eq!(cards_shown(&mut app), of(&["Ana Silva", "Colin Tenaguillo"]), "both, together");
+    assert_eq!(cards_shown(&mut app), of(&["Ana Silva", "Camille Thibault"]), "both, together");
 
     press(&mut app, "<Space>u");
     settle(&mut app);
@@ -2837,7 +2837,7 @@ async fn space_u_picks_one_or_several_people_to_show() {
     settle(&mut app);
     press(&mut app, "<Esc>"); // to normal mode
     press(&mut app, "<Esc>"); // and out: nothing changed
-    assert_eq!(cards_shown(&mut app), of(&["Ana Silva", "Colin Tenaguillo"]));
+    assert_eq!(cards_shown(&mut app), of(&["Ana Silva", "Camille Thibault"]));
 
     press(&mut app, "<Space>ueveryone");
     settle(&mut app);
