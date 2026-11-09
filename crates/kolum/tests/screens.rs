@@ -262,10 +262,12 @@ async fn the_theme_changes_live_and_a_preview_is_undone_on_close() {
 }
 
 #[tokio::test]
-async fn unfinished_actions_say_so_instead_of_doing_nothing() {
+async fn assign_runs_from_the_command_line_like_its_key() {
     let mut app = loaded().await;
     press(&mut app, ":assign<CR>");
-    assert!(screen(&mut app, 120, 30).contains(":assign is not available yet"));
+    settle(&mut app);
+    let shown = screen(&mut app, 150, 40);
+    assert!(shown.contains("Ana Silva (AS)") && shown.contains("Unassigned"), "{shown}");
 }
 
 #[tokio::test]
@@ -3120,7 +3122,7 @@ async fn an_action_the_picker_cannot_take_says_so_and_enter_on_nothing_does_noth
     press(&mut app, "<Space>t");
     settle(&mut app);
     press(&mut app, "<C-t>");
-    assert!(screen(&mut app, 120, 30).contains("`transition` is not available yet"));
+    assert!(screen(&mut app, 120, 30).contains("`transition` is not available here"));
     press(&mut app, "<C-c><Space>fzzzzqqqq");
     settle(&mut app);
     app.take_effects();
@@ -3148,7 +3150,7 @@ async fn assign_me_waits_until_kolum_knows_who_i_am() {
 async fn an_action_that_means_nothing_on_a_card_says_so() {
     let mut app = loaded().await;
     press(&mut app, ":next_tab<CR>");
-    assert!(screen(&mut app, 120, 30).contains("`next_tab` is not available yet"));
+    assert!(screen(&mut app, 120, 30).contains("`next_tab` is not available here"));
 }
 
 #[tokio::test]

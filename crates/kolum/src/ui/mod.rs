@@ -794,7 +794,7 @@ impl App {
     }
 
     fn unavailable(&mut self, action: Action) {
-        self.say(format!("`{}` is not available yet", action.name()), Level::Warn);
+        self.say(format!("`{}` is not available here", action.name()), Level::Warn);
     }
 
     /// A flat routing: the actions that act wherever the focus is, then
@@ -2100,7 +2100,6 @@ impl App {
             "theme" => self.theme_line(arg),
             "board" => self.board_line(arg),
             "jql" => self.jql(arg),
-            "assign" => self.say(":assign is not available yet", Level::Warn),
             _ => self.run_action(name),
         }
     }
