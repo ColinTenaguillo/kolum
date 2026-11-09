@@ -8,6 +8,9 @@ publish.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme = "../../README.md"
+keywords = ["tui", "kanban", "jira", "github", "ratatui"]
+categories = ["command-line-utilities", "development-tools"]
 
 # `publish = false` hides the package from dist too; this puts it back,
 # since the binaries from a tag are the release.

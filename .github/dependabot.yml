@@ -1,0 +1,27 @@
+# Weekly PRs, crates.io grouped into one so the lockfile moves in a single
+# reviewable step. Security advisories open their own PR as soon as they land.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # crossterm MUST track ratatui's version, or KeyEvent becomes two
+      # distinct types: they move together, apart from everything else.
+      tui:
+        patterns: ["ratatui*", "crossterm"]
+      crates:
+        patterns: ["*"]
+  # release.yml is cargo-dist's: `dist plan` fails when the file differs
+  # from what it generates, so the actions it uses move only when dist is
+  # upgraded (dist-workspace.toml) and the file regenerated. Dependabot
+  # cannot leave one file out, so ci.yml's checkout is moved by hand.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: actions/checkout
+      - dependency-name: actions/upload-artifact
+      - dependency-name: actions/download-artifact

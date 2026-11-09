@@ -1,0 +1,20 @@
+pkgbase = kolum-bin
+	pkgdesc = Kanban client for ticket trackers in the terminal: vim keys, a fuzzy picker, Jira and GitHub Projects
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/ColinTenaguillo/kolum
+	arch = x86_64
+	arch = aarch64
+	license = GPL-3.0-or-later
+	depends = gcc-libs
+	depends = glibc
+	provides = kolum
+	conflicts = kolum
+	options = !strip
+	options = !debug
+	source_x86_64 = https://github.com/ColinTenaguillo/kolum/releases/download/v0.1.0/kolum-x86_64-unknown-linux-gnu.tar.xz
+	sha256sums_x86_64 = SKIP
+	source_aarch64 = https://github.com/ColinTenaguillo/kolum/releases/download/v0.1.0/kolum-aarch64-unknown-linux-gnu.tar.xz
+	sha256sums_aarch64 = SKIP
+
+pkgname = kolum-bin

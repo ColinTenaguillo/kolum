@@ -1,7 +1,8 @@
 # Maintainer: Colin Tenaguillo <36203690+ColinTenaguillo@users.noreply.github.com>
 #
 # The binaries a release tag builds (release.yml). On each release: bump
-# pkgver, then `updpkgsums` fills the checksums of the new archives.
+# pkgver, `updpkgsums` fills the checksums of the new archives, then
+# `makepkg --printsrcinfo > .SRCINFO`.
 pkgname=kolum-bin
 pkgver=0.1.0
 pkgrel=1
