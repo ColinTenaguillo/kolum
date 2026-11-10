@@ -25,3 +25,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# The profile release.yml builds the binaries with (`dist build`).
+[profile.dist]
+inherits = "release"
+lto = "thin"
