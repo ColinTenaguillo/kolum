@@ -12,6 +12,7 @@ mod help;
 pub mod input;
 pub mod picker;
 mod rich;
+mod search;
 mod sources;
 #[cfg(test)]
 mod test_support;
@@ -880,7 +881,7 @@ impl App {
         self.undo_theme_preview();
         if self.prompt.take().is_some_and(|p| p.kind == PromptKind::Filter) {
             self.set_filter(String::new());
-            if self.help.is_none() {
+            if self.filters_board() {
                 self.save_filter();
             }
         }
@@ -1060,6 +1061,10 @@ impl App {
             return;
         }
         match action {
+            Action::Filter => self.prompt = Some(Prompt::filter(d.query())),
+            // Clears the search first, then closes the issue.
+            Action::ClearFilter if d.query().is_empty() => self.detail = None,
+            Action::ClearFilter => d.search_for(String::new()),
             Action::CopyKey | Action::CopyUrl | Action::OpenBrowser => {
                 let issue = d.issue().clone();
                 self.issue_effect(action, &issue)
@@ -1076,15 +1081,23 @@ impl App {
         }
     }
 
-    /// The `/` line filters the help page when it is open, the board otherwise.
+    /// The `/` line filters the help page when it is open, searches the
+    /// open issue, or filters the board.
     fn set_filter(&mut self, text: String) {
         if self.help.is_some() {
             self.help_filter = text;
             self.help = Some(0);
+        } else if let Some(d) = &mut self.detail {
+            d.search_for(text);
         } else {
             self.board.set_filter(text);
             self.board.clamp();
         }
+    }
+
+    /// Whether the `/` line is the board's, whose filter is kept.
+    fn filters_board(&self) -> bool {
+        self.help.is_none() && self.detail.is_none()
     }
 
     fn help_action(&mut self, action: Action, n: i64) {
@@ -2086,7 +2099,7 @@ impl App {
         match prompt.kind {
             PromptKind::Command => self.run_command(prompt.input.text().trim()),
             PromptKind::Field => self.confirm_field(prompt.input.text()),
-            PromptKind::Filter if self.help.is_none() => self.save_filter(),
+            PromptKind::Filter if self.filters_board() => self.save_filter(),
             PromptKind::Filter => {}
         }
     }
@@ -2153,7 +2166,7 @@ impl App {
             self.avatars.get_disjoint_mut([a, s])
         };
         let pictures = detail::Pictures { avatar: ready(avatar), shot: ready(shot) };
-        match &self.detail {
+        match &mut self.detail {
             Some(d) => {
                 let shown = detail::Shown {
                     fields: self.ui.detail_fields.as_deref(),
@@ -2300,8 +2313,11 @@ impl App {
             };
             left.push(Span::styled(text.clone(), Style::new().fg(color)));
         }
+        let count = self.detail.as_ref().and_then(|d| d.search_count());
+        let count = count.map(|(at, of)| format!("  {at}/{of}")).unwrap_or_default();
         let right = Line::from(vec![
             Span::styled(self.resolver.typed(), Style::new().fg(theme.match_highlight)),
+            Span::styled(count, Style::new().fg(theme.match_highlight)),
             Span::styled("  ? help ", Style::new().fg(theme.muted)),
         ]);
         let bar = Style::new().bg(theme.selection);

@@ -2,7 +2,7 @@
 //! two thirds), the fields on the right. On a narrow terminal the fields
 //! go under the content.
 
-use super::{glyph, rich};
+use super::{glyph, rich, search};
 use crate::keymap::Action;
 use crate::theme::Theme;
 use kolum_app::IssueDetail;
@@ -78,6 +78,29 @@ pub struct DetailView {
     page: Cell<u16>,
     /// Content rows at the last draw, so `G` and scrolling stop at the end.
     length: Cell<u16>,
+    search: Search,
+}
+
+/// The `/` search of the open issue.
+#[derive(Default)]
+struct Search {
+    query: String,
+    /// The match the view was last moved to.
+    at: usize,
+    /// How many the last draw found.
+    count: usize,
+    /// A move the next draw makes, once it knows where the matches fall
+    /// in the wrapped text.
+    jump: Option<Jump>,
+}
+
+/// Moves asked for between two draws, added up.
+#[derive(Clone, Copy, Default)]
+struct Jump {
+    /// From the first match at the top of the view or below it.
+    below: bool,
+    /// Then so many matches on, round the ends.
+    by: i64,
 }
 
 impl DetailView {
@@ -90,6 +113,56 @@ impl DetailView {
             scroll: 0,
             page: Cell::new(10),
             length: Cell::default(),
+            search: Search::default(),
+        }
+    }
+
+    pub fn query(&self) -> &str {
+        &self.search.query
+    }
+
+    /// Searches for `query` from the top of the view; an empty one clears.
+    pub fn search_for(&mut self, query: String) {
+        let jump = Some(Jump { below: true, by: 0 });
+        self.search = Search { query, jump, ..Search::default() };
+    }
+
+    /// The match the view is on, from 1, and how many there are; none
+    /// without a search.
+    pub fn search_count(&self) -> Option<(usize, usize)> {
+        let Search { query, at, count, .. } = &self.search;
+        (!query.is_empty()).then(|| (if *count == 0 { 0 } else { at + 1 }, *count))
+    }
+
+    /// `n` matches on: steps add up until the next draw lands them.
+    fn step_match(&mut self, n: i64) {
+        self.search.jump.get_or_insert_default().by += n;
+    }
+
+    /// Lands the jump asked for on the matches: the row each starts on in
+    /// the scrolled text, or none for those always on screen (the header,
+    /// the fields beside the text). A step counts from the match the view
+    /// is on, or from the top of the view when it was scrolled off it.
+    fn land(&mut self, rows: &[Option<u16>]) {
+        let (scroll, page) = (u32::from(self.scroll), u32::from(self.page.get()));
+        let s = &mut self.search;
+        s.count = rows.len();
+        s.at = s.at.min(rows.len().saturating_sub(1));
+        let Some(jump) = s.jump.take().filter(|_| !rows.is_empty()) else { return };
+        let below = |r: &Option<u16>| r.is_some_and(|r| u32::from(r) >= scroll);
+        let above = rows.iter().filter(|r| r.is_some_and(|r| u32::from(r) < scroll)).count();
+        let on_screen = rows[s.at].is_none_or(|r| (scroll..scroll + page).contains(&r.into()));
+        let from = match () {
+            _ if jump.below => rows.iter().position(below).unwrap_or_default() as i64,
+            _ if on_screen => s.at as i64,
+            // Between the last match above the view and the first in it.
+            _ if jump.by > 0 => above as i64 - 1,
+            _ => above as i64,
+        };
+        s.at = (from + jump.by).rem_euclid(rows.len() as i64) as usize;
+        if let Some(row) = rows[s.at] {
+            self.scroll = 0;
+            self.scroll_by(i64::from(row));
         }
     }
 
@@ -128,6 +201,8 @@ impl DetailView {
         match action {
             Action::NextTab => self.tab = self.tab.step(n),
             Action::PrevTab => self.tab = self.tab.step(-n),
+            Action::NextMatch => self.step_match(n),
+            Action::PrevMatch => self.step_match(-n),
             _ => match super::scroll_step(action, n, self.half_page()) {
                 Some(delta) => self.scroll_by(delta),
                 None => return false,
@@ -137,7 +212,7 @@ impl DetailView {
     }
 
     pub fn draw(
-        &self,
+        &mut self,
         frame: &mut Frame,
         area: Rect,
         theme: &Theme,
@@ -145,10 +220,14 @@ impl DetailView {
         me: Option<&UserId>,
         pictures: Pictures,
     ) {
+        let lit = Style::new().bg(theme.match_highlight).fg(theme.bg);
+        let query = self.search.query.clone();
+        let found = |lines, width| found(lines, &query, lit, width);
         let issue = &self.issue;
         let [head, body] =
             Layout::vertical([Constraint::Length(HEADER_ROWS), Constraint::Min(0)]).areas(area);
-        frame.render_widget(Paragraph::new(header(issue, theme, head.width)), head);
+        let (header, head_rows, _) = found(header(issue, theme, head.width), head.width);
+        frame.render_widget(Paragraph::new(header), head);
 
         let side = body.width >= SIDE_BY_SIDE_MIN_WIDTH;
         let [left, right] = if side {
@@ -156,26 +235,33 @@ impl DetailView {
         } else {
             [body, Rect::default()]
         };
+        // A column of gap before the fields.
+        let text = Rect { width: left.width.saturating_sub(1), ..left };
         let sections = body_sections(issue, shown.sections, shown.layout);
         let mut content = self.content(theme, left.width.saturating_sub(2), &sections);
         let names = field_names(issue, shown.fields, shown.layout);
         let field_lines = field_lines(issue, &names, theme, me);
+        let mut side_rows = vec![];
         if side {
             let right = self.draw_avatar(frame, right, theme, pictures.avatar);
             let right = self.draw_shot(frame, right, theme, pictures.shot);
             let block =
                 Block::new().borders(Borders::LEFT).border_style(Style::new().fg(theme.border));
+            let (field_lines, rows, _) = found(field_lines, right.width);
+            side_rows = rows;
             let fields = Paragraph::new(field_lines).block(block).wrap(Wrap { trim: false });
             frame.render_widget(fields, right);
         } else {
             content.push(Line::default());
             content.extend(field_lines);
         }
+        let (content, rows, length) = found(content, text.width);
         let paragraph = Paragraph::new(content).wrap(Wrap { trim: false });
-        // A column of gap before the fields.
-        let text = Rect { width: left.width.saturating_sub(1), ..left };
         self.page.set(text.height);
-        self.length.set(paragraph.line_count(text.width) as u16);
+        self.length.set(length.unwrap_or_else(|| paragraph.line_count(text.width) as u16));
+        let fixed = |rows: Vec<u16>| rows.into_iter().map(|_| None);
+        let rows = fixed(head_rows).chain(rows.into_iter().map(Some)).chain(fixed(side_rows));
+        self.land(&rows.collect::<Vec<_>>());
         frame.render_widget(paragraph.scroll((self.scroll, 0)), text);
     }
 
@@ -298,6 +384,41 @@ impl DetailView {
         ];
         glyph::tabs(&names, self.tab.index(), theme)
     }
+}
+
+/// The lines with each match of `query` lit, the row each match starts
+/// on once they are wrapped to `width`, and how many rows they take; no
+/// rows without a query.
+fn found(
+    lines: Vec<Line<'static>>,
+    query: &str,
+    lit: Style,
+    width: u16,
+) -> (Vec<Line<'static>>, Vec<u16>, Option<u16>) {
+    if query.is_empty() {
+        return (lines, vec![], None);
+    }
+    let rows_of = |line: Line<'static>| {
+        Paragraph::new(line).wrap(Wrap { trim: false }).line_count(width) as u16
+    };
+    let mut rows = vec![];
+    let mut row: u16 = 0;
+    let mut out = vec![];
+    for line in lines {
+        // The spans as they hold it: `Line`'s `Display` drops newlines,
+        // and `mark` cuts the spans by their own bytes.
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let ranges = search::find(&text, query);
+        // Known limit: the text before a match is wrapped alone, which can
+        // put the match a row off when the line breaks right there.
+        let start = |r: &std::ops::Range<usize>| {
+            row + rows_of(Line::raw(text[..r.start].to_string())).saturating_sub(1)
+        };
+        rows.extend(ranges.iter().map(start));
+        row += rows_of(line.clone());
+        out.push(search::mark(line, &ranges, lit));
+    }
+    (out, rows, Some(row))
 }
 
 /// The crumbs, the title, a blank line, the status and who reported it.
@@ -686,7 +807,7 @@ mod tests {
     /// The detail drawn on a `width` by `height` screen, with the
     /// pictures given.
     fn drawn(
-        view: &DetailView,
+        view: &mut DetailView,
         (width, height): (u16, u16),
         avatar: Option<&mut Picture>,
         shot: Option<&mut Picture>,
@@ -698,17 +819,17 @@ mod tests {
 
     #[tokio::test]
     async fn the_fields_go_beside_the_text_from_a_hundred_columns() {
-        let view = DetailView::new(acme("ACME-10").await);
-        let (x, _) = find(&drawn(&view, (100, 40), None, None), "Status").unwrap();
+        let mut view = DetailView::new(acme("ACME-10").await);
+        let (x, _) = find(&drawn(&mut view, (100, 40), None, None), "Status").unwrap();
         assert!(x >= 60, "beside, at {x}");
-        let (x, _) = find(&drawn(&view, (99, 60), None, None), "Status").unwrap();
+        let (x, _) = find(&drawn(&mut view, (99, 60), None, None), "Status").unwrap();
         assert!(x < 10, "under, at {x}");
     }
 
     #[tokio::test]
     async fn a_screen_as_tall_as_the_header_shows_nothing_under_it() {
-        let view = DetailView::new(acme("ACME-10").await);
-        let screen = drawn(&view, (60, 7), None, None);
+        let mut view = DetailView::new(acme("ACME-10").await);
+        let screen = drawn(&mut view, (60, 7), None, None);
         let last: String = (0..60).map(|x| screen[(x, 6)].symbol()).collect();
         assert_eq!(last.trim(), "", "the header's own blank row");
     }
@@ -718,8 +839,8 @@ mod tests {
     async fn a_gap_column_separates_the_text_from_the_fields() {
         let mut issue = acme("ACME-10").await;
         issue.description = Some(RichText::from_markdown(&"x".repeat(300)));
-        let view = DetailView::new(issue);
-        let screen = drawn(&view, (100, 40), None, None);
+        let mut view = DetailView::new(issue);
+        let screen = drawn(&mut view, (100, 40), None, None);
         let (_, y) = find(&screen, "xxxxxxxxxx").unwrap();
         let border = (0..100).find(|&x| screen[(x, y)].symbol() == "│").unwrap();
         assert_eq!(screen[(border - 1, y)].symbol(), " ");
@@ -727,10 +848,10 @@ mod tests {
 
     #[tokio::test]
     async fn half_a_page_is_half_the_text_area_and_one_line_at_least() {
-        let view = DetailView::new(acme("ACME-10").await);
-        drawn(&view, (100, 47), None, None);
+        let mut view = DetailView::new(acme("ACME-10").await);
+        drawn(&mut view, (100, 47), None, None);
         assert_eq!(view.half_page(), 20, "40 rows under the header");
-        drawn(&view, (100, 8), None, None);
+        drawn(&mut view, (100, 8), None, None);
         assert_eq!(view.half_page(), 1);
     }
 
@@ -759,9 +880,9 @@ mod tests {
     async fn the_assignees_picture_heads_the_fields_with_the_name_beside_it() {
         let issue = acme("ACME-10").await;
         let who = issue.assignee.clone().unwrap().display_name;
-        let view = DetailView::new(issue);
+        let mut view = DetailView::new(issue);
         let mut avatar = picture();
-        let screen = drawn(&view, (100, 40), Some(&mut avatar), None);
+        let screen = drawn(&mut view, (100, 40), Some(&mut avatar), None);
         let (x, y) = find(&screen, "Assignee").unwrap();
         let (nx, ny) = find(&screen, &who).unwrap();
         // The column starts at 65 of 100; the picture is 8 wide, 2 in.
@@ -772,12 +893,12 @@ mod tests {
 
     #[tokio::test]
     async fn no_room_no_picture() {
-        let view = DetailView::new(acme("ACME-10").await);
+        let mut view = DetailView::new(acme("ACME-10").await);
         let mut avatar = picture();
         // The right-hand column: 35 of 100, under the 7 header rows.
-        let screen = drawn(&view, (100, 7 + 7), Some(&mut avatar), None);
+        let screen = drawn(&mut view, (100, 7 + 7), Some(&mut avatar), None);
         assert_eq!(find(&screen, "Assignee").map(|(x, _)| x < 70), Some(true), "the field");
-        let screen = drawn(&view, (100, 7 + 8), Some(&mut avatar), None);
+        let screen = drawn(&mut view, (100, 7 + 8), Some(&mut avatar), None);
         assert_eq!(find(&screen, "Assignee").map(|(x, _)| x), Some(77), "the picture");
         let area = Rect { x: 0, y: 0, width: 19, height: 20 };
         let mut terminal =
@@ -883,6 +1004,19 @@ mod tests {
         assert_eq!(value_of(&issue, "epic "), None, "no such field");
         assert_eq!(value_of(&issue, "Epic"), Some(text("Q4 launch")), "the custom one, by name");
         assert_eq!(value_of(&issue, "due"), None);
+    }
+
+    /// A history entry holds the description's text, newlines and all.
+    #[test]
+    fn a_match_after_a_newline_is_lit_where_it_is() {
+        let line = Line::from(vec![Span::raw("a"), Span::raw("\nÉté")]);
+        let lit = Style::new().bg(ratatui::style::Color::Yellow);
+        let (lines, rows, length) = found(vec![line], "été", lit, 80);
+        let spans: Vec<(&str, Style)> =
+            lines[0].spans.iter().map(|s| (s.content.as_ref(), s.style)).collect();
+        assert_eq!(spans, [("a", Style::new()), ("\n", Style::new()), ("Été", lit)]);
+        assert_eq!((rows, length), (vec![0], Some(1)));
+        assert_eq!(found(vec![Line::raw("x")], "x", lit, 0).1, [0], "no room, no underflow");
     }
 
     #[test]

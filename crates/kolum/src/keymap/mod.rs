@@ -153,6 +153,11 @@ const DEFAULTS: &[(Context, &str, Action)] = &[
     (C::Detail, "E", A::EditField),
     (C::Detail, "gi", A::ViewPictures),
     (C::Detail, "gp", A::OpenParent),
+    (C::Detail, "/", A::Filter),
+    (C::Detail, "n", A::NextMatch),
+    (C::Detail, "N", A::PrevMatch),
+    // Clears the search first; then closes, as `close` does.
+    (C::Detail, "<Esc>", A::ClearFilter),
     (C::Viewer, "h", A::Left),
     (C::Viewer, "l", A::Right),
     (C::Viewer, "o", A::OpenBrowser),

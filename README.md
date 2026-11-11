@@ -177,6 +177,7 @@ The defaults follow vim. Counts work on motions (`3j`, `5G`), sequences wait
 | Keys | Does |
 |---|---|
 | `/` then `n` `N` | Filter the board as you type, step through matches |
+| `/` then `n` `N`, in an issue | Search its text, highlighted, and jump from match to match; `Esc` clears, a second `Esc` closes |
 | `Space f` | Find an issue, fuzzy |
 | `Space F` | Search the provider; `!` starts raw JQL, a key or a number finds that issue |
 | `Space b` | Switch board |

@@ -148,25 +148,100 @@ async fn the_picker_has_a_normal_mode_and_resumes() {
     assert!(screen(&mut app, 150, 40).contains("\u{f002} sso"), "<leader>' reopens it as it was");
 }
 
-#[tokio::test]
-async fn the_issue_detail() {
-    let mut app = loaded().await;
-    press(&mut app, "ll<CR>");
+/// ACME-5 opened from the board, then read whole: comments and history in.
+async fn open_read(app: &mut App) {
+    press(app, "ll<CR>");
     assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-5"));
+    app.on_event(Event::IssueLoaded(Arc::new(read_whole("ACME-5").await)));
+}
+
+async fn read_whole(key: &str) -> IssueDetail {
     let fake = FakeProvider::new();
-    let key = IssueKey::parse("ACME-5");
-    let detail = IssueDetail {
+    let key = IssueKey::parse(key);
+    IssueDetail {
         issue: fake.issue(&key).await.unwrap(),
         comments: fake.comments(&key).await.unwrap(),
         activity: fake.activity(&key).await.unwrap(),
         layout: None,
         children: vec![],
-    };
-    app.on_event(Event::IssueLoaded(std::sync::Arc::new(detail)));
+    }
+}
+
+#[tokio::test]
+async fn the_issue_detail() {
+    let mut app = loaded().await;
+    open_read(&mut app).await;
     insta::assert_snapshot!(screen(&mut app, 150, 60));
     press(&mut app, "q");
     assert_eq!(app.open_issue(), None, "q closes the detail, not the app");
     assert!(!app.quit);
+}
+
+fn drawn(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    terminal.backend().buffer().clone()
+}
+
+/// Where `text` starts on the screen, the first from the top; for text
+/// with nothing wide before it on its row.
+fn find(screen: &ratatui::buffer::Buffer, text: &str) -> Option<(u16, u16)> {
+    (0..screen.area.height).find_map(|y| {
+        let row: String = (0..screen.area.width).map(|x| screen[(x, y)].symbol()).collect();
+        row.find(text).map(|at| (row[..at].chars().count() as u16, y))
+    })
+}
+
+/// `/` in an issue searches what it shows, highlights the matches and
+/// scrolls to the first; `n` and `N` step through them, round the end.
+#[tokio::test]
+async fn slash_in_an_issue_finds_its_text_and_n_steps_through_the_matches() {
+    let mut app = loaded().await;
+    open_read(&mut app).await;
+    let (description, comment) = ("30 s TTL", "Raising the TTL");
+    assert_eq!(find(&drawn(&mut app, 150, 20), description), None, "below the fold");
+    press(&mut app, "/ttl");
+    let screen = drawn(&mut app, 150, 20);
+    let (x, y) = find(&screen, description).expect("scrolled to the first match");
+    let lit = app.theme().match_highlight;
+    assert_eq!(screen[(x + 5, y)].bg, lit, "TTL highlighted, smartcase");
+    assert_ne!(screen[(x, y)].bg, lit);
+    assert!(find(&screen, "1/2").is_some(), "the count");
+    press(&mut app, "<CR>n");
+    let screen = drawn(&mut app, 150, 20);
+    assert!(find(&screen, comment).is_some() && find(&screen, description).is_none());
+    assert!(find(&screen, "2/2").is_some());
+    press(&mut app, "n");
+    assert!(find(&drawn(&mut app, 150, 20), description).is_some(), "round to the first");
+    press(&mut app, "N");
+    assert!(find(&drawn(&mut app, 150, 20), comment).is_some(), "and back");
+    // Scrolled off the match, a step counts from the top of the view.
+    press(&mut app, "ggn");
+    assert!(find(&drawn(&mut app, 150, 20), "1/2").is_some(), "the first below the top");
+    press(&mut app, "GN");
+    assert!(find(&drawn(&mut app, 150, 20), "1/2").is_some(), "the last above the top");
+    press(&mut app, "nn");
+    assert!(find(&drawn(&mut app, 150, 20), "1/2").is_some(), "steps add up between draws");
+    press(&mut app, "n");
+    assert!(find(&drawn(&mut app, 150, 20), comment).is_some());
+    press(&mut app, "<Esc>");
+    let screen = drawn(&mut app, 150, 20);
+    assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-5"), "Esc clears first");
+    let (x, y) = find(&screen, comment).unwrap();
+    assert_ne!(screen[(x + 12, y)].bg, lit, "no highlight left");
+    assert!(find(&screen, "2/2").is_none());
+    press(&mut app, "<Esc>");
+    assert_eq!(app.open_issue(), None, "then closes");
+}
+
+#[tokio::test]
+async fn a_search_with_an_upper_case_letter_minds_the_case() {
+    let mut app = loaded().await;
+    open_read(&mut app).await;
+    press(&mut app, "/Ttl");
+    assert!(find(&drawn(&mut app, 150, 20), "0/0").is_some());
+    press(&mut app, "<Esc>/TTL");
+    assert!(find(&drawn(&mut app, 150, 20), "1/2").is_some());
 }
 
 #[tokio::test]
