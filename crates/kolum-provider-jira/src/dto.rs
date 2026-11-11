@@ -149,6 +149,7 @@ pub struct RefFieldsDto {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkDto {
+    pub id: Option<String>,
     #[serde(rename = "type")]
     pub kind: LinkTypeDto,
     pub inward_issue: Option<RefDto>,
@@ -157,8 +158,18 @@ pub struct LinkDto {
 
 #[derive(Debug, Deserialize)]
 pub struct LinkTypeDto {
+    /// Not in every link Data Center sends; always in `/issueLinkType`.
+    #[serde(default)]
+    pub name: String,
     pub inward: String,
     pub outward: String,
+}
+
+/// `/issueLinkType`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkTypePage {
+    pub issue_link_types: Vec<LinkTypeDto>,
 }
 
 /// Agile `/board/{id}/sprint`.

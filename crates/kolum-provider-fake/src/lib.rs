@@ -160,10 +160,16 @@ fn created_at(n: u32) -> OffsetDateTime {
 
 fn issue(row: &data::Row) -> Issue {
     let created = created_at(row.n);
+    let link = |id: &str, relation: &str, other| IssueLink {
+        id: Some(LinkId::new(id)),
+        relation: relation.into(),
+        issue: row_ref(other),
+    };
     let links = match row.n {
-        10 => vec![IssueLink { relation: "is blocked by".into(), issue: row_ref(34) }],
-        34 => vec![IssueLink { relation: "blocks".into(), issue: row_ref(10) }],
-        29 => vec![IssueLink { relation: "relates to".into(), issue: row_ref(13) }],
+        10 => vec![link("ACME-34>ACME-10:Blocks", "is blocked by", 34)],
+        34 => vec![link("ACME-34>ACME-10:Blocks", "blocks", 10)],
+        29 => vec![link("ACME-29>ACME-13:Relates", "relates to", 13)],
+        13 => vec![link("ACME-29>ACME-13:Relates", "relates to", 29)],
         _ => vec![],
     };
     let in_sprint = !matches!(row.status, "backlog") && row.kind != IssueKind::Epic;
@@ -666,6 +672,45 @@ impl IssueWriter for FakeProvider {
         Ok(())
     }
 
+    async fn link_types(&self) -> Result<Vec<LinkType>> {
+        let kind = |name: &str, inward: &str, outward: &str| LinkType {
+            name: name.into(),
+            inward: inward.into(),
+            outward: outward.into(),
+        };
+        Ok(vec![
+            kind("Blocks", "is blocked by", "blocks"),
+            kind("Relates", "relates to", "relates to"),
+            kind("Duplicate", "is duplicated by", "duplicates"),
+        ])
+    }
+
+    /// On both issues, each phrasing it from its side, under one id: the
+    /// one that is inward (`blocks`), the other, the type.
+    async fn link(&self, key: &IssueKey, link: &NewLink) -> Result<()> {
+        let (from, to) = (self.issue(key).await?, self.issue(&link.other).await?);
+        let (inward, outward) = link.ends(key);
+        let id = Some(LinkId::new(format!("{inward}>{outward}:{}", link.kind.name)));
+        let one =
+            IssueLink { id: id.clone(), relation: link.relation().into(), issue: to.as_ref() };
+        let other = IssueLink { id, relation: link.back().into(), issue: from.as_ref() };
+        self.with_issue(key, |i| i.links.push(one))?;
+        self.with_issue(&link.other, |i| i.links.push(other))
+    }
+
+    async fn unlink(&self, _key: &IssueKey, id: &LinkId) -> Result<()> {
+        let holds = |i: &Issue| i.links.iter().any(|l| l.id.as_ref() == Some(id));
+        let keys: Vec<IssueKey> =
+            self.state().issues.iter().filter(|i| holds(i)).map(|i| i.key.clone()).collect();
+        if keys.is_empty() {
+            return Err(DomainError::NotFound(id.to_string()));
+        }
+        for key in keys {
+            self.with_issue(&key, |i| i.links.retain(|l| l.id.as_ref() != Some(id)))?;
+        }
+        Ok(())
+    }
+
     async fn clone_issue(&self, key: &IssueKey) -> Result<Issue> {
         let source = self.issue(key).await?;
         let new = NewIssue {
@@ -727,6 +772,7 @@ impl Provider for FakeProvider {
             Rank,
             ChangedSince,
             BulkRead,
+            Links,
         ])
     }
 }

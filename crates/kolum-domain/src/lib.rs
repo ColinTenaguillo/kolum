@@ -14,12 +14,12 @@ pub mod rich_text;
 
 pub use board::{Board, BoardKind, BoardSummary, Column, Project};
 pub use error::{DomainError, Result};
-pub use ids::{BoardId, FieldId, IssueId, IssueKey, StatusId, TransitionId, UserId};
+pub use ids::{BoardId, FieldId, IssueId, IssueKey, LinkId, StatusId, TransitionId, UserId};
 pub use issue::{
     ActivityEntry, Attachment, Comment, CustomField, EditableField, Estimate, FieldChange,
     FieldEdit, FieldKind, FieldLayout, FieldValue, Issue, IssueKind, IssueLink, IssueRef,
-    IssueType, IssueUpdate, LayoutField, NewIssue, Priority, Sprint, Status, StatusCategory,
-    Transition, User,
+    IssueType, IssueUpdate, LayoutField, LinkType, NewIssue, NewLink, Priority, Sprint, Status,
+    StatusCategory, Transition, User,
 };
 pub use ports::{
     BoardSource, Capabilities, Capability, IssueInFull, IssueReader, IssueSearch, IssueWriter,

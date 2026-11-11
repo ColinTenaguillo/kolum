@@ -4,8 +4,8 @@
 
 use crate::board::BoardSnapshot;
 use kolum_domain::{
-    Board, EditableField, FieldValue, Issue, IssueKey, IssueUpdate, Rank, RichText, Status,
-    StatusId, Transition, TransitionId, User, UserId,
+    Board, EditableField, FieldValue, Issue, IssueKey, IssueLink, IssueRef, IssueUpdate, LinkId,
+    NewLink, Rank, RichText, Status, StatusId, Transition, TransitionId, User, UserId,
 };
 use std::collections::BTreeMap;
 
@@ -120,6 +120,17 @@ pub fn rank_write(key: IssueKey, other: IssueKey, down: bool) -> Outgoing {
     (key, Change::Rank(rank.clone()), Write::Rank(rank))
 }
 
+/// The issue linked to `other`, shown at once as its own side phrases it.
+pub fn link_write(key: IssueKey, link: NewLink, other: IssueRef) -> Outgoing {
+    let shown = IssueLink { id: None, relation: link.relation().into(), issue: other };
+    (key, Change::Link(shown), Write::Link(link))
+}
+
+/// One of the issue's links removed.
+pub fn unlink_write(key: IssueKey, id: LinkId) -> Outgoing {
+    (key, Change::Unlink(id.clone()), Write::Unlink(id))
+}
+
 /// An edit of the issue, shown as it is sent.
 pub fn update_write(key: IssueKey, update: IssueUpdate) -> Outgoing {
     (key, Change::Update(update.clone()), Write::Update(update))
@@ -160,6 +171,8 @@ pub enum Write {
     Comment(RichText),
     Update(IssueUpdate),
     Rank(Rank),
+    Link(NewLink),
+    Unlink(LinkId),
 }
 
 /// How a write shows on screen before the provider has answered.
@@ -170,6 +183,8 @@ pub enum Change {
     Update(IssueUpdate),
     /// A place in the board's order.
     Rank(Rank),
+    Link(IssueLink),
+    Unlink(LinkId),
 }
 
 /// What a change does to one issue. A rank moves it in the board's list
@@ -180,7 +195,16 @@ fn apply(issue: &mut Issue, change: &Change) {
         Change::Status(status) => issue.status = status.clone(),
         Change::Assignee(user) => issue.assignee = user.clone(),
         Change::Update(u) => u.apply_to(issue),
+        // The provider's copy may hold it already, read since it was made.
+        Change::Link(link) if issue.links.iter().any(|l| same_link(l, link)) => {}
+        Change::Link(link) => issue.links.push(link.clone()),
+        Change::Unlink(id) => issue.links.retain(|l| l.id.as_ref() != Some(id)),
     }
+}
+
+/// The same relation to the same issue.
+fn same_link(a: &IssueLink, b: &IssueLink) -> bool {
+    a.relation == b.relation && a.issue.key == b.issue.key
 }
 
 /// Why a transition is not done here: it asks for fields, which the web
@@ -677,6 +701,45 @@ mod tests {
         let assignee = off.assignee.clone();
         let off = pending.on(off);
         assert_eq!((off.status, off.assignee), (done(), assignee), "its own changes alone");
+    }
+
+    /// A link made shows at once on the issue, phrased from its side; one
+    /// removed is gone at once.
+    #[tokio::test]
+    async fn a_link_made_or_removed_shows_at_once() {
+        use kolum_domain::{LinkType, NewLink};
+        let fake = FakeProvider::new();
+        let ten = fake.issue(&IssueKey::parse("ACME-10")).await.unwrap();
+        let other = fake.issue(&IssueKey::parse("ACME-5")).await.unwrap().as_ref();
+        let kind = LinkType {
+            name: "Blocks".into(),
+            inward: "is blocked by".into(),
+            outward: "blocks".into(),
+        };
+        let new = NewLink { kind, outward: true, other: other.key.clone() };
+        let (key, change, write) = link_write(ten.key.clone(), new.clone(), other.clone());
+        assert_eq!(write, Write::Link(new));
+        let mut pending = Pending::default();
+        pending.begin(key, change);
+        let shown = pending.on(ten.clone());
+        let made = shown.links.last().unwrap();
+        assert_eq!((made.relation.as_str(), &made.issue, &made.id), ("blocks", &other, &None));
+        let id = ten.links[0].id.clone().unwrap();
+        let (key, change, write) = unlink_write(ten.key.clone(), id.clone());
+        assert_eq!(write, Write::Unlink(id.clone()));
+        pending.begin(key, change);
+        let shown = pending.on(ten);
+        assert!(shown.links.iter().all(|l| l.id.as_ref() != Some(&id)));
+        assert_eq!(shown.links.len(), 1, "the new one alone: {:?}", shown.links);
+        let mut read = shown.clone();
+        read.links[0].id = Some(kolum_domain::LinkId::new("made"));
+        assert_eq!(pending.on(read.clone()).links, read.links, "read back already: shown once");
+        read.links[0].relation = "relates to".into();
+        assert_eq!(
+            pending.on(read).links.len(),
+            2,
+            "another relation to the same issue is another"
+        );
     }
 
     #[tokio::test]

@@ -4,10 +4,10 @@
 
 use crate::board::{Board, BoardSummary};
 use crate::error::Result;
-use crate::ids::{BoardId, IssueKey, TransitionId, UserId};
+use crate::ids::{BoardId, IssueKey, LinkId, TransitionId, UserId};
 use crate::issue::{
-    ActivityEntry, Comment, EditableField, FieldLayout, Issue, IssueRef, IssueUpdate, NewIssue,
-    Sprint, Transition, User,
+    ActivityEntry, Comment, EditableField, FieldLayout, Issue, IssueRef, IssueUpdate, LinkType,
+    NewIssue, NewLink, Sprint, Transition, User,
 };
 use crate::query::Query;
 use crate::rich_text::RichText;
@@ -48,6 +48,8 @@ pub enum Capability {
     /// Several issues with their comments and history in one request:
     /// what a board prefetches so each opens whole.
     BulkRead,
+    /// Links between issues can be made and removed.
+    Links,
 }
 
 /// An issue with its comments and history, read along with others. On a
@@ -174,6 +176,21 @@ pub trait IssueWriter: Send + Sync {
     /// Moves the issue in the board's order, next to another.
     async fn rank(&self, _key: &IssueKey, _rank: &Rank) -> Result<()> {
         Err(crate::DomainError::Unsupported(Capability::Rank))
+    }
+
+    /// The kinds of link an issue can be given.
+    async fn link_types(&self) -> Result<Vec<LinkType>> {
+        Err(crate::DomainError::Unsupported(Capability::Links))
+    }
+
+    /// Links the issue to another.
+    async fn link(&self, _key: &IssueKey, _link: &NewLink) -> Result<()> {
+        Err(crate::DomainError::Unsupported(Capability::Links))
+    }
+
+    /// Removes one of the issue's links.
+    async fn unlink(&self, _key: &IssueKey, _id: &LinkId) -> Result<()> {
+        Err(crate::DomainError::Unsupported(Capability::Links))
     }
 }
 

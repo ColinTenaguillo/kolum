@@ -403,15 +403,28 @@ fn issue_ref(dto: &RefDto) -> IssueRef {
 }
 
 fn link(dto: &LinkDto) -> Option<IssueLink> {
-    match (&dto.inward_issue, &dto.outward_issue) {
-        (Some(other), _) => {
-            Some(IssueLink { relation: dto.kind.inward.clone(), issue: issue_ref(other) })
-        }
-        (_, Some(other)) => {
-            Some(IssueLink { relation: dto.kind.outward.clone(), issue: issue_ref(other) })
-        }
-        _ => None,
-    }
+    let (relation, other) = match (&dto.inward_issue, &dto.outward_issue) {
+        (Some(other), _) => (&dto.kind.inward, other),
+        (_, Some(other)) => (&dto.kind.outward, other),
+        _ => return None,
+    };
+    let id = dto.id.clone().map(LinkId::new);
+    Some(IssueLink { id, relation: relation.clone(), issue: issue_ref(other) })
+}
+
+pub fn link_type(dto: &LinkTypeDto) -> LinkType {
+    LinkType { name: dto.name.clone(), inward: dto.inward.clone(), outward: dto.outward.clone() }
+}
+
+/// What `POST /issueLink` takes: Jira reads it as `inwardIssue` <outward>
+/// `outwardIssue`, so the issue that "blocks" is the inward one.
+pub fn new_link(key: &IssueKey, link: &NewLink) -> Value {
+    let (inward, outward) = link.ends(key);
+    json!({
+        "type": { "name": link.kind.name },
+        "inwardIssue": { "key": inward.as_str() },
+        "outwardIssue": { "key": outward.as_str() },
+    })
 }
 
 /// Cloud sends sprints as objects; Data Center as strings like

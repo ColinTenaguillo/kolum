@@ -130,6 +130,10 @@ id!(
     IssueId
 );
 id!(BoardId);
+id!(
+    /// A link between two issues, as the provider numbers it: what removes it.
+    LinkId
+);
 id!(StatusId);
 id!(TransitionId);
 id!(UserId);

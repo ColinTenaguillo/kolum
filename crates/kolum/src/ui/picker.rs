@@ -55,6 +55,22 @@ pub enum Pick {
     },
     /// Run an action as if its key were pressed (the command palette).
     Run(Action),
+    /// A kind of link for the issue, which way round: its other end next.
+    Relation {
+        key: kolum_domain::IssueKey,
+        kind: kolum_domain::LinkType,
+        outward: bool,
+    },
+    Link {
+        key: kolum_domain::IssueKey,
+        link: kolum_domain::NewLink,
+        other: kolum_domain::IssueRef,
+    },
+    Unlink {
+        key: kolum_domain::IssueKey,
+        id: kolum_domain::LinkId,
+        other: kolum_domain::IssueKey,
+    },
 }
 
 pub trait PickerSource: 'static {

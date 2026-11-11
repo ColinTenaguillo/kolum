@@ -74,6 +74,11 @@ impl Client {
         self.request(method, path, &[], Some(body)).await
     }
 
+    /// A removal, with no body.
+    pub async fn delete(&self, path: &str) -> Result<Value> {
+        self.request(Method::DELETE, path, &[], None).await
+    }
+
     async fn request(
         &self,
         method: Method,

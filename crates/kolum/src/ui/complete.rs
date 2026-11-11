@@ -78,7 +78,7 @@ mod tests {
     #[test]
     fn a_command_is_proposed_by_its_start_and_ends_in_a_space_when_it_takes_an_argument() {
         assert_eq!(texts("th"), (0, vec!["theme ".to_string()]));
-        assert_eq!(texts("re"), (0, vec!["refresh".to_string()]));
+        assert_eq!(texts("ref"), (0, vec!["refresh".to_string()]));
         assert_eq!(texts("x"), (0, vec![]));
     }
 

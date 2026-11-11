@@ -20,6 +20,6 @@ pub use service::{Command, Event, IssueDetail, Service, layout_key};
 pub use store::{IssueArchive, Storage, Store};
 pub use write::{
     Change, Closed, Offer, Outgoing, Pending, Unmoved, Write, assign_writes, comment_write,
-    field_choices, field_update, in_full, land, offer, rank_write, refresh, supersedes,
-    transition_to, transition_writes, update_write, written,
+    field_choices, field_update, in_full, land, link_write, offer, rank_write, refresh, supersedes,
+    transition_to, transition_writes, unlink_write, update_write, written,
 };

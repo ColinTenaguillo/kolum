@@ -168,6 +168,7 @@ The defaults follow vim. Counts work on motions (`3j`, `5G`), sequences wait
 | `Ctrl-d` `Ctrl-u` | Half a page |
 | `Enter` `gd` | Open the issue |
 | `gp` | Open its parent (the epic) |
+| `gl` | In an issue: open one of its linked or child issues |
 | `Ctrl-o` · `Ctrl-i` | Back to the issue left or closed before, where you left it · forward again (`Ctrl-i` is the key `Tab` sends) |
 | `gt` `gT` | In an issue: next or previous activity tab (comments, history, all) |
 | `s` · `ze` | Cycle swimlanes · hide or show empty columns; both remembered |
@@ -207,6 +208,7 @@ issues for one action, `Ctrl-Space` switches between local and remote,
 | `Space a` `Space A` | Assign · assign to me |
 | `i` · `e` | Comment · edit the title and description, in `$EDITOR` as Markdown |
 | `E` (issue view) | Edit any field the issue lets you set, each its own way |
+| `Space l` · `Space L` (issue view) | Link the issue to another: a relation, then the issue, by key or search · remove one of its links (Jira) |
 | `c` · `C` | Create an issue in `$EDITOR` · clone the card |
 | `v` | Visual mode: a range of cards for one action (`t` `H` `L` `Space a` `yy` `C`) |
 

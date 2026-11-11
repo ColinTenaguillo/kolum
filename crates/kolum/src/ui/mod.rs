@@ -223,6 +223,8 @@ pub struct Settings {
     pub filter_applied: bool,
     /// The issue a pasted link points at, as the provider reads its links.
     pub issue_at: IssueAt,
+    /// The provider makes and removes links between issues.
+    pub links: bool,
 }
 
 pub type IssueAt = std::sync::Arc<dyn Fn(&str) -> Option<IssueKey> + Send + Sync>;
@@ -245,6 +247,7 @@ impl Settings {
             remote_debounce: std::time::Duration::from_millis(config.picker.remote_debounce_ms),
             filter_applied: false,
             issue_at: std::sync::Arc::new(|_| None),
+            links: false,
         }
     }
 }
@@ -346,6 +349,9 @@ pub struct App {
     /// Avatars by URL: asked for, drawn, or not to be had.
     avatars: std::collections::HashMap<String, Avatar>,
     issue_at: IssueAt,
+    links: bool,
+    /// The kinds of link, once read.
+    link_types: Option<Vec<kolum_domain::LinkType>>,
     pub quit: bool,
 }
 
@@ -434,6 +440,8 @@ impl App {
             images: settings.images,
             avatars: std::collections::HashMap::new(),
             issue_at: settings.issue_at,
+            links: settings.links,
+            link_types: None,
             quit: false,
         }
     }
@@ -663,6 +671,7 @@ impl App {
             Event::SearchResults { id, result } => self.search_results(id, result),
             Event::Transitions { key, result } => self.on_transitions(key, result),
             Event::EditableFields { key, result } => self.open_field_picker(key, result),
+            Event::LinkTypes { key, result } => self.open_relation_picker(key, result),
             Event::Sprints(result) => self.open_sprint_picker(result),
             Event::Written { op, key, issue } => self.written(op, key, issue.as_deref()),
             Event::WriteFailed { op, key, error } => self.write_failed(op, key, error),
@@ -874,7 +883,7 @@ impl App {
             Action::Help => self.help = Some(0),
             Action::CommandLine => self.open_command_line(),
             Action::Refresh => self.refresh(),
-            Action::PickerIssues => self.open_issue_picker(),
+            Action::PickerIssues => self.open_issue_picker(None),
             Action::PickerRemote => self.open_remote_picker(),
             Action::PickerBoards => self.list_boards(),
             Action::PickerCommands => self.open_command_picker(),
@@ -915,7 +924,7 @@ impl App {
     }
 
     fn open_remote_picker(&mut self) {
-        self.open_issue_picker();
+        self.open_issue_picker(None);
         self.toggle_source();
     }
 
@@ -1134,15 +1143,13 @@ impl App {
             return;
         }
         match action {
-            Action::Filter => self.prompt = Some(Prompt::filter(d.query())),
-            // Clears the search first, then closes the issue.
-            Action::ClearFilter if d.query().is_empty() => self.close_detail(),
-            Action::ClearFilter => d.search_for(String::new()),
+            Action::Filter | Action::ClearFilter => self.detail_search(action),
             Action::CopyKey | Action::CopyUrl | Action::OpenBrowser => {
                 let issue = d.issue().clone();
                 self.issue_effect(action, &issue)
             }
             Action::ViewPictures => self.open_viewer(),
+            Action::OpenLinked => self.open_related(),
             Action::OpenParent => {
                 let issue = d.issue().clone();
                 self.open_parent(&issue)
@@ -1151,6 +1158,17 @@ impl App {
                 let key = d.issue().key.clone();
                 self.issue_action(action, vec![key])
             }
+        }
+    }
+
+    /// `/` searches the open issue; `<Esc>` clears the search, and then
+    /// closes the issue.
+    fn detail_search(&mut self, action: Action) {
+        let Some(d) = &mut self.detail else { return };
+        match action {
+            Action::Filter => self.prompt = Some(Prompt::filter(d.query())),
+            _ if d.query().is_empty() => self.close_detail(),
+            _ => d.search_for(String::new()),
         }
     }
 
@@ -1219,6 +1237,7 @@ impl App {
             Action::Edit => self.describe(key),
             Action::EditField => self.effects.push(Effect::Send(Command::EditableFields(key))),
             Action::Clone => self.clone_issue(key),
+            Action::AddLink | Action::RemoveLink => self.link_action(action, key),
             _ => self.unavailable(action),
         }
     }
@@ -1226,6 +1245,68 @@ impl App {
     /// On some issue, and a write only where the provider takes writes.
     fn may_act(&mut self, action: Action, keys: &[IssueKey]) -> bool {
         !keys.is_empty() && (!action.writes() || self.can_write())
+    }
+
+    /// A link made or removed, where the provider has them; said otherwise.
+    /// The kinds of link are asked for once a session.
+    fn link_action(&mut self, action: Action, key: IssueKey) {
+        if !self.links {
+            return self.say("This provider has no issue links in kolum", Level::Warn);
+        }
+        match (action, self.link_types.clone()) {
+            (Action::RemoveLink, _) => self.open_unlink_picker(key),
+            (_, Some(kinds)) => self.open_relation_picker(key, Ok(kinds)),
+            (_, None) => self.effects.push(Effect::Send(Command::LinkTypes(key))),
+        }
+    }
+
+    /// The kinds of link for the issue, each way round: then the other end.
+    /// Kept; and for the open issue only, as another may be open since.
+    fn open_relation_picker(
+        &mut self,
+        key: IssueKey,
+        result: kolum_domain::Result<Vec<kolum_domain::LinkType>>,
+    ) {
+        match result {
+            Ok(kinds) => {
+                self.link_types = Some(kinds.clone());
+                if self.open_issue() != Some(&key) {
+                    return;
+                }
+                let source = sources::RelationChoice::new(key, kinds);
+                self.open_picker(Box::new(Picker::new(source, self.waker.clone())));
+            }
+            Err(e) => self.say(format!("The kinds of link: {e}"), Level::Error),
+        }
+    }
+
+    /// The links of the issue that can be removed.
+    fn open_unlink_picker(&mut self, key: IssueKey) {
+        let links = self.full_issue(&key).map(|i| i.links.clone()).unwrap_or_default();
+        let links: Vec<_> = links.into_iter().filter(|l| l.id.is_some()).collect();
+        if links.is_empty() {
+            return self.say(format!("{key} has no link to remove"), Level::Info);
+        }
+        let source = sources::LinkChoice { key, links, remove: true };
+        self.open_picker(Box::new(Picker::new(source, self.waker.clone())));
+    }
+
+    /// `gl`: the open issue's links, then its children, to open one.
+    fn open_related(&mut self) {
+        let Some(d) = &self.detail else { return };
+        let child = |c: &kolum_domain::IssueRef| kolum_domain::IssueLink {
+            id: None,
+            relation: "child".into(),
+            issue: c.clone(),
+        };
+        let mut links = d.issue().links.clone();
+        links.extend(d.children().into_iter().map(child));
+        let key = d.issue().key.clone();
+        if links.is_empty() {
+            return self.say(format!("{key} has no linked or child issue"), Level::Info);
+        }
+        let source = sources::LinkChoice { key, links, remove: false };
+        self.open_picker(Box::new(Picker::new(source, self.waker.clone())));
     }
 
     fn can_write(&mut self) -> bool {
@@ -1980,13 +2061,14 @@ impl App {
 
     /// The board's issues, each as read whole when it has been: the board's
     /// copy has no description on Jira Cloud.
-    fn open_issue_picker(&mut self) {
+    /// Or, `linking`, the other end of a link: among them, or, remote, any.
+    fn open_issue_picker(&mut self, linking: Option<sources::Linking>) {
         let board = self.board_issues();
         let issues =
             board.iter().map(|i| self.issue_in_full(&i.key).unwrap_or_else(|| i.clone())).collect();
         let me = self.me.as_ref().map(|u| u.id.clone());
         self.open_picker(Box::new(Picker::new(
-            sources::IssueSource { issues, me, remote: None },
+            sources::IssueSource { issues, me, remote: None, linking },
             self.waker.clone(),
         )));
     }
@@ -2131,6 +2213,17 @@ impl App {
             Pick::EditField { key, entry } => self.edit_field(key, entry),
             Pick::SetField { key, field, value } => self.set_field(key, &field, value),
             Pick::Run(action) => self.dispatch(action, None),
+            Pick::Relation { key, kind, outward } => {
+                self.open_issue_picker(Some((key, kind, outward)))
+            }
+            Pick::Link { key, link, other } => {
+                self.say(format!("{key} {} {}", link.relation(), link.other), Level::Info);
+                self.write(vec![kolum_app::link_write(key, link, other)]);
+            }
+            Pick::Unlink { key, id, other } => {
+                self.say(format!("{key}: the link to {other} removed"), Level::Info);
+                self.write(vec![kolum_app::unlink_write(key, id)]);
+            }
         }
     }
 

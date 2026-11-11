@@ -659,6 +659,22 @@ impl IssueWriter for JiraProvider {
         }
     }
 
+    async fn link_types(&self) -> Result<Vec<LinkType>> {
+        let page: LinkTypePage =
+            self.client.get(&format!("{}/issueLinkType", self.api()), &[]).await?;
+        Ok(page.issue_link_types.iter().map(map::link_type).collect())
+    }
+
+    async fn link(&self, key: &IssueKey, link: &NewLink) -> Result<()> {
+        let path = format!("{}/issueLink", self.api());
+        self.client.send(Method::POST, &path, &map::new_link(key, link)).await.map(|_| ())
+    }
+
+    async fn unlink(&self, _key: &IssueKey, id: &LinkId) -> Result<()> {
+        let path = format!("{}/issueLink/{id}", self.api());
+        self.client.delete(&path).await.map(|_| ())
+    }
+
     async fn clone_issue(&self, key: &IssueKey) -> Result<Issue> {
         let source = self.issue(key).await?;
         let new = NewIssue {
@@ -721,6 +737,7 @@ impl Provider for JiraProvider {
                 Images,
                 Rank,
                 ChangedSince,
+                Links,
             ]
             .into_iter()
             // shortcut: Data Center's bulk read is not known; declare it there once one is.

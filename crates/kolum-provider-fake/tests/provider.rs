@@ -331,3 +331,32 @@ async fn a_link_is_read_back_to_its_issue() {
     assert_eq!(p.issue_at("https://demo.kolum.invalid/browse/nope"), None);
     assert_eq!(p.issue_at("https://example.com/browse/ACME-5"), None);
 }
+
+/// A link shows on both issues, each phrasing it from its side, under one
+/// id that removes it from both.
+#[tokio::test]
+async fn a_link_shows_on_both_issues_until_removed() {
+    let p = FakeProvider::new();
+    assert!(p.capabilities().supports(Capability::Links));
+    let blocks = p.link_types().await.unwrap().into_iter().find(|t| t.name == "Blocks").unwrap();
+    let (a, b) = (IssueKey::parse("ACME-5"), IssueKey::parse("ACME-9"));
+    p.link(&a, &NewLink { kind: blocks, outward: false, other: b.clone() }).await.unwrap();
+    let on =
+        |issue: Issue| issue.links.into_iter().map(|l| (l.relation, l.issue.key, l.id)).next_back();
+    let (relation, other, id) = on(p.issue(&a).await.unwrap()).unwrap();
+    assert_eq!((relation.as_str(), &other), ("is blocked by", &b));
+    let (back, _, same) = on(p.issue(&b).await.unwrap()).unwrap();
+    assert_eq!((back.as_str(), &same), ("blocks", &id));
+    p.unlink(&a, &id.unwrap()).await.unwrap();
+    assert!(
+        p.issue(&a).await.unwrap().links.is_empty() && p.issue(&b).await.unwrap().links.is_empty()
+    );
+    let gone = p.unlink(&a, &LinkId::new("nope")).await;
+    assert!(matches!(gone, Err(DomainError::NotFound(_))));
+    let to_nowhere = NewLink {
+        kind: p.link_types().await.unwrap().remove(0),
+        outward: true,
+        other: IssueKey::parse("ACME-999"),
+    };
+    assert!(p.link(&a, &to_nowhere).await.is_err(), "no such issue");
+}

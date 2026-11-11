@@ -145,10 +145,59 @@ pub struct IssueRef {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IssueLink {
+    /// What removes it; none from a provider that does not number links,
+    /// or for one just made, until it is read back.
+    #[serde(default)]
+    pub id: Option<crate::LinkId>,
     /// As the provider phrases it from this issue's side: "blocks",
     /// "is blocked by", "relates to".
     pub relation: String,
     pub issue: IssueRef,
+}
+
+/// A kind of link, phrased from either end: Blocks is "blocks" from the
+/// one, "is blocked by" from the other; Relates is "relates to" from both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkType {
+    pub name: String,
+    pub inward: String,
+    pub outward: String,
+}
+
+impl LinkType {
+    /// From the issue that is its outward end ("blocks"), or its inward.
+    pub fn phrase(&self, outward: bool) -> &str {
+        if outward { &self.outward } else { &self.inward }
+    }
+}
+
+/// A link to make from an issue to `other`: the issue "blocks" `other`
+/// when `outward`, "is blocked by" it otherwise.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewLink {
+    pub kind: LinkType,
+    pub outward: bool,
+    pub other: crate::IssueKey,
+}
+
+impl NewLink {
+    /// As the issue it is made from phrases it.
+    pub fn relation(&self) -> &str {
+        self.kind.phrase(self.outward)
+    }
+
+    /// As `other` phrases it.
+    pub fn back(&self) -> &str {
+        self.kind.phrase(!self.outward)
+    }
+
+    /// Made from `key`: the end that "blocks", then the one "blocked".
+    pub fn ends<'a>(
+        &'a self,
+        key: &'a crate::IssueKey,
+    ) -> (&'a crate::IssueKey, &'a crate::IssueKey) {
+        if self.outward { (key, &self.other) } else { (&self.other, key) }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -670,6 +719,26 @@ pub struct NewIssue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_link_reads_from_either_end() {
+        let kind = LinkType {
+            name: "Blocks".into(),
+            inward: "is blocked by".into(),
+            outward: "blocks".into(),
+        };
+        let (a, b) = (crate::IssueKey::parse("A-1"), crate::IssueKey::parse("A-2"));
+        let blocks = NewLink { kind: kind.clone(), outward: true, other: b.clone() };
+        assert_eq!(
+            (blocks.relation(), blocks.back(), blocks.ends(&a)),
+            ("blocks", "is blocked by", (&a, &b))
+        );
+        let blocked = NewLink { kind, outward: false, other: b.clone() };
+        assert_eq!(
+            (blocked.relation(), blocked.back(), blocked.ends(&a)),
+            ("is blocked by", "blocks", (&b, &a))
+        );
+    }
 
     #[test]
     fn a_typed_line_becomes_the_value_its_field_takes() {

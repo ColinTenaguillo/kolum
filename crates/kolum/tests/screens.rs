@@ -15,7 +15,7 @@ use std::time::Instant;
 fn settings() -> Settings {
     // No sync on its own: deadlines stay the test's to decide.
     let ui = UiConfig { sync_secs: 0, ..UiConfig::default() };
-    Settings { ui, writable: true, ..Settings::default() }
+    Settings { ui, writable: true, links: true, ..Settings::default() }
 }
 
 async fn loaded_with(settings: Settings) -> App {
@@ -308,6 +308,104 @@ async fn a_count_before_ctrl_o_steps_back_as_many_issues() {
     assert_eq!(app.open_issue(), None, "not behind the help page");
     press(&mut app, "q2<C-o>");
     assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-16"));
+}
+
+/// `<leader>l` links the open issue: a relation, then the other issue,
+/// shown at once under Linked issues; `<leader>L` removes one.
+#[tokio::test]
+async fn links_are_added_and_removed_from_the_issue() {
+    use kolum_domain::{IssueWriter, LinkId};
+    let mut app = loaded().await;
+    paste(&mut app, "ACME-10");
+    app.take_effects();
+    press(&mut app, "<Space>l");
+    let key = IssueKey::parse("ACME-10");
+    assert_eq!(app.take_effects(), [Effect::Send(Command::LinkTypes(key.clone()))]);
+    let result = FakeProvider::new().link_types().await;
+    app.on_event(Event::LinkTypes { key: key.clone(), result });
+    assert!(screen(&mut app, 150, 40).contains("Link ACME-10"));
+    press(&mut app, "duplicates");
+    settle(&mut app);
+    press(&mut app, "<CR>login");
+    settle(&mut app);
+    assert!(screen(&mut app, 150, 40).contains("ACME-10 duplicates …"), "the picker says what for");
+    press(&mut app, "<CR>");
+    let sent = writes(app.take_effects());
+    let [(_, on, kolum_app::Write::Link(link))] = &sent[..] else { panic!("{sent:?}") };
+    assert_eq!(
+        (on.as_str(), link.relation(), link.other.as_str()),
+        ("ACME-10", "duplicates", "ACME-5")
+    );
+    let shown = screen(&mut app, 150, 40);
+    assert!(shown.contains("duplicates") && shown.contains("ACME-5 Login times out"), "{shown}");
+
+    press(&mut app, "<Space>L");
+    press(&mut app, "34");
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    let sent = writes(app.take_effects());
+    let id = LinkId::new("ACME-34>ACME-10:Blocks");
+    assert_eq!(sent, [(sent[0].0, "ACME-10".into(), kolum_app::Write::Unlink(id))]);
+    let shown = screen(&mut app, 150, 40);
+    assert!(shown.contains("the link to ACME-34 removed"));
+    assert!(!shown.contains("is blocked by"), "gone at once: {shown}");
+
+    press(&mut app, "<Space>l");
+    assert!(app.take_effects().is_empty(), "the kinds read once a session");
+    press(&mut app, "relates<CR>");
+    settle(&mut app);
+    press(&mut app, "<C-Space>");
+    app.on_event(Event::SearchResults {
+        id: 1,
+        result: Ok(vec![FakeProvider::new().issue(&key).await.unwrap()]),
+    });
+    settle(&mut app);
+    assert!(!screen(&mut app, 150, 40).contains("ACME-10 Search"), "not itself, even remote");
+}
+
+/// The kinds of link arriving once another issue is open open nothing.
+#[tokio::test]
+async fn a_late_reply_does_not_link_another_issue() {
+    use kolum_domain::IssueWriter;
+    let mut app = loaded().await;
+    paste(&mut app, "ACME-10");
+    press(&mut app, "<Space>lq");
+    paste(&mut app, "ACME-5");
+    let result = FakeProvider::new().link_types().await;
+    app.on_event(Event::LinkTypes { key: IssueKey::parse("ACME-10"), result });
+    assert!(!screen(&mut app, 150, 40).contains("Link ACME-10"));
+}
+
+/// A provider without links says so, rather than failing at it.
+#[tokio::test]
+async fn without_links_the_link_keys_say_so() {
+    let mut app = loaded_with(Settings { links: false, ..settings() }).await;
+    paste(&mut app, "ACME-10");
+    app.take_effects();
+    for keys in ["<Space>l", "<Space>L"] {
+        press(&mut app, keys);
+        assert!(screen(&mut app, 150, 20).contains("This provider has no issue links in kolum"));
+        assert!(app.take_effects().is_empty());
+    }
+}
+
+/// `gl` lists the issue's links and children; Enter opens one.
+#[tokio::test]
+async fn gl_opens_a_linked_issue() {
+    let mut app = loaded().await;
+    paste(&mut app, "ACME-10");
+    press(&mut app, "gl");
+    settle(&mut app);
+    assert!(screen(&mut app, 150, 40).contains("is blocked by"));
+    press(&mut app, "<CR>");
+    assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-34"));
+    let lonely = load_board(&FakeProvider::new(), None).await.unwrap();
+    let lonely =
+        lonely.issues.iter().find(|i| i.links.is_empty() && i.subtasks.is_empty()).unwrap();
+    paste(&mut app, lonely.key.as_str());
+    press(&mut app, "gl");
+    let said = format!("{} has no linked or child issue", lonely.key);
+    assert!(screen(&mut app, 150, 20).contains(&said));
 }
 
 /// The app as the binary builds it: links read by the provider.

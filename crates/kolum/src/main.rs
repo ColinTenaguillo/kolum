@@ -217,11 +217,12 @@ fn run(args: Args) -> anyhow::Result<()> {
     let (provider, board, profile) = provider(&args, &config)?;
     tracing::info!("starting on the {} provider", provider.name());
     let writable = provider.capabilities().supports(kolum_domain::Capability::Write);
+    let linkable = provider.capabilities().supports(kolum_domain::Capability::Links);
     let state_file = config::cache_dir().map(|d| d.join(&profile).join("state.toml"));
     let links = provider.clone();
     let issue_at = Arc::new(move |url: &str| links.issue_at(url));
-    let settings =
-        with_state(Settings { board, writable, issue_at, ..settings }, state_file.as_deref());
+    let settings = Settings { board, writable, links: linkable, issue_at, ..settings };
+    let settings = with_state(settings, state_file.as_deref());
     let cache = config::cache_dir().map(|d| {
         Arc::new(kolum::cache::Cache::new(d.join(&profile))) as Arc<dyn kolum_app::Storage>
     });

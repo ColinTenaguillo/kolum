@@ -181,7 +181,7 @@ impl DetailView {
     }
 
     /// Its sub-tasks, then the issues found by their parent, once each.
-    fn children(&self) -> Vec<&IssueRef> {
+    pub fn children(&self) -> Vec<&IssueRef> {
         let found = self.loaded.iter().flat_map(|d| &d.children);
         let mut children: Vec<&IssueRef> = self.issue.subtasks.iter().collect();
         for child in found {

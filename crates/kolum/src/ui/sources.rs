@@ -16,7 +16,12 @@ pub struct IssueSource {
     pub issues: Vec<Issue>,
     pub me: Option<UserId>,
     pub remote: Option<Vec<Issue>>,
+    /// Picking the other end of a link from this issue, not one to open.
+    pub linking: Option<Linking>,
 }
+
+/// A link being made: from this issue, of this kind, outward or not.
+pub type Linking = (kolum_domain::IssueKey, kolum_domain::LinkType, bool);
 
 fn filter_of(query: &str) -> Filter {
     match parse_query(query) {
@@ -27,20 +32,46 @@ fn filter_of(query: &str) -> Filter {
     }
 }
 
+impl IssueSource {
+    /// The issue opens, or becomes the other end of the link being made.
+    fn confirm(&self, issue: &Issue) -> Pick {
+        let Some((key, kind, outward)) = &self.linking else {
+            return Pick::OpenIssue(issue.key.clone());
+        };
+        let link = kolum_domain::NewLink {
+            kind: kind.clone(),
+            outward: *outward,
+            other: issue.key.clone(),
+        };
+        Pick::Link { key: key.clone(), link, other: issue.as_ref() }
+    }
+}
+
 impl PickerSource for IssueSource {
     type Item = Issue;
 
     fn title(&self) -> String {
-        "Issues".into()
+        match &self.linking {
+            Some((key, kind, outward)) => format!("{key} {} …", kind.phrase(*outward)),
+            None => "Issues".into(),
+        }
     }
 
+    /// An issue is no other end of its own link.
     fn candidates(&self, query: &str) -> Vec<Issue> {
+        let linked = self.linking.as_ref().map(|(key, ..)| key);
+        let other = |i: &&Issue| Some(&i.key) != linked;
         if let Some(found) = &self.remote {
-            return found.clone();
+            return found.iter().filter(other).cloned().collect();
         }
         let filter = filter_of(query);
         let me = self.me.clone().unwrap_or_else(|| UserId::new(""));
-        self.issues.iter().filter(|i| filter.matches_fields(i, &me)).cloned().collect()
+        self.issues
+            .iter()
+            .filter(|i| filter.matches_fields(i, &me))
+            .filter(other)
+            .cloned()
+            .collect()
     }
 
     fn scope(&self, query: &str) -> String {
@@ -124,7 +155,7 @@ impl PickerSource for IssueSource {
     fn act(&self, issues: &[Issue], action: Action) -> Option<Pick> {
         let first = issues.first()?;
         Some(match action {
-            Action::Confirm => Pick::OpenIssue(first.key.clone()),
+            Action::Confirm => self.confirm(first),
             Action::OpenBrowser => Pick::OpenUrl(first.url.clone()?),
             Action::CopyKey => {
                 Pick::Copy(issues.iter().map(|i| i.key.to_string()).collect::<Vec<_>>().join(" "))
@@ -405,6 +436,77 @@ impl PickerSource for OptionChoice {
 }
 
 /// "Move ACME-1, ACME-2": what a picker does, to which issues.
+/// The kinds of link for an issue, each way round that reads differently.
+pub struct RelationChoice {
+    pub key: kolum_domain::IssueKey,
+    pub relations: Vec<(kolum_domain::LinkType, bool)>,
+}
+
+impl RelationChoice {
+    pub fn new(key: kolum_domain::IssueKey, kinds: Vec<kolum_domain::LinkType>) -> Self {
+        let both = |k: kolum_domain::LinkType| {
+            let inward = (k.inward != k.outward).then(|| (k.clone(), false));
+            std::iter::once((k, true)).chain(inward)
+        };
+        RelationChoice { key, relations: kinds.into_iter().flat_map(both).collect() }
+    }
+}
+
+impl PickerSource for RelationChoice {
+    type Item = (kolum_domain::LinkType, bool);
+
+    fn title(&self) -> String {
+        format!("Link {}", self.key)
+    }
+
+    fn candidates(&self, _query: &str) -> Vec<Self::Item> {
+        self.relations.clone()
+    }
+
+    fn haystack(&self, (kind, outward): &Self::Item) -> String {
+        kind.phrase(*outward).to_string()
+    }
+
+    fn act(&self, items: &[Self::Item], action: Action) -> Option<Pick> {
+        let (kind, outward) = items.first()?.clone();
+        (action == Action::Confirm).then(|| Pick::Relation { key: self.key.clone(), kind, outward })
+    }
+}
+
+/// An issue's links, and its children when they are to open: Enter opens
+/// the one picked, or removes its link.
+pub struct LinkChoice {
+    pub key: kolum_domain::IssueKey,
+    pub links: Vec<kolum_domain::IssueLink>,
+    pub remove: bool,
+}
+
+impl PickerSource for LinkChoice {
+    type Item = kolum_domain::IssueLink;
+
+    fn title(&self) -> String {
+        let verb = if self.remove { "Remove a link of" } else { "Linked to" };
+        format!("{verb} {}", self.key)
+    }
+
+    fn candidates(&self, _query: &str) -> Vec<Self::Item> {
+        self.links.clone()
+    }
+
+    fn haystack(&self, link: &Self::Item) -> String {
+        format!("{:<14} {} {}", link.relation, link.issue.key, link.issue.title)
+    }
+
+    fn act(&self, links: &[Self::Item], action: Action) -> Option<Pick> {
+        let link = links.first().filter(|_| action == Action::Confirm)?;
+        let other = link.issue.key.clone();
+        Some(match self.remove {
+            true => Pick::Unlink { key: self.key.clone(), id: link.id.clone()?, other },
+            false => Pick::OpenIssue(other),
+        })
+    }
+}
+
 fn titled(verb: &str, keys: &[kolum_domain::IssueKey]) -> String {
     let keys: Vec<&str> = keys.iter().map(|k| k.as_str()).collect();
     format!("{verb} {}", keys.join(", "))

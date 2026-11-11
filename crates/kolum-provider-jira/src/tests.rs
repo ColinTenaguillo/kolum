@@ -292,6 +292,7 @@ fn an_issue_maps_every_field() {
     assert_eq!(issue.subtasks[0].kind, IssueKind::Subtask);
     assert_eq!(issue.links[0].relation, "blocks");
     assert_eq!(issue.links[0].issue.key.as_str(), "ACME-34");
+    assert_eq!(issue.links[0].id, Some(LinkId::new("1")), "to remove it by");
     assert_eq!(issue.links[1].relation, "relates to");
     assert_eq!(issue.estimate, Some(Estimate::Points(3.0)));
     assert_eq!(issue.sprint.as_ref().unwrap().name, "Sprint 15", "the active sprint wins");
@@ -519,6 +520,8 @@ fn route(method: &str, target: &str) -> Option<(&'static str, &'static str)> {
         ("PUT", "/rest/api/3/issue/ACME-5/assignee") => return Some(("204 No Content", "")),
         ("PUT", "/rest/api/3/issue/ACME-5") => return Some(("204 No Content", "")),
         ("PUT", "/rest/agile/1.0/issue/rank") => return Some(("204 No Content", "")),
+        ("POST", "/rest/api/3/issueLink") => return Some(("201 Created", "")),
+        ("DELETE", "/rest/api/3/issueLink/10001") => return Some(("204 No Content", "")),
         ("POST", "/rest/api/3/issue/ACME-5/comment") => {
             return Some(("201 Created", fixture!("comment_created.json")));
         }
@@ -566,6 +569,7 @@ fn route(method: &str, target: &str) -> Option<(&'static str, &'static str)> {
             }
             "/rest/api/3/search/jql" => fixture!("search_jql.json"),
             "/rest/api/3/myself" => fixture!("myself.json"),
+            "/rest/api/3/issueLinkType" => fixture!("issue_link_types.json"),
             "/rest/api/3/user/search" if target.contains("query=nobody") => "[]",
             "/rest/api/3/user/search" => fixture!("user_search.json"),
             _ => return None,
@@ -1332,4 +1336,45 @@ async fn the_provider_reads_links_to_its_own_site() {
     let jira = fake_jira(None).await;
     let link = format!("{}/browse/PROJ-7", jira.url);
     assert_eq!(provider(&jira).issue_at(&link), Some(IssueKey::parse("PROJ-7")));
+}
+
+/// The link types, each with its two phrasings; a link made either way
+/// round, as Jira reads it back (`inwardIssue` <outward> `outwardIssue`);
+/// and one removed by its id.
+#[tokio::test]
+async fn links_are_made_either_way_round_and_removed_by_their_id() {
+    let jira = fake_jira(None).await;
+    let p = provider(&jira);
+    assert!(p.capabilities().supports(Capability::Links));
+    let types = p.link_types().await.unwrap();
+    let blocks = LinkType {
+        name: "Blocks".into(),
+        inward: "is blocked by".into(),
+        outward: "blocks".into(),
+    };
+    assert_eq!(types[0], blocks);
+    assert_eq!(types.len(), 2);
+    let key = IssueKey::parse("ACME-5");
+    let other = IssueKey::parse("ACME-34");
+    p.link(&key, &NewLink { kind: blocks.clone(), outward: true, other: other.clone() })
+        .await
+        .unwrap();
+    p.link(&key, &NewLink { kind: blocks, outward: false, other }).await.unwrap();
+    p.unlink(&key, &LinkId::new("10001")).await.unwrap();
+    let seen = jira.seen.lock().unwrap().clone();
+    let bodies: Vec<serde_json::Value> = seen
+        .iter()
+        .filter_map(|r| r.strip_prefix("POST /rest/api/3/issueLink\n"))
+        .map(|r| serde_json::from_str(r.rsplit_once('\n').unwrap().0).unwrap())
+        .collect();
+    let body = |inward: &str, outward: &str| {
+        serde_json::json!({
+            "type": { "name": "Blocks" },
+            "inwardIssue": { "key": inward },
+            "outwardIssue": { "key": outward },
+        })
+    };
+    assert_eq!(bodies, [body("ACME-5", "ACME-34"), body("ACME-34", "ACME-5")]);
+    let removed = |r: &&String| r.starts_with("DELETE /rest/api/3/issueLink/10001\n\n");
+    assert!(seen.iter().any(|r| removed(&r)), "with no body: {seen:?}");
 }

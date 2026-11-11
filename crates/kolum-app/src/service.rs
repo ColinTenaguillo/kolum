@@ -38,6 +38,8 @@ pub enum Command {
     Transitions(IssueKey),
     /// The fields the issue lets kolum set.
     EditableFields(IssueKey),
+    /// The kinds of link, to give this issue one.
+    LinkTypes(IssueKey),
     /// An avatar's bytes.
     Image(String),
     Create(kolum_domain::NewIssue),
@@ -121,6 +123,10 @@ pub enum Event {
     EditableFields {
         key: IssueKey,
         result: Result<Vec<kolum_domain::EditableField>, DomainError>,
+    },
+    LinkTypes {
+        key: IssueKey,
+        result: Result<Vec<kolum_domain::LinkType>, DomainError>,
     },
     /// The write went through; `issue` is the provider's view of it after,
     /// when it could be read back.
@@ -327,6 +333,7 @@ async fn run(ports: Ports, command: Command) {
         Command::EditableFields(key) => {
             Event::EditableFields { result: provider.editable_fields(&key).await, key }
         }
+        Command::LinkTypes(key) => Event::LinkTypes { result: provider.link_types().await, key },
         Command::Write { op, key, write } => written(provider, op, key, write).await,
         Command::Image(url) => Event::Image { result: provider.image(&url).await, url },
         Command::Create(new) => {
@@ -452,16 +459,30 @@ async fn send_write(
     write: Write,
 ) -> kolum_domain::Result<()> {
     match write {
-        Write::Transition(t) => provider.transition(key, &t).await,
-        Write::TransitionTo { id, to } => {
-            let id = crate::write::transition_to(&provider.transitions(key).await?, &id, &to)?;
-            provider.transition(key, &id).await
-        }
+        Write::Transition(id) => transition(provider, key, id, None).await,
+        Write::TransitionTo { id, to } => transition(provider, key, id, Some(to)).await,
         Write::Assign(user) => provider.assign(key, user.as_ref()).await,
         Write::Comment(body) => provider.comment(key, body).await.map(|_| ()),
         Write::Update(update) => provider.update(key, update).await,
         Write::Rank(rank) => provider.rank(key, &rank).await,
+        Write::Link(link) => provider.link(key, &link).await,
+        Write::Unlink(id) => provider.unlink(key, &id).await,
     }
+}
+
+/// By the transition picked; with `to`, by whichever of the issue's own
+/// leads to that status when the one picked is not among them.
+async fn transition(
+    provider: &dyn Provider,
+    key: &IssueKey,
+    id: kolum_domain::TransitionId,
+    to: Option<kolum_domain::Status>,
+) -> kolum_domain::Result<()> {
+    let id = match to {
+        Some(to) => crate::write::transition_to(&provider.transitions(key).await?, &id, &to)?,
+        None => id,
+    };
+    provider.transition(key, &id).await
 }
 
 pub(crate) async fn load_issue(
@@ -1274,6 +1295,32 @@ mod tests {
         }
         let waited = asked.elapsed();
         assert!(waited < ms(500), "{waited:?} for the reply: the disk held it up");
+    }
+
+    /// The link types come back for the issue that asked; a link and its
+    /// removal go to the provider as writes.
+    #[tokio::test]
+    async fn links_go_through_the_service() {
+        use kolum_domain::{IssueReader, NewLink};
+        let fake = Arc::new(FakeProvider::new());
+        let (service, mut events) = Service::spawn(fake.clone(), None);
+        events.within().await; // Me
+        let key = IssueKey::parse("ACME-9");
+        service.send(Command::LinkTypes(key.clone()));
+        let Some(Event::LinkTypes { key: k, result: Ok(types) }) = events.within().await else {
+            panic!()
+        };
+        assert_eq!(k, key);
+        let other = IssueKey::parse("ACME-5");
+        let link = NewLink { kind: types[0].clone(), outward: true, other };
+        service.send(Command::Write { op: 1, key: key.clone(), write: Write::Link(link) });
+        let Some(Event::Written { issue: Some(read), .. }) = events.within().await else {
+            panic!()
+        };
+        let id = read.links.last().unwrap().id.clone().unwrap();
+        service.send(Command::Write { op: 2, key: key.clone(), write: Write::Unlink(id) });
+        let Some(Event::Written { .. }) = events.within().await else { panic!() };
+        assert!(fake.issue(&key).await.unwrap().links.is_empty());
     }
 
     #[tokio::test]

@@ -1,0 +1,18 @@
+{
+  "issueLinkTypes": [
+    {
+      "id": "10000",
+      "name": "Blocks",
+      "inward": "is blocked by",
+      "outward": "blocks",
+      "self": "x"
+    },
+    {
+      "id": "10003",
+      "name": "Relates",
+      "inward": "relates to",
+      "outward": "relates to",
+      "self": "x"
+    }
+  ]
+}

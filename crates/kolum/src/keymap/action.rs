@@ -42,6 +42,9 @@ actions! {
     MoveCardUp "move_card_up" "Move the card up its column",
     OpenDetail "open_detail" "Open the issue",
     OpenParent "open_parent" "Open the parent issue",
+    OpenLinked "open_linked" "Open a linked or a child issue",
+    AddLink "add_link" "Link the issue to another",
+    RemoveLink "remove_link" "Remove one of the issue's links",
     JumpBack "jump_back" "Back to the issue left before",
     JumpForward "jump_forward" "Forward to the issue left after",
     Filter "filter" "Filter the board, or search the issue",
@@ -101,6 +104,8 @@ impl Action {
                 | Action::Edit
                 | Action::EditField
                 | Action::Clone
+                | Action::AddLink
+                | Action::RemoveLink
         )
     }
 }
