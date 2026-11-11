@@ -12,6 +12,9 @@ use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 use time::{Duration, OffsetDateTime, macros::datetime};
 
+/// Where the demo's issues live, as far as their links go.
+const SITE: &str = "https://demo.kolum.invalid";
+
 /// The board's issues come back in pages this long, so the pagination
 /// loop in the application is exercised by every demo.
 const PAGE_SIZE: usize = 20;
@@ -204,7 +207,7 @@ fn issue(row: &data::Row) -> Issue {
                 })),
             },
         ],
-        url: Some(format!("https://demo.kolum.invalid/browse/{}", key(row.n))),
+        url: Some(format!("{SITE}/browse/{}", key(row.n))),
         attachments: attachments(row.n),
     }
 }
@@ -702,6 +705,11 @@ impl UserDirectory for FakeProvider {
 impl Provider for FakeProvider {
     fn name(&self) -> &str {
         "fake"
+    }
+
+    /// Its issues' own pages, as their `url` gives them.
+    fn issue_at(&self, url: &str) -> Option<IssueKey> {
+        IssueKey::typed(url.strip_prefix(SITE)?.strip_prefix("/browse/")?)
     }
 
     fn capabilities(&self) -> Capabilities {

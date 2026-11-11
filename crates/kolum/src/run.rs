@@ -26,7 +26,9 @@ pub async fn run(
     events: UnboundedReceiver<Event>,
     wake: UnboundedReceiver<()>,
 ) -> anyhow::Result<()> {
+    bracketed_paste(true);
     let result = run_loop(state_file, terminal, app, &service, events, wake).await;
+    bracketed_paste(false);
     service.close(FLUSH).await;
     result
 }
@@ -90,6 +92,7 @@ fn on_term(app: &mut App, event: Option<std::io::Result<TermEvent>>) -> std::io:
         Some(Ok(TermEvent::Key(k))) if k.kind != KeyEventKind::Release => {
             app.on_key(k.into(), Instant::now())
         }
+        Some(Ok(TermEvent::Paste(text))) => app.on_paste(&text, Instant::now()),
         Some(Ok(_)) => {}
         Some(Err(e)) => return Err(e),
         None => return Ok(false),
@@ -167,6 +170,7 @@ async fn in_editor(
     text: String,
 ) -> (EventStream, Result<String, String>) {
     drop(keys);
+    bracketed_paste(false);
     ratatui::restore();
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
@@ -175,7 +179,24 @@ async fn in_editor(
         .await
         .unwrap_or_else(|e| Err(e.to_string()));
     *terminal = ratatui::init();
+    bracketed_paste(true);
     (EventStream::new(), result)
+}
+
+/// A paste comes as one event, its text, rather than as keys, which the
+/// bindings would run. Off for `$EDITOR`, and when kolum ends.
+pub fn bracketed_paste(on: bool) {
+    let _ = paste_mode(&mut std::io::stdout(), on)
+        .inspect_err(|e| tracing::warn!("bracketed paste: {e}"));
+}
+
+fn paste_mode(out: &mut impl Write, on: bool) -> std::io::Result<()> {
+    use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
+    if on {
+        crossterm::execute!(out, EnableBracketedPaste)
+    } else {
+        crossterm::execute!(out, DisableBracketedPaste)
+    }
 }
 
 /// Writes `text` to a scratch Markdown file, runs `editor` on it through
@@ -232,6 +253,29 @@ mod tests {
         assert!(app.quit, "q on the bare board quits");
         assert!(!on_term(&mut app, None).unwrap(), "the terminal has no more");
         assert!(on_term(&mut app, Some(Err(std::io::Error::other("gone")))).is_err());
+    }
+
+    #[test]
+    fn bracketed_paste_is_the_terminals_mode_2004() {
+        let written = |on| {
+            let mut out = vec![];
+            paste_mode(&mut out, on).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        assert_eq!([written(true), written(false)], ["\x1b[?2004h", "\x1b[?2004l"]);
+    }
+
+    /// A paste is text, not keys: `q` pasted on the board quits nothing,
+    /// and a key opens its issue.
+    #[test]
+    fn a_paste_goes_to_the_app_as_text() {
+        let mut app = App::new(Settings::default(), Arc::new(|| {}));
+        app.take_effects();
+        assert!(on_term(&mut app, Some(Ok(TermEvent::Paste("q".into())))).unwrap());
+        assert!(!app.quit);
+        on_term(&mut app, Some(Ok(TermEvent::Paste("ACME-5".into())))).unwrap();
+        let open = Effect::Send(Command::LoadIssue(IssueKey::parse("ACME-5")));
+        assert_eq!(app.take_effects(), [open]);
     }
 
     /// A directory of its own, removed with it, pass or fail.

@@ -66,6 +66,21 @@ impl IssueKey {
         &self.text
     }
 
+    /// A key as a person types or pastes it, or a link holds it: trimmed,
+    /// one word, in a project; a Jira key in capitals whatever case it came
+    /// in (`proj-12` is `PROJ-12`), GitHub's `repo#12` as it is.
+    pub fn typed(text: &str) -> Option<Self> {
+        let text = text.trim();
+        if text.contains(char::is_whitespace) {
+            return None;
+        }
+        let key = match text.contains('#') {
+            true => Self::parse(text),
+            false => Self::parse(text.to_uppercase()),
+        };
+        key.project().is_some().then_some(key)
+    }
+
     /// The Jira project or the GitHub repository the issue is numbered in.
     pub fn project(&self) -> Option<&str> {
         self.parts.map(|(end, _)| &self.text[..end])
@@ -145,6 +160,16 @@ impl FieldId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_typed_key_is_one_word_in_a_project() {
+        let typed = |t: &str| IssueKey::typed(t).map(|k| k.to_string());
+        assert_eq!(typed(" proj-12\n"), Some("PROJ-12".into()));
+        assert_eq!(typed("Web#4"), Some("Web#4".into()), "a repository keeps its case");
+        assert_eq!(typed("PROJ-12 and more"), None);
+        assert_eq!(typed("dashboards"), None);
+        assert_eq!(typed(""), None);
+    }
 
     #[test]
     fn a_key_knows_its_project_and_reads_as_written() {

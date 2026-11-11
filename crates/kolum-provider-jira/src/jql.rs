@@ -6,8 +6,7 @@ use time::OffsetDateTime;
 /// `proj-12983` read as the key `PROJ-12983`: typed text, trimmed and in
 /// capitals, when it reads as a Jira key (not GitHub's `repo#12`).
 pub fn issue_key(text: &str) -> Option<IssueKey> {
-    let key = IssueKey::parse(text.trim().to_uppercase());
-    (key.project().is_some() && !key.as_str().contains('#')).then_some(key)
+    IssueKey::typed(text).filter(|key| !key.as_str().contains('#'))
 }
 
 /// A JQL string literal: always quoted, so a value with a space, a dash or

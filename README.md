@@ -180,6 +180,7 @@ The defaults follow vim. Counts work on motions (`3j`, `5G`), sequences wait
 |---|---|
 | `/` then `n` `N` | Filter the board as you type, step through matches |
 | `/` then `n` `N`, in an issue | Search its text, highlighted, and jump from match to match; `Esc` clears, a second `Esc` closes |
+| Paste a link or a key | Open that issue, from the board or an issue: a Jira or GitHub link, `PROJ-123`, `repo#42`; in a picker, the link is typed as its key |
 | `Space f` | Find an issue, fuzzy |
 | `Space F` | Search the provider; `!` starts raw JQL, a key or a number finds that issue |
 | `Space b` | Switch board |

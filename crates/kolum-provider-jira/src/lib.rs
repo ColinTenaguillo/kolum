@@ -701,6 +701,10 @@ impl Provider for JiraProvider {
         "jira"
     }
 
+    fn issue_at(&self, url: &str) -> Option<IssueKey> {
+        map::issue_at(&self.settings.base_url, url)
+    }
+
     fn capabilities(&self) -> Capabilities {
         use Capability::*;
         Capabilities::new(

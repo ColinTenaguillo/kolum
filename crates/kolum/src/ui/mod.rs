@@ -221,7 +221,11 @@ pub struct Settings {
     pub remote_debounce: std::time::Duration,
     /// `ui.filter` is one applied in an earlier run, not the config's.
     pub filter_applied: bool,
+    /// The issue a pasted link points at, as the provider reads its links.
+    pub issue_at: IssueAt,
 }
+
+pub type IssueAt = std::sync::Arc<dyn Fn(&str) -> Option<IssueKey> + Send + Sync>;
 
 impl Settings {
     /// What the config says, with no board picked yet, nothing else to
@@ -240,6 +244,7 @@ impl Settings {
             images: None,
             remote_debounce: std::time::Duration::from_millis(config.picker.remote_debounce_ms),
             filter_applied: false,
+            issue_at: std::sync::Arc::new(|_| None),
         }
     }
 }
@@ -340,6 +345,7 @@ pub struct App {
     images: Option<ratatui_image::picker::Picker>,
     /// Avatars by URL: asked for, drawn, or not to be had.
     avatars: std::collections::HashMap<String, Avatar>,
+    issue_at: IssueAt,
     pub quit: bool,
 }
 
@@ -427,6 +433,7 @@ impl App {
             jumps: Default::default(),
             images: settings.images,
             avatars: std::collections::HashMap::new(),
+            issue_at: settings.issue_at,
             quit: false,
         }
     }
@@ -540,6 +547,50 @@ impl App {
             Layers { tables: contexts.iter().map(|&c| self.keymap.table(c)).collect(), text };
         let outcome = self.resolver.feed(key, &layers, now, self.keymap.timeout);
         self.apply(outcome);
+    }
+
+    /// Text the terminal pasted: typed into the picker or the bottom line,
+    /// a link there as its key; on the board or in an issue, the issue it
+    /// names opens, as `<CR>` would.
+    /// A paste ends the keys typed so far, as any other event would; with
+    /// the config's problems shown, it only closes them, as a key does.
+    pub fn on_paste(&mut self, text: &str, now: Instant) {
+        if !self.problems.is_empty() {
+            return self.problems.clear();
+        }
+        self.now = now;
+        self.resolver = Resolver::default();
+        self.message = None;
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        match self.focus() {
+            Focus::Picker => {
+                let text = self.picker_paste(text);
+                self.type_paste(&text)
+            }
+            Focus::Prompt => self.type_paste(&text),
+            Focus::Board | Focus::Detail => match pasted(&text, &*self.issue_at) {
+                Ok(key) => self.open_picked(key),
+                Err(why) => self.say(why, Level::Warn),
+            },
+            Focus::Help | Focus::Viewer => {
+                self.say("Paste a link or a key on the board or in an issue", Level::Info)
+            }
+        }
+    }
+
+    /// In a picker, a link is the key of its issue, which finds it.
+    fn picker_paste(&mut self, text: String) -> String {
+        if let Some(p) = &mut self.picker {
+            p.set_insert(true);
+        }
+        (self.issue_at)(&text).map_or(text, |key| key.to_string())
+    }
+
+    /// As if typed.
+    fn type_paste(&mut self, text: &str) {
+        for c in text.chars() {
+            self.type_key(Key::char(c));
+        }
     }
 
     pub fn on_timeout(&mut self, now: Instant) {
@@ -2454,6 +2505,16 @@ impl App {
 /// Vim's short names for the commands that are actions.
 const ALIASES: [(&str, &str); 5] =
     [("q", "quit"), ("q!", "quit"), ("qa", "quit"), ("h", "help"), ("e", "refresh")];
+
+/// The issue a paste names: a link the provider reads, or a key alone.
+/// `text` is on one line.
+fn pasted(text: &str, issue_at: &dyn Fn(&str) -> Option<IssueKey>) -> Result<IssueKey, String> {
+    let short = text::truncate(text, 80);
+    if text.starts_with("https://") || text.starts_with("http://") {
+        return issue_at(text).ok_or_else(|| format!("Not an issue of this site: {short}"));
+    }
+    IssueKey::typed(text).ok_or_else(|| format!("No issue in what was pasted: {short}"))
+}
 
 /// How far a scrolling action moves, `n` times, with half a page of
 /// `half` lines; none for any other action.

@@ -218,7 +218,10 @@ fn run(args: Args) -> anyhow::Result<()> {
     tracing::info!("starting on the {} provider", provider.name());
     let writable = provider.capabilities().supports(kolum_domain::Capability::Write);
     let state_file = config::cache_dir().map(|d| d.join(&profile).join("state.toml"));
-    let settings = with_state(Settings { board, writable, ..settings }, state_file.as_deref());
+    let links = provider.clone();
+    let issue_at = Arc::new(move |url: &str| links.issue_at(url));
+    let settings =
+        with_state(Settings { board, writable, issue_at, ..settings }, state_file.as_deref());
     let cache = config::cache_dir().map(|d| {
         Arc::new(kolum::cache::Cache::new(d.join(&profile))) as Arc<dyn kolum_app::Storage>
     });
@@ -336,6 +339,7 @@ fn run_tui(
         let restore = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             tracing::error!("panic: {info}");
+            kolum::run::bracketed_paste(false);
             restore(info);
             std::process::exit(1);
         }));

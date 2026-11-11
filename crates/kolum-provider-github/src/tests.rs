@@ -619,3 +619,36 @@ async fn a_github_issue_has_no_field_layout_to_keep() {
     let layout = p.field_layout(&issues[0].key).await;
     assert!(matches!(layout, Err(DomainError::Unsupported(_))), "{layout:?}");
 }
+
+/// A link to an issue or a pull request on the site of the API, as
+/// `repo#12`; any other is none of its.
+#[test]
+fn a_link_to_this_site_names_its_issue() {
+    let at = |api: &str, url: &str| issue_at(api, url).map(|k| k.to_string());
+    let api = "https://api.github.com/graphql";
+    assert_eq!(at(api, "https://github.com/acme/web/issues/42"), Some("web#42".into()));
+    assert_eq!(at(api, "https://github.com/acme/web/pull/7/files"), Some("web#7".into()));
+    assert_eq!(
+        at(api, "https://github.com/acme/web/issues/42#issuecomment-1"),
+        Some("web#42".into())
+    );
+    assert_eq!(at(api, "https://github.com/acme/web/discussions/3"), None);
+    let pane = "https://github.com/orgs/acme/projects/2?pane=issue&itemId=9&issue=acme%7Cweb%7C42";
+    assert_eq!(at(api, pane), Some("web#42".into()), "open in the project's side pane");
+    assert_eq!(at(api, "https://github.com/orgs/acme/projects/2?issue=web%7C42"), None);
+    assert_eq!(at(api, "https://github.com/orgs/acme/projects/2"), None);
+    assert_eq!(at(api, "https://github.com/acme/web/issues/x"), None);
+    assert_eq!(at(api, "https://gitlab.com/acme/web/issues/42"), None, "another site");
+    let ghe = "https://git.acme.io/api/graphql";
+    assert_eq!(at(ghe, "https://git.acme.io/acme/web/issues/4"), Some("web#4".into()));
+    assert_eq!(at(ghe, "https://github.com/acme/web/issues/4"), None);
+}
+
+#[tokio::test]
+async fn the_provider_reads_links_to_its_own_site() {
+    let gh = fake_github(200, None).await;
+    let api_url = "https://api.github.com/graphql".into();
+    let p = GithubProvider::new(GithubSettings { api_url, ..settings(&gh) });
+    let link = "https://github.com/acme/web/pull/9";
+    assert_eq!(p.issue_at(link), Some(IssueKey::parse("web#9")));
+}

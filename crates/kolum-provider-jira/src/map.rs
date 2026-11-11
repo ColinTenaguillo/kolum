@@ -3,7 +3,7 @@
 
 use crate::dto::*;
 use crate::settings::JiraFlavor;
-use crate::{adf, wiki};
+use crate::{adf, jql, wiki};
 use kolum_domain::*;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -650,4 +650,20 @@ pub fn transition(dto: &TransitionDto, known: &FieldIds) -> Transition {
             .map(|(id, _)| domain_id(id, known))
             .collect(),
     }
+}
+
+/// The issue a link to this site points at: a page of it with
+/// `selectedIssue=KEY` (a board with the issue open), or whose path ends
+/// in the key (`/browse/KEY`, `/projects/P/issues/KEY`, a queue's).
+pub fn issue_at(base: &str, url: &str) -> Option<IssueKey> {
+    let rest = url.strip_prefix(base.trim_end_matches('/'))?;
+    // `https://acme.atlassian.net.evil.io` starts the same.
+    if !(rest.is_empty() || rest.starts_with(['/', '?', '#'])) {
+        return None;
+    }
+    let rest = rest.split('#').next().unwrap_or_default();
+    let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let selected = query.split('&').find_map(|p| p.strip_prefix("selectedIssue="));
+    let key = selected.or_else(|| path.trim_end_matches('/').rsplit('/').next())?;
+    jql::issue_key(key)
 }

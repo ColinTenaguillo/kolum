@@ -322,3 +322,12 @@ async fn a_bulk_read_comes_a_batch_at_a_time_until_refused() {
     assert!(p.issues_in_full(&keys, &mut |batch| sizes.push(batch.len())).await.is_err());
     assert_eq!(sizes, [10]);
 }
+
+#[tokio::test]
+async fn a_link_is_read_back_to_its_issue() {
+    let p = FakeProvider::new();
+    let issue = p.issue(&IssueKey::parse("ACME-5")).await.unwrap();
+    assert_eq!(p.issue_at(issue.url.as_deref().unwrap()), Some(issue.key));
+    assert_eq!(p.issue_at("https://demo.kolum.invalid/browse/nope"), None);
+    assert_eq!(p.issue_at("https://example.com/browse/ACME-5"), None);
+}

@@ -163,6 +163,47 @@ fn numbered(content: &Value) -> Option<IssueKey> {
     Some(IssueKey::new(repo, "#", content["number"].as_u64()?))
 }
 
+/// The issue or pull request a link on the site of the API `api` points
+/// at, as `repo#12`: its own page, or a project's with it open in the
+/// side pane (`issue=owner|repo|12`). The owner is not in the key.
+fn issue_at(api: &str, url: &str) -> Option<IssueKey> {
+    let rest = url.strip_prefix(&site(api)?)?;
+    let rest = rest.split('#').next().unwrap_or_default();
+    let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let (repo, number) = match query.split('&').find_map(|p| p.strip_prefix("issue=")) {
+        Some(pane) => in_pane(pane)?,
+        None => in_path(path)?,
+    };
+    Some(IssueKey::new(&repo, "#", number.parse().ok()?))
+}
+
+/// The web site of the API `api`, to its first `/`: github.com's API is on
+/// a host of its own, Enterprise's under `/api` of the site.
+fn site(api: &str) -> Option<String> {
+    let (scheme, rest) = api.split_once("://")?;
+    let host = rest.split('/').next()?;
+    let host = if host == "api.github.com" { "github.com" } else { host };
+    Some(format!("{scheme}://{host}/"))
+}
+
+/// The repository and the number of a project's side pane: `owner|repo|12`,
+/// its bars encoded in the link.
+fn in_pane(pane: &str) -> Option<(String, String)> {
+    let pane = pane.replace("%7C", "|").replace("%7c", "|");
+    match pane.split('|').collect::<Vec<_>>()[..] {
+        [_owner, repo, number] => Some((repo.into(), number.into())),
+        _ => None,
+    }
+}
+
+/// The repository and the number of `owner/repo/issues/12`, or `pull`.
+fn in_path(path: &str) -> Option<(String, String)> {
+    match path.split('/').collect::<Vec<_>>()[..] {
+        [_owner, repo, "issues" | "pull", number, ..] => Some((repo.into(), number.into())),
+        _ => None,
+    }
+}
+
 /// A draft's key, in no repository: `draft-` and the end of its id.
 fn draft_key(id: &str) -> IssueKey {
     let start = id.char_indices().rev().nth(5).map_or(0, |(at, _)| at);
@@ -782,6 +823,10 @@ impl UserDirectory for GithubProvider {
 impl Provider for GithubProvider {
     fn name(&self) -> &str {
         "github"
+    }
+
+    fn issue_at(&self, url: &str) -> Option<IssueKey> {
+        issue_at(&self.settings.api_url, url)
     }
 
     fn capabilities(&self) -> Capabilities {

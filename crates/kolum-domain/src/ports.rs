@@ -194,6 +194,12 @@ pub trait Provider: BoardSource + IssueReader + IssueSearch + IssueWriter + User
     /// Lower-case and stable: it names the cache directory.
     fn name(&self) -> &str;
     fn capabilities(&self) -> Capabilities;
+
+    /// The issue a link to this provider's site points at, as copied from
+    /// the browser; none for a link elsewhere, or to no issue.
+    fn issue_at(&self, _url: &str) -> Option<IssueKey> {
+        None
+    }
 }
 
 #[cfg(test)]

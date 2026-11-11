@@ -1291,3 +1291,45 @@ fn pinned_fields_read_from_their_list() {
     let side: Vec<&str> = layout.side.iter().take(2).map(|f| f.id.as_str()).collect();
     assert_eq!(side, ["labels", "due"]);
 }
+
+/// A link to an issue, as copied from the browser: its own page, or the
+/// board with it open; of this site only.
+#[test]
+fn a_link_to_this_site_names_its_issue() {
+    let base = "https://acme.atlassian.net";
+    let at = |url: &str| map::issue_at(base, url).map(|k| k.to_string());
+    let key = Some("PROJ-123".to_string());
+    assert_eq!(at("https://acme.atlassian.net/browse/PROJ-123"), key);
+    assert_eq!(at("https://acme.atlassian.net/browse/PROJ-123?focusedCommentId=9#c"), key);
+    assert_eq!(
+        at(
+            "https://acme.atlassian.net/jira/software/projects/PROJ/boards/1?selectedIssue=PROJ-123"
+        ),
+        key
+    );
+    assert_eq!(
+        map::issue_at("https://acme.atlassian.net/", "https://acme.atlassian.net/browse/PROJ-123")
+            .map(|k| k.to_string()),
+        key,
+        "a base with a slash"
+    );
+    assert_eq!(at("https://other.atlassian.net/browse/PROJ-123"), None, "another site");
+    assert_eq!(at("https://acme.atlassian.net.evil.io/browse/PROJ-123"), None, "a longer host");
+    assert_eq!(at("https://acme.atlassian.net/jira/dashboards"), None, "no issue");
+    assert_eq!(at("https://acme.atlassian.net/browse/nope"), None, "no key");
+    assert_eq!(at("https://acme.atlassian.net/jira/software/projects/PROJ/issues/PROJ-123"), key);
+    assert_eq!(
+        at("https://acme.atlassian.net/jira/servicedesk/projects/SD/queues/custom/1/PROJ-123/"),
+        key
+    );
+    assert_eq!(at("https://acme.atlassian.net/browse/proj-123"), key, "any case");
+    let dc = |url: &str| map::issue_at("https://host/jira", url).map(|k| k.to_string());
+    assert_eq!(dc("https://host/jira/browse/PROJ-123"), key, "Data Center under a path");
+}
+
+#[tokio::test]
+async fn the_provider_reads_links_to_its_own_site() {
+    let jira = fake_jira(None).await;
+    let link = format!("{}/browse/PROJ-7", jira.url);
+    assert_eq!(provider(&jira).issue_at(&link), Some(IssueKey::parse("PROJ-7")));
+}

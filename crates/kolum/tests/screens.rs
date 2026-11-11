@@ -6,7 +6,7 @@ use kolum::config::UiConfig;
 use kolum::keymap::{Key, Keymap, parse_keys};
 use kolum::ui::{App, EditPurpose, Effect, Settings};
 use kolum_app::{Command, Event, IssueDetail, load_board};
-use kolum_domain::{IssueKey, IssueReader, UserDirectory};
+use kolum_domain::{IssueKey, IssueReader, Provider, UserDirectory};
 use kolum_provider_fake::FakeProvider;
 use ratatui::{Terminal, backend::TestBackend};
 use std::sync::Arc;
@@ -308,6 +308,74 @@ async fn a_count_before_ctrl_o_steps_back_as_many_issues() {
     assert_eq!(app.open_issue(), None, "not behind the help page");
     press(&mut app, "q2<C-o>");
     assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-16"));
+}
+
+/// The app as the binary builds it: links read by the provider.
+async fn pasting() -> App {
+    let fake = FakeProvider::new();
+    loaded_with(Settings { issue_at: Arc::new(move |url| fake.issue_at(url)), ..settings() }).await
+}
+
+fn paste(app: &mut App, text: &str) {
+    app.on_paste(text, Instant::now());
+}
+
+/// A link or a key pasted on the board or in an issue opens it, as Enter
+/// would; a link elsewhere, or text, says so.
+#[tokio::test]
+async fn pasting_a_link_or_a_key_opens_its_issue() {
+    let mut app = pasting().await;
+    paste(&mut app, "https://demo.kolum.invalid/browse/ACME-29\n");
+    assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-29"));
+    assert_eq!(selected(&app), "ACME-29", "the board follows");
+    paste(&mut app, " ACME-10 ");
+    assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-10"), "from an issue too");
+    paste(&mut app, "https://github.com/acme/web/issues/4");
+    assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-10"));
+    let shown = screen(&mut app, 150, 20);
+    assert!(shown.contains("Not an issue of this site: https://github.com/acme/web/issues/4"));
+    paste(&mut app, "see\nthe   logs");
+    assert!(screen(&mut app, 150, 20).contains("No issue in what was pasted: see the logs"));
+    assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-10"));
+    press(&mut app, "?");
+    paste(&mut app, "ACME-29");
+    assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-10"), "not under the help");
+    assert!(screen(&mut app, 150, 20).contains("Paste a link or a key on the board"));
+    press(&mut app, "qq");
+    paste(&mut app, "acme-29");
+    assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-29"), "a key in any case");
+    press(&mut app, "q3g");
+    paste(&mut app, "ACME-10");
+    press(&mut app, "q");
+    assert_eq!(app.open_issue(), None, "the count and the `g` typed before are gone");
+}
+
+/// The config's problems shown, a paste closes them, as a key does.
+#[tokio::test]
+async fn a_paste_over_the_config_problems_only_closes_them() {
+    let mut app = loaded_with(Settings { problems: vec!["oops".into()], ..settings() }).await;
+    paste(&mut app, "ACME-5");
+    assert_eq!(app.open_issue(), None);
+    assert!(!screen(&mut app, 150, 20).contains("oops"));
+}
+
+/// Pasted into a picker or the `/` line, the text is typed in; a link
+/// there becomes its key.
+#[tokio::test]
+async fn pasting_into_a_picker_or_a_line_types_it_in() {
+    let mut app = pasting().await;
+    press(&mut app, "<Space>f<Esc>");
+    paste(&mut app, "https://demo.kolum.invalid/browse/ACME-29");
+    settle(&mut app);
+    assert!(!screen(&mut app, 150, 40).contains("demo.kolum"), "the key, not the link");
+    press(&mut app, "<CR>");
+    assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-29"));
+    press(&mut app, "q/");
+    paste(&mut app, "billing\n");
+    assert!(screen(&mut app, 150, 40).contains("/billing"), "the filter, as typed");
+    press(&mut app, "<Esc>:");
+    paste(&mut app, "https://demo.kolum.invalid/browse/ACME-29");
+    assert!(screen(&mut app, 150, 40).contains(":https://demo.kolum.invalid"), "a link, as is");
 }
 
 #[tokio::test]
