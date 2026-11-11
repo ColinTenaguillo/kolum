@@ -10,6 +10,7 @@ mod detail;
 mod glyph;
 mod help;
 pub mod input;
+mod jumps;
 pub mod picker;
 mod rich;
 mod search;
@@ -329,9 +330,13 @@ pub struct App {
     /// for a move into that column.
     awaiting: Option<(Vec<IssueKey>, Option<usize>)>,
     writable: bool,
-    /// An issue asked to be opened that is not on the board: it opens when
-    /// it has been read.
-    opening: Option<IssueKey>,
+    /// An issue asked to be opened that is neither on the board nor read,
+    /// where to show it, and whether a step back (`true`) or forward
+    /// through the issues left asked for it: it opens when it has been
+    /// read, and one such step that cannot be read gives way to the next.
+    opening: Option<(jumps::Spot, Option<bool>)>,
+    /// The issues left, for `<C-o>` and `<C-i>`.
+    jumps: jumps::Jumps,
     images: Option<ratatui_image::picker::Picker>,
     /// Avatars by URL: asked for, drawn, or not to be had.
     avatars: std::collections::HashMap<String, Avatar>,
@@ -419,6 +424,7 @@ impl App {
             awaiting: None,
             writable: settings.writable,
             opening: None,
+            jumps: Default::default(),
             images: settings.images,
             avatars: std::collections::HashMap::new(),
             quit: false,
@@ -630,7 +636,7 @@ impl App {
     /// detail shows it: a save shows over it.
     fn issue_loaded(&mut self, detail: std::sync::Arc<IssueDetail>) {
         let waited = self.keep_read(&detail);
-        if self.opening.as_ref() == Some(&detail.issue.key) {
+        if self.opening.as_ref().is_some_and(|(s, _)| s.key == detail.issue.key) {
             self.opened(detail);
         } else {
             self.read_again(detail);
@@ -642,11 +648,19 @@ impl App {
 
     /// The issue asked to be opened, read: it opens.
     fn opened(&mut self, detail: std::sync::Arc<IssueDetail>) {
-        self.opening = None;
+        let spot = self.opening.take().map(|(spot, _)| spot);
+        let spot = spot.unwrap_or_else(|| jumps::Spot::top(detail.issue.key.clone()));
         self.said_done(&opening(&detail.issue.key));
         let mut view = DetailView::new(detail.issue.clone());
         view.loaded = Some(detail);
+        self.show_view(view, &spot);
+    }
+
+    /// The issue on screen, where `spot` says.
+    fn show_view(&mut self, mut view: DetailView, spot: &jumps::Spot) {
+        (view.scroll, view.tab) = (spot.scroll, spot.tab);
         self.detail = Some(view);
+        self.viewer = None;
         self.show_detail();
         self.want_avatar();
     }
@@ -762,8 +776,10 @@ impl App {
     /// A read that failed: nothing waits on it any more, and a description
     /// waiting on it to be saved is kept as a draft, for the next `e`.
     fn read_failed(&mut self, key: IssueKey, error: kolum_domain::DomainError) {
+        if let Some((_, Some(back))) = self.opening.take_if(|(spot, _)| spot.key == key) {
+            self.jump(back, 1);
+        }
         self.say(format!("loading {key} failed: {error}"), Level::Error);
-        self.opening.take_if(|opening| *opening == key);
         let Some((_, AfterRead::Save { from, text })) =
             self.describe_after.take_if(|(waiting, _)| *waiting == key)
         else {
@@ -813,6 +829,12 @@ impl App {
             Action::PickerCommands => self.open_command_picker(),
             Action::PickerThemes => self.open_theme_picker(),
             Action::PickerResume => self.resume_picker(),
+            // Not under the help page: the issue would change behind it.
+            Action::JumpBack | Action::JumpForward
+                if matches!(self.focus(), Focus::Board | Focus::Detail) =>
+            {
+                self.jump(action == Action::JumpBack, count.unwrap_or(1))
+            }
             _ => self.focused_action(action, count),
         }
     }
@@ -871,7 +893,7 @@ impl App {
             Focus::Picker => self.close_picker(),
             Focus::Prompt => self.close_prompt(),
             Focus::Viewer => self.viewer = None,
-            Focus::Detail => self.detail = None,
+            Focus::Detail => self.close_detail(),
             Focus::Board => self.quit = true,
         }
     }
@@ -1063,7 +1085,7 @@ impl App {
         match action {
             Action::Filter => self.prompt = Some(Prompt::filter(d.query())),
             // Clears the search first, then closes the issue.
-            Action::ClearFilter if d.query().is_empty() => self.detail = None,
+            Action::ClearFilter if d.query().is_empty() => self.close_detail(),
             Action::ClearFilter => d.search_for(String::new()),
             Action::CopyKey | Action::CopyUrl | Action::OpenBrowser => {
                 let issue = d.issue().clone();
@@ -1819,36 +1841,74 @@ impl App {
         frame.render_widget(line, Rect { y: inner.y + inner.height / 2, height: 1, ..inner });
     }
 
-    /// Opens at once from the board's copy, over what its last opening read
-    /// if any; an issue not on the board (a remote search hit) opens when it
-    /// has been read.
+    /// The open issue, where it is: to come back to it. One a step is
+    /// still opening is where that step is.
+    fn here(&self) -> Option<jumps::Spot> {
+        if let Some((spot, Some(_))) = &self.opening {
+            return Some(spot.clone());
+        }
+        let d = self.detail.as_ref()?;
+        Some(jumps::Spot { key: d.issue().key.clone(), scroll: d.scroll, tab: d.tab })
+    }
+
+    /// The open issue is left: a step back to it.
+    fn leave_detail(&mut self) {
+        if let Some(spot) = self.here() {
+            self.jumps.leave(spot);
+        }
+    }
+
+    fn close_detail(&mut self) {
+        self.leave_detail();
+        self.detail = None;
+    }
+
+    /// `<C-o>` and `<C-i>`: the issue left `n` steps before the open one,
+    /// or after.
+    fn jump(&mut self, back: bool, n: u32) {
+        let here = self.here();
+        let spot = if back { self.jumps.back(here, n) } else { self.jumps.forward(here, n) };
+        let Some(spot) = spot else {
+            let none = if back { "No issue left before" } else { "No issue left after" };
+            return self.say(none, Level::Info);
+        };
+        self.go_to(spot, Some(back));
+    }
+
+    /// An issue opened afresh, the open one left for it.
     fn open_detail(&mut self, key: IssueKey) {
-        let issue = self.latest.as_ref().and_then(|s| s.issues.iter().find(|i| i.key == key));
-        match issue {
-            Some(issue) => {
-                let view = match self.read.get(&key) {
-                    Some(read) => {
-                        let mut read = read.clone();
-                        if kolum_app::supersedes(issue, &read.issue) {
-                            kolum_app::refresh(
-                                &mut std::sync::Arc::make_mut(&mut read).issue,
-                                issue,
-                            );
-                        }
-                        let mut view = DetailView::new(read.issue.clone());
-                        view.loaded = Some(read);
-                        view
-                    }
-                    None => DetailView::new(issue.clone()),
-                };
-                self.detail = Some(view);
-                self.show_detail();
+        self.leave_detail();
+        self.go_to(jumps::Spot::top(key), None);
+    }
+
+    /// Opens at once from its last full read, brought up to the board's
+    /// copy, or from the board's copy; one neither read nor on the board
+    /// (a remote search hit) opens when it has been read. `jump` is the
+    /// way of the step that asked for it, if one did.
+    fn go_to(&mut self, spot: jumps::Spot, jump: Option<bool>) {
+        let key = spot.key.clone();
+        let board = self.latest.as_ref().and_then(|s| s.issues.iter().find(|i| i.key == key));
+        let view = match (self.read.get(&key), board) {
+            (Some(read), board) => {
+                let mut read = read.clone();
+                if let Some(issue) = board.filter(|i| kolum_app::supersedes(i, &read.issue)) {
+                    kolum_app::refresh(&mut std::sync::Arc::make_mut(&mut read).issue, issue);
+                }
+                let mut view = DetailView::new(read.issue.clone());
+                view.loaded = Some(read);
+                Some(view)
+            }
+            (None, Some(issue)) => Some(DetailView::new(issue.clone())),
+            (None, None) => None,
+        };
+        match view {
+            Some(view) => {
                 self.opening = None;
-                self.want_avatar();
+                self.show_view(view, &spot);
             }
             None => {
                 self.say(opening(&key), Level::Info);
-                self.opening = Some(key.clone());
+                self.opening = Some((spot, jump));
             }
         }
         self.effects.push(Effect::Send(Command::LoadIssue(key)));
@@ -2034,7 +2094,7 @@ impl App {
     }
 
     fn switch_board(&mut self, id: kolum_domain::BoardId) {
-        self.detail = None;
+        self.close_detail();
         self.load_board(id);
     }
 

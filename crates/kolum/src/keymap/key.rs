@@ -12,10 +12,14 @@ pub struct Key {
 
 impl Key {
     /// Shift is folded into the character: terminals disagree on whether
-    /// `L` arrives with SHIFT set, and `L` is `L` either way.
+    /// `L` arrives with SHIFT set, and `L` is `L` either way. `<C-i>` is
+    /// `<Tab>`, the code a terminal sends for both.
     pub fn new(code: KeyCode, mods: KeyModifiers) -> Self {
         let mods = mods & (KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT);
         match code {
+            KeyCode::Char('i' | 'I') if mods - KeyModifiers::SHIFT == KeyModifiers::CONTROL => {
+                Key { code: KeyCode::Tab, mods: KeyModifiers::NONE }
+            }
             KeyCode::Char(c) => Key { code: KeyCode::Char(c), mods: mods - KeyModifiers::SHIFT },
             KeyCode::BackTab => Key { code: KeyCode::Tab, mods: mods | KeyModifiers::SHIFT },
             code => Key { code, mods },
@@ -190,6 +194,8 @@ mod tests {
         assert_eq!(parse("<A-x>"), parse("<M-x>"));
         assert_eq!(parse("<F5>"), vec![Key::new(KeyCode::F(5), KeyModifiers::NONE)]);
         assert_eq!(parse("<C-Space>"), vec![Key::new(KeyCode::Char(' '), KeyModifiers::CONTROL)]);
+        assert_eq!(parse("<C-i>"), parse("<Tab>"), "one code from the terminal");
+        assert_ne!(parse("<A-C-i>"), parse("<Tab>"));
     }
 
     #[test]

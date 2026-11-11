@@ -152,19 +152,7 @@ async fn the_picker_has_a_normal_mode_and_resumes() {
 async fn open_read(app: &mut App) {
     press(app, "ll<CR>");
     assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-5"));
-    app.on_event(Event::IssueLoaded(Arc::new(read_whole("ACME-5").await)));
-}
-
-async fn read_whole(key: &str) -> IssueDetail {
-    let fake = FakeProvider::new();
-    let key = IssueKey::parse(key);
-    IssueDetail {
-        issue: fake.issue(&key).await.unwrap(),
-        comments: fake.comments(&key).await.unwrap(),
-        activity: fake.activity(&key).await.unwrap(),
-        layout: None,
-        children: vec![],
-    }
+    detail_of(app, "ACME-5").await;
 }
 
 #[tokio::test]
@@ -232,6 +220,94 @@ async fn slash_in_an_issue_finds_its_text_and_n_steps_through_the_matches() {
     assert!(find(&screen, "2/2").is_none());
     press(&mut app, "<Esc>");
     assert_eq!(app.open_issue(), None, "then closes");
+}
+
+/// The screen but its status line, which says what was done.
+fn view(app: &mut App) -> Vec<String> {
+    let mut rows: Vec<String> = screen(app, 150, 20).lines().map(String::from).collect();
+    rows.pop();
+    rows
+}
+
+/// `<C-o>` reopens the issues left or closed, each where it was left;
+/// `<C-i>` comes forward again, and switches no tab.
+#[tokio::test]
+async fn ctrl_o_walks_back_through_the_issues_left_and_ctrl_i_forward() {
+    let mut app = loaded().await;
+    open_read(&mut app).await;
+    press(&mut app, "5jgt");
+    let a = view(&mut app);
+    press(&mut app, "gp");
+    detail_of(&mut app, "ACME-1").await;
+    press(&mut app, "2j");
+    let b = view(&mut app);
+    press(&mut app, "<Esc>");
+    assert_eq!(app.open_issue(), None);
+    press(&mut app, "<C-o>");
+    detail_of(&mut app, "ACME-1").await;
+    assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-1"), "the issue closed");
+    assert_eq!(view(&mut app), b, "where it was left");
+    press(&mut app, "<C-o>");
+    detail_of(&mut app, "ACME-5").await;
+    assert_eq!(view(&mut app), a, "the one it was opened from, on its tab");
+    press(&mut app, "<C-o>");
+    assert_eq!(view(&mut app), a, "nothing older");
+    press(&mut app, "<C-i>");
+    detail_of(&mut app, "ACME-1").await;
+    assert_eq!(view(&mut app), b);
+    press(&mut app, "<C-i>");
+    assert_eq!(view(&mut app), b, "nothing newer, and no tab switched");
+    press(&mut app, "<C-o><Esc><C-i>");
+    assert_eq!(app.open_issue(), None, "leaving after going back drops the way forward");
+}
+
+/// The board, the provider's, without `key`.
+async fn off_the_board(app: &mut App, key: &str) -> IssueKey {
+    let gone = IssueKey::parse(key);
+    let mut snapshot = load_board(&FakeProvider::new(), None).await.unwrap();
+    snapshot.issues.retain(|i| i.key != gone);
+    app.on_event(Event::BoardLoaded { snapshot, fresh: true, request: 1 });
+    gone
+}
+
+/// A second `<C-o>` while the first step still opens counts from that
+/// step, which `<C-i>` comes back to.
+#[tokio::test]
+async fn ctrl_o_again_while_a_step_opens_keeps_that_step() {
+    let mut app = loaded().await;
+    press(&mut app, "<CR><Esc>j<CR><Esc>");
+    let gone = off_the_board(&mut app, "ACME-16").await;
+    press(&mut app, "j<CR><C-o><C-o>");
+    assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-9"));
+    app.take_effects();
+    press(&mut app, "<C-i>");
+    assert_eq!(app.take_effects(), [Effect::Send(Command::LoadIssue(gone))]);
+}
+
+/// An issue left that has left the board and cannot be read says so,
+/// and the step before it opens.
+#[tokio::test]
+async fn ctrl_o_past_an_issue_that_cannot_be_read_goes_on_to_the_one_before() {
+    let mut app = loaded().await;
+    press(&mut app, "<CR><Esc>j<CR><Esc>");
+    let gone = off_the_board(&mut app, "ACME-16").await;
+    press(&mut app, "<C-o>");
+    assert_eq!(app.open_issue(), None, "opened by its key, as any other");
+    let error = kolum_domain::DomainError::NotFound(gone.to_string());
+    app.on_event(Event::IssueLoadFailed { key: gone, error });
+    assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-9"));
+    assert!(screen(&mut app, 150, 20).contains("loading ACME-16 failed"));
+}
+
+/// `2<C-o>` goes two issues back; under the help page, nothing changes.
+#[tokio::test]
+async fn a_count_before_ctrl_o_steps_back_as_many_issues() {
+    let mut app = loaded().await;
+    press(&mut app, "<CR><Esc>j<CR><Esc>j<CR><Esc>");
+    press(&mut app, "?<C-o>");
+    assert_eq!(app.open_issue(), None, "not behind the help page");
+    press(&mut app, "q2<C-o>");
+    assert_eq!(app.open_issue().map(IssueKey::as_str), Some("ACME-16"));
 }
 
 #[tokio::test]
@@ -399,14 +475,14 @@ async fn the_detail_scrolls_and_switches_tabs() {
     press(&mut app, "3j<C-d><C-u>3k");
     assert_eq!(screen(&mut app, 120, 20), top, "down and back up again");
 
-    press(&mut app, "<Tab>");
+    press(&mut app, "gt");
     let history = screen(&mut app, 120, 60);
     assert!(history.contains("Status: Backlog → In Progress"), "{history}");
     assert!(!history.contains("I can reproduce"), "History has no comments");
-    press(&mut app, "<Tab>");
+    press(&mut app, "gt");
     let all = screen(&mut app, 120, 60);
     assert!(all.contains("Status: ∅ → Backlog") && all.contains("I can reproduce"));
-    press(&mut app, "<S-Tab><S-Tab>");
+    press(&mut app, "gTgT");
     assert!(!screen(&mut app, 120, 60).contains("Status: ∅"), "back on Comments");
 }
 
@@ -2662,47 +2738,50 @@ async fn gi_views_the_pictures_full_screen() {
 }
 
 /// `gp` opens the parent, from the issue or from its card; an epic is not
-/// on the board, so it opens once read, in place of the issue.
+/// on the board, so it opens once read, in place of the issue, and at once
+/// when it was read before.
 #[tokio::test]
 async fn gp_opens_the_parent() {
     use kolum_domain::IssueReader;
     let fake = FakeProvider::new();
     let parent = fake.issue(&IssueKey::parse("ACME-5")).await.unwrap().parent.unwrap().key;
+    let read = || async {
+        let issue = fake.issue(&parent).await.unwrap();
+        let read = IssueDetail {
+            issue,
+            comments: vec![],
+            activity: vec![],
+            layout: None,
+            children: vec![],
+        };
+        Event::IssueLoaded(std::sync::Arc::new(read))
+    };
     let mut app = loaded().await;
     press(&mut app, "ll<CR>"); // ACME-5
     app.take_effects();
     press(&mut app, "gp");
     assert!(app.take_effects().contains(&Effect::Send(Command::LoadIssue(parent.clone()))));
     assert!(screen(&mut app, 140, 40).contains(&format!("Opening {parent}")));
-    let issue = fake.issue(&parent).await.unwrap();
-    let title = issue.title.clone();
-    app.on_event(Event::IssueLoaded(std::sync::Arc::new(IssueDetail {
-        issue,
-        comments: vec![],
-        activity: vec![],
-        layout: None,
-        children: vec![],
-    })));
+    press(&mut app, "q<CR>"); // ACME-5 again, before the parent arrives
+    app.on_event(read().await);
+    assert!(
+        screen(&mut app, 140, 40).contains("· ACME-5"),
+        "opened since: the parent waits no more"
+    );
+
+    let title = fake.issue(&parent).await.unwrap().title;
+    press(&mut app, "gp");
     let shown = screen(&mut app, 140, 40);
     assert!(shown.contains(&title) && shown.contains(&format!("· {parent}")), "{shown}");
-
     press(&mut app, "q");
     app.take_effects();
     press(&mut app, "gp");
     let asked = app.take_effects();
     assert!(
         asked.contains(&Effect::Send(Command::LoadIssue(parent.clone()))),
-        "from the card: {asked:?}"
+        "from the card, read again: {asked:?}"
     );
-    press(&mut app, "<CR>"); // ACME-5 again, before the parent arrives
-    let issue = fake.issue(&parent).await.unwrap();
-    let late =
-        IssueDetail { issue, comments: vec![], activity: vec![], layout: None, children: vec![] };
-    app.on_event(Event::IssueLoaded(std::sync::Arc::new(late)));
-    assert!(
-        screen(&mut app, 140, 40).contains("· ACME-5"),
-        "opened since: the parent waits no more"
-    );
+    assert!(screen(&mut app, 140, 40).contains(&format!("· {parent}")), "at once");
 
     let board = load_board(&fake, None).await.unwrap();
     let orphan = board.issues.iter().find(|i| i.parent.is_none()).unwrap().key.clone();

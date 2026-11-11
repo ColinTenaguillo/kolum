@@ -42,6 +42,8 @@ actions! {
     MoveCardUp "move_card_up" "Move the card up its column",
     OpenDetail "open_detail" "Open the issue",
     OpenParent "open_parent" "Open the parent issue",
+    JumpBack "jump_back" "Back to the issue left before",
+    JumpForward "jump_forward" "Forward to the issue left after",
     Filter "filter" "Filter the board, or search the issue",
     NextMatch "next_match" "Next match",
     PrevMatch "prev_match" "Previous match",

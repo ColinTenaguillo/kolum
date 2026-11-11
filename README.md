@@ -168,6 +168,8 @@ The defaults follow vim. Counts work on motions (`3j`, `5G`), sequences wait
 | `Ctrl-d` `Ctrl-u` | Half a page |
 | `Enter` `gd` | Open the issue |
 | `gp` | Open its parent (the epic) |
+| `Ctrl-o` · `Ctrl-i` | Back to the issue left or closed before, where you left it · forward again (`Ctrl-i` is the key `Tab` sends) |
+| `gt` `gT` | In an issue: next or previous activity tab (comments, history, all) |
 | `s` · `ze` | Cycle swimlanes · hide or show empty columns; both remembered |
 | `r` | Reload the board from the provider |
 | `q` `Esc` | Close the view; `q` on the board quits |

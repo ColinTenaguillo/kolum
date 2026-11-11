@@ -50,7 +50,7 @@ pub enum Tab {
 }
 
 impl Tab {
-    /// Left to right, as they show; `<Tab>` goes round them in this order.
+    /// Left to right, as they show; `gt` goes round them in this order.
     const ORDER: [Tab; 3] = [Tab::Comments, Tab::History, Tab::All];
 
     /// Its place in [`Tab::ORDER`].
