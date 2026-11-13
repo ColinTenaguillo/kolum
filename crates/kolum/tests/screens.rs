@@ -222,6 +222,20 @@ async fn slash_in_an_issue_finds_its_text_and_n_steps_through_the_matches() {
     assert_eq!(app.open_issue(), None, "then closes");
 }
 
+/// Over a transparent background the match keeps the dark text of the
+/// badges, not the terminal's own (light) one.
+#[tokio::test]
+async fn a_match_keeps_its_dark_text_over_a_transparent_background() {
+    let mut settings = settings();
+    settings.theme_overrides = toml::from_str("bg = \"reset\"\nbadge_fg = \"#010203\"").unwrap();
+    let mut app = loaded_with(settings).await;
+    open_read(&mut app).await;
+    press(&mut app, "/ttl");
+    let screen = drawn(&mut app, 150, 20);
+    let (x, y) = find(&screen, "30 s TTL").unwrap();
+    assert_eq!(screen[(x + 5, y)].fg, ratatui::style::Color::Rgb(1, 2, 3));
+}
+
 /// The screen but its status line, which says what was done.
 fn view(app: &mut App) -> Vec<String> {
     let mut rows: Vec<String> = screen(app, 150, 20).lines().map(String::from).collect();

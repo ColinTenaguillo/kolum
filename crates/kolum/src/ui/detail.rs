@@ -220,7 +220,7 @@ impl DetailView {
         me: Option<&UserId>,
         pictures: Pictures,
     ) {
-        let lit = Style::new().bg(theme.match_highlight).fg(theme.bg);
+        let lit = Style::new().bg(theme.match_highlight).fg(theme.badge_fg);
         let query = self.search.query.clone();
         let found = |lines, width| found(lines, &query, lit, width);
         let issue = &self.issue;
