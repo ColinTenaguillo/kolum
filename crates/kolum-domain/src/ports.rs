@@ -50,6 +50,9 @@ pub enum Capability {
     BulkRead,
     /// Links between issues can be made and removed.
     Links,
+    /// A comment's `@name` is made a mention of a user found by that name;
+    /// without it, `@name` goes as written (GitHub reads it itself).
+    Mentions,
 }
 
 /// An issue with its comments and history, read along with others. On a

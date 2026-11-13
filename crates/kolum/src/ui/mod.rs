@@ -85,6 +85,17 @@ enum AfterRead {
     Save { from: String, text: String },
 }
 
+/// A comment held while its `@names` are found, the first in `names`
+/// being asked for, or chosen in the picker when `choosing`.
+struct Mentioning {
+    key: IssueKey,
+    text: kolum_domain::RichText,
+    names: Vec<String>,
+    /// Named by no one: they go as written.
+    left: Vec<String>,
+    choosing: bool,
+}
+
 /// An issue's pictures, and the one on screen.
 struct Viewer {
     pictures: Vec<kolum_domain::Attachment>,
@@ -225,6 +236,10 @@ pub struct Settings {
     pub issue_at: IssueAt,
     /// The provider makes and removes links between issues.
     pub links: bool,
+    /// A comment's `@name` is made a mention: see [`Capability::Mentions`].
+    ///
+    /// [`Capability::Mentions`]: kolum_domain::Capability::Mentions
+    pub mentions: bool,
 }
 
 pub type IssueAt = std::sync::Arc<dyn Fn(&str) -> Option<IssueKey> + Send + Sync>;
@@ -248,6 +263,7 @@ impl Settings {
             filter_applied: false,
             issue_at: std::sync::Arc::new(|_| None),
             links: false,
+            mentions: false,
         }
     }
 }
@@ -350,6 +366,9 @@ pub struct App {
     avatars: std::collections::HashMap<String, Avatar>,
     issue_at: IssueAt,
     links: bool,
+    mentions: bool,
+    /// A comment back from `$EDITOR` whose `@names` are being found.
+    mentioning: Option<Mentioning>,
     /// The kinds of link, once read.
     link_types: Option<Vec<kolum_domain::LinkType>>,
     pub quit: bool,
@@ -441,6 +460,8 @@ impl App {
             avatars: std::collections::HashMap::new(),
             issue_at: settings.issue_at,
             links: settings.links,
+            mentions: settings.mentions,
+            mentioning: None,
             link_types: None,
             quit: false,
         }
@@ -676,6 +697,7 @@ impl App {
             Event::Written { op, key, issue } => self.written(op, key, issue.as_deref()),
             Event::WriteFailed { op, key, error } => self.write_failed(op, key, error),
             Event::Image { url, result } => self.image(url, result),
+            Event::Users { name, result } => self.on_users(name, result),
             Event::Created(issue) => self.on_created(issue.key),
             Event::IssueLoadFailed { key, error } => self.read_failed(key, error),
             Event::Failed { what, error } => {
@@ -950,7 +972,13 @@ impl App {
     fn close(&mut self) {
         match self.focus() {
             Focus::Help => self.help = None,
-            Focus::Picker => self.close_picker(),
+            Focus::Picker => {
+                self.close_picker();
+                // Esc on whom a name is: it stays as written.
+                if self.mentioning.as_ref().is_some_and(|m| m.choosing) {
+                    self.mentioned(None);
+                }
+            }
             Focus::Prompt => self.close_prompt(),
             Focus::Viewer => self.viewer = None,
             Focus::Detail => self.close_detail(),
@@ -1809,13 +1837,66 @@ impl App {
         }
     }
 
-    /// A comment back from `$EDITOR`; an empty one cancels.
+    /// A comment back from `$EDITOR`; an empty one cancels. Its `@names`
+    /// are found first, one after the other.
     fn comment(&mut self, key: IssueKey, text: &str) {
         if text.is_empty() {
             return self.say("Nothing written: no comment", Level::Info);
         }
-        self.say(format!("Commenting on {key}…"), Level::Info);
-        self.write(vec![kolum_app::comment_write(key, text)]);
+        let text = kolum_domain::RichText::from_markdown(text);
+        let names = if self.mentions { kolum_app::mentioned(&text) } else { vec![] };
+        self.mentioning = Some(Mentioning { key, text, names, left: vec![], choosing: false });
+        self.next_mention();
+    }
+
+    /// The next name asked for, or, none left, the comment sent.
+    fn next_mention(&mut self) {
+        let Some(m) = &self.mentioning else { return };
+        if let Some(name) = m.names.first() {
+            return self.effects.push(Effect::Send(Command::FindUsers(name.clone())));
+        }
+        let Some(m) = self.mentioning.take() else { return };
+        let left: Vec<String> = m.left.iter().map(|n| format!("@{n}")).collect();
+        let left = if left.is_empty() {
+            String::new()
+        } else {
+            format!(", {} left as text", left.join(", "))
+        };
+        self.say(format!("Commenting on {}…{left}", m.key), Level::Info);
+        self.write(vec![kolum_app::comment_write(m.key, m.text)]);
+    }
+
+    /// Whom the name being found may be: the one called so, or a choice.
+    fn on_users(&mut self, name: String, result: Result<Vec<User>, kolum_domain::DomainError>) {
+        let Some(m) = self.mentioning.as_mut().filter(|m| m.names.first() == Some(&name)) else {
+            return;
+        };
+        match result.map(|users| kolum_app::whom(&name, users)) {
+            Ok(kolum_app::Whom::Choose(users)) => {
+                m.choosing = true;
+                let source = sources::MentionChoice { name, users };
+                self.open_picker(Box::new(Picker::new(source, self.waker.clone())));
+            }
+            Ok(kolum_app::Whom::Named(user)) => self.mentioned(Some(&user)),
+            Ok(kolum_app::Whom::Nobody) => self.mentioned(None),
+            Err(e) => {
+                tracing::warn!("finding @{name}: {e}");
+                self.mentioned(None)
+            }
+        }
+    }
+
+    /// The name being found made a mention of `user`; with no one, left as
+    /// written. Then the next.
+    fn mentioned(&mut self, user: Option<&User>) {
+        let Some(m) = self.mentioning.as_mut().filter(|m| !m.names.is_empty()) else { return };
+        let name = m.names.remove(0);
+        m.choosing = false;
+        match user {
+            Some(user) => kolum_app::mention(&mut m.text, &name, user),
+            None => m.left.push(name),
+        }
+        self.next_mention();
     }
 
     /// A new issue back from `$EDITOR`; none without a title.
@@ -2208,6 +2289,7 @@ impl App {
             Pick::OnIssues(action, keys) => self.issue_action(action, keys),
             Pick::Transition { keys, transition } => self.transition(keys, transition),
             Pick::Assign { keys, user } => self.assign(keys, user),
+            Pick::Mention(user) => self.mentioned(Some(&user)),
             Pick::People(tokens) => self.show_people(&tokens),
             Pick::Board(id) => self.switch_board(id),
             Pick::EditField { key, entry } => self.edit_field(key, entry),

@@ -770,6 +770,7 @@ impl Provider for FakeProvider {
             Write,
             Images,
             Rank,
+            Mentions,
             ChangedSince,
             BulkRead,
             Links,

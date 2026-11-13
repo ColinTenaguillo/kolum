@@ -107,10 +107,9 @@ pub fn assign_writes(keys: &[IssueKey], user: Option<&User>) -> Vec<Outgoing> {
     keys.iter().map(|key| (key.clone(), change.clone(), write.clone())).collect()
 }
 
-/// A comment, in Markdown, on the issue: it changes nothing on the card.
-pub fn comment_write(key: IssueKey, markdown: &str) -> Outgoing {
-    let change = Change::Update(IssueUpdate::default());
-    (key, change, Write::Comment(RichText::from_markdown(markdown)))
+/// A comment on the issue: it changes nothing on the card.
+pub fn comment_write(key: IssueKey, text: RichText) -> Outgoing {
+    (key, Change::Update(IssueUpdate::default()), Write::Comment(text))
 }
 
 /// The issue next to `other` in the provider's order: after it when it
@@ -572,7 +571,7 @@ mod tests {
         let nobody = (one.clone(), Change::Assignee(None), Write::Assign(None));
         assert_eq!(assign_writes(std::slice::from_ref(&one), None), [nobody]);
 
-        let (key, change, write) = comment_write(one.clone(), "*hi*");
+        let (key, change, write) = comment_write(one.clone(), RichText::from_markdown("*hi*"));
         assert_eq!(key, one);
         assert_eq!(change, Change::Update(IssueUpdate::default()), "a comment changes no field");
         assert_eq!(write, Write::Comment(RichText::from_markdown("*hi*")));

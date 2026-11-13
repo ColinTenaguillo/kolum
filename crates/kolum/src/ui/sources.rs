@@ -325,6 +325,33 @@ impl PickerSource for UserChoice {
     }
 }
 
+/// Whom a comment's `@name` is, among those it may be. Esc leaves it as
+/// written.
+pub struct MentionChoice {
+    pub name: String,
+    pub users: Vec<kolum_domain::User>,
+}
+
+impl PickerSource for MentionChoice {
+    type Item = kolum_domain::User;
+
+    fn title(&self) -> String {
+        format!("Who is @{}? Esc leaves it as text", self.name)
+    }
+
+    fn candidates(&self, _query: &str) -> Vec<Self::Item> {
+        self.users.clone()
+    }
+
+    fn haystack(&self, user: &Self::Item) -> String {
+        format!("{} ({})", user.display_name, user.initials())
+    }
+
+    fn act(&self, users: &[Self::Item], action: Action) -> Option<Pick> {
+        (action == Action::Confirm).then(|| Pick::Mention(users[0].clone()))
+    }
+}
+
 /// The fields of an issue, each with what it holds now: the one picked
 /// opens the editor its kind calls for.
 pub struct FieldChoice {

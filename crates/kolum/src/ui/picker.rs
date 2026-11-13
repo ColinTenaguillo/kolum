@@ -42,6 +42,8 @@ pub enum Pick {
         keys: Vec<kolum_domain::IssueKey>,
         user: Option<kolum_domain::User>,
     },
+    /// Whom the `@name` being found in a comment is.
+    Mention(kolum_domain::User),
     /// Edit this field of the issue, the way its kind calls for.
     EditField {
         key: kolum_domain::IssueKey,

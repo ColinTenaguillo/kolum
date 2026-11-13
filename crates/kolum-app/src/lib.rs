@@ -5,6 +5,7 @@
 mod board;
 mod describe;
 mod issue_store;
+mod mentions;
 mod people;
 mod query;
 mod service;
@@ -14,6 +15,7 @@ mod writer;
 
 pub use board::{BoardSnapshot, load_board, sync_board};
 pub use describe::{changed_since, description_update, merge_drafts, new_issue, titled};
+pub use mentions::{Whom, mention, mentioned, whom};
 pub use people::{assignable, assignees};
 pub use query::parse_query;
 pub use service::{Command, Event, IssueDetail, Service, layout_key};

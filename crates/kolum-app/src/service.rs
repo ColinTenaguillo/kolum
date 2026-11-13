@@ -42,6 +42,8 @@ pub enum Command {
     LinkTypes(IssueKey),
     /// An avatar's bytes.
     Image(String),
+    /// Who a comment's `@name` may be.
+    FindUsers(String),
     Create(kolum_domain::NewIssue),
     Clone(IssueKey),
     /// A change, under the id [`crate::Pending`] gave it.
@@ -143,6 +145,11 @@ pub enum Event {
     Image {
         url: String,
         result: Result<Vec<u8>, DomainError>,
+    },
+    /// The answer to a `FindUsers` for this name.
+    Users {
+        name: String,
+        result: Result<Vec<User>, DomainError>,
     },
     /// A new issue, made by Create or Clone.
     Created(Box<Issue>),
@@ -336,6 +343,7 @@ async fn run(ports: Ports, command: Command) {
         Command::LinkTypes(key) => Event::LinkTypes { result: provider.link_types().await, key },
         Command::Write { op, key, write } => written(provider, op, key, write).await,
         Command::Image(url) => Event::Image { result: provider.image(&url).await, url },
+        Command::FindUsers(name) => Event::Users { result: provider.find_users(&name).await, name },
         Command::Create(new) => {
             or_failed(provider.create(new).await, created, || "creating the issue".into())
         }
@@ -1335,6 +1343,19 @@ mod tests {
         };
         assert_eq!(k, key);
         assert!(fields.iter().any(|f| f.name == "Team"));
+    }
+
+    #[tokio::test]
+    async fn the_users_a_name_may_be_come_back_under_that_name() {
+        let (service, mut events) = Service::spawn(Arc::new(FakeProvider::new()), None);
+        events.within().await; // Me
+        service.send(Command::FindUsers("ana".into()));
+        let Some(Event::Users { name, result: Ok(users) }) = events.within().await else {
+            panic!()
+        };
+        assert_eq!(name, "ana");
+        let names: Vec<_> = users.iter().map(|u| u.display_name.as_str()).collect();
+        assert_eq!(names, ["Ana Silva"]);
     }
 
     #[tokio::test]

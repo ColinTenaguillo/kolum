@@ -15,7 +15,7 @@ use std::time::Instant;
 fn settings() -> Settings {
     // No sync on its own: deadlines stay the test's to decide.
     let ui = UiConfig { sync_secs: 0, ..UiConfig::default() };
-    Settings { ui, writable: true, links: true, ..Settings::default() }
+    Settings { ui, writable: true, links: true, mentions: true, ..Settings::default() }
 }
 
 async fn loaded_with(settings: Settings) -> App {
@@ -2186,6 +2186,117 @@ async fn a_comment_goes_through_the_editor() {
     );
     app.on_edited(purpose, Err("vim exited with 1".into()));
     assert!(screen(&mut app, 120, 30).contains("$EDITOR: vim exited with 1"));
+}
+
+/// The users the fake finds for `name`, as the service hands them back.
+async fn users(name: &str) -> Event {
+    Event::Users { name: name.into(), result: FakeProvider::new().find_users(name).await }
+}
+
+fn found(effects: Vec<Effect>) -> Vec<String> {
+    effects
+        .into_iter()
+        .filter_map(|e| match e {
+            Effect::Send(Command::FindUsers(name)) => Some(name),
+            _ => None,
+        })
+        .collect()
+}
+
+fn mention(id: &str, name: &str) -> kolum_domain::rich_text::Inline {
+    kolum_domain::rich_text::Inline::Mention {
+        id: Some(kolum_domain::UserId::new(id)),
+        name: name.into(),
+    }
+}
+
+/// A comment's `@name`: the one person named so, the one picked among
+/// several, or, found for no one, the text as written.
+#[tokio::test]
+async fn an_at_name_in_a_comment_becomes_a_mention_of_whoever_it_names() {
+    use kolum_domain::rich_text::{Block, Inline};
+    let mut app = loaded().await;
+    app.take_effects();
+    let key = IssueKey::parse("ACME-9");
+    let text = "Thanks @\"ana silva\", @ma and @nobody";
+    app.on_edited(EditPurpose::Comment(key), Ok(text.into()));
+    assert_eq!(found(app.take_effects()), ["ana silva"], "nothing sent yet");
+
+    app.on_event(users("ana silva").await);
+    assert_eq!(found(app.take_effects()), ["ma"]);
+    app.on_event(users("ma").await);
+    settle(&mut app);
+    let picker = screen(&mut app, 120, 30);
+    assert!(picker.contains("Chloé Martin") && picker.contains("Emma Johansson"), "{picker}");
+    press(&mut app, "emma");
+    settle(&mut app);
+    press(&mut app, "<CR>");
+    assert_eq!(found(app.take_effects()), ["nobody"]);
+    app.on_event(users("nobody").await);
+
+    let sent = writes(app.take_effects());
+    assert_eq!(sent.len(), 1);
+    let kolum_app::Write::Comment(text) = &sent[0].2 else { panic!("{sent:?}") };
+    let runs = vec![
+        Inline::text("Thanks "),
+        mention("u-ana", "Ana Silva"),
+        Inline::text(", "),
+        mention("u-emma", "Emma Johansson"),
+        Inline::text(" and @nobody"),
+    ];
+    assert_eq!(text.blocks, [Block::Paragraph(runs)]);
+    assert!(screen(&mut app, 120, 30).contains("@nobody left as text"));
+}
+
+/// Esc in the picker, or a search that fails, leaves the name as text and
+/// the comment still goes.
+#[tokio::test]
+async fn a_mention_left_unpicked_or_unfound_goes_as_text() {
+    let mut app = loaded().await;
+    app.take_effects();
+    let key = IssueKey::parse("ACME-9");
+    app.on_edited(EditPurpose::Comment(key), Ok("@ma and @ana".into()));
+    assert_eq!(found(app.take_effects()), ["ma"]);
+    app.on_event(users("ma").await);
+    settle(&mut app);
+    press(&mut app, "<Esc><Esc>");
+    assert_eq!(found(app.take_effects()), ["ana"]);
+    let error = kolum_domain::DomainError::Transport("offline".into());
+    app.on_event(Event::Users { name: "ana".into(), result: Err(error) });
+    let sent = writes(app.take_effects());
+    let text = kolum_domain::RichText::from_markdown("@ma and @ana");
+    assert_eq!(sent[0].2, kolum_app::Write::Comment(text));
+    assert!(screen(&mut app, 120, 30).contains("@ma, @ana left as text"));
+}
+
+/// Found for one person not called that, a name is asked rather than
+/// taken: a wrong guess would notify someone else.
+#[tokio::test]
+async fn a_name_only_like_the_one_found_is_asked() {
+    let mut app = loaded().await;
+    app.take_effects();
+    app.on_edited(EditPurpose::Comment(IssueKey::parse("ACME-9")), Ok("hi @ana".into()));
+    app.take_effects();
+    app.on_event(users("ana").await);
+    assert!(writes(app.take_effects()).is_empty(), "not sent before the choice");
+    settle(&mut app);
+    assert!(screen(&mut app, 120, 30).contains("Who is @ana?"));
+    press(&mut app, "<CR>");
+    let sent = writes(app.take_effects());
+    let kolum_app::Write::Comment(text) = &sent[0].2 else { panic!("{sent:?}") };
+    let runs = vec![kolum_domain::rich_text::Inline::text("hi "), mention("u-ana", "Ana Silva")];
+    assert_eq!(text.blocks, [kolum_domain::rich_text::Block::Paragraph(runs)]);
+}
+
+/// Where the provider reads `@name` itself (GitHub), it goes as written.
+#[tokio::test]
+async fn without_mentions_an_at_name_goes_as_written() {
+    let mut app = loaded_with(Settings { mentions: false, ..settings() }).await;
+    app.take_effects();
+    app.on_edited(EditPurpose::Comment(IssueKey::parse("ACME-9")), Ok("hi @ana".into()));
+    let sent = writes(app.take_effects());
+    let text = kolum_domain::RichText::from_markdown("hi @ana");
+    assert_eq!(sent[0].2, kolum_app::Write::Comment(text));
 }
 
 #[tokio::test]

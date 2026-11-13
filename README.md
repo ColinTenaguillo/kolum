@@ -45,6 +45,8 @@ and issues laid out like the web app.
   and undone with its own message if it refuses
 - Edit titles, descriptions and comments as Markdown in `$EDITOR`, and any
   other field its own way
+- `@name` or `@"first last"` in a comment mentions whoever it names on Jira
+  Cloud: the one called exactly that, or the one picked among those found
 - Visual mode for grouped actions, swimlanes by epic, assignee or priority
 - Avatars and pictures through the terminal's image protocol (kitty, Ghostty,
   WezTerm, iTerm2, foot), half blocks elsewhere

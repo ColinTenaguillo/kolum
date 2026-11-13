@@ -741,7 +741,9 @@ impl Provider for JiraProvider {
             ]
             .into_iter()
             // shortcut: Data Center's bulk read is not known; declare it there once one is.
-            .chain((self.settings.flavor == JiraFlavor::Cloud).then_some(BulkRead)),
+            .chain((self.settings.flavor == JiraFlavor::Cloud).then_some(BulkRead))
+            // shortcut: Data Center's `[~name]` mention is not written yet; declare it there once it is.
+            .chain((self.settings.flavor == JiraFlavor::Cloud).then_some(Mentions)),
         )
     }
 }
